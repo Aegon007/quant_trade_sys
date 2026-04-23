@@ -41,6 +41,21 @@ except ImportError:
 MODEL_DIR = "trained_models"
 
 
+CATBOOST_AVAILABLE = False
+try:
+    import catboost as cb
+    CATBOOST_AVAILABLE = True
+except ImportError:
+    pass
+
+XGBOOST_AVAILABLE = False
+try:
+    import xgboost as xgb
+    XGBOOST_AVAILABLE = True
+except ImportError:
+    pass
+
+
 def get_model_path(symbol: str) -> str:
     os.makedirs(MODEL_DIR, exist_ok=True)
     return os.path.join(MODEL_DIR, f"{symbol}_lgbm_model.pkl")
@@ -398,3 +413,196 @@ def retrain_and_save_model(symbol: str, data: pd.DataFrame, params: dict) -> str
         return f"✅ 模型重训练成功！已保存至 {model_path}"
     except Exception as e:
         return f"❌ 重训练模型时发生错误：{e}"
+
+
+def backtest_ensemble_voting(
+    symbol: str = None,
+    data: pd.DataFrame = None,
+    lookback: int = 252,
+    train_window: int = 60,
+    retrain_freq: int = 20,
+    target_horizon: int = 5,
+    buy_threshold: float = 0.55,
+    sell_threshold: float = 0.45,
+    max_holding_days: int = 20,
+    period: str = "2y",
+    **kwargs
+) -> Optional[pd.DataFrame]:
+    """
+    集成投票策略：组合 LightGBM、CatBoost、XGBoost 预测概率平均。
+    """
+    if not LGB_AVAILABLE:
+        raise RuntimeError("LightGBM 不可用")
+    if not CATBOOST_AVAILABLE:
+        raise RuntimeError("CatBoost 未安装，请运行 pip install catboost")
+    if not XGBOOST_AVAILABLE:
+        raise RuntimeError("XGBoost 未安装，请运行 pip install xgboost")
+
+    # 获取数据（与之前相同）
+    if data is not None:
+        df = data.copy()
+    elif symbol is not None:
+        ticker = yf.Ticker(symbol)
+        df = ticker.history(period=period)
+        if df.empty:
+            return None
+    else:
+        raise ValueError("必须提供 symbol 或 data 参数")
+
+    if len(df) < lookback:
+        return None
+
+    df = compute_features(df)
+    y = create_target(df, horizon=target_horizon)
+
+    feature_cols = [
+        'ret_1', 'ret_5', 'ret_10', 'ret_20',
+        'vol_5', 'vol_20',
+        'volume_ratio', 'volume_change_5',
+        'price_to_ma_5', 'price_to_ma_20', 'price_to_ma_50', 'ma_5_20_cross',
+        'rsi', 'bb_position',
+        'macd', 'macd_diff',
+        'atr_ratio', 'high_low_ratio'
+    ]
+    X = df[feature_cols].copy()
+    X = X.replace([np.inf, -np.inf], np.nan).ffill().fillna(0)
+
+    common_idx = X.dropna().index.intersection(y.dropna().index)
+    X = X.loc[common_idx]
+    y = y.loc[common_idx]
+    meta = df.loc[common_idx].copy()
+
+    n_samples = len(X)
+    if n_samples < lookback:
+        return None
+
+    meta['pred_prob'] = np.nan
+    meta['Position'] = 0
+    meta['Trade'] = 0
+
+    for test_start in range(lookback, n_samples, retrain_freq):
+        test_end = min(test_start + retrain_freq, n_samples)
+        train_start = max(0, test_start - train_window)
+
+        X_train = X.iloc[train_start:test_start]
+        y_train = y.iloc[train_start:test_start]
+        X_test = X.iloc[test_start:test_end]
+
+        if len(X_train) < 30 or len(X_test) == 0:
+            continue
+
+        scaler = StandardScaler()
+        X_train_scaled = scaler.fit_transform(X_train)
+        X_test_scaled = scaler.transform(X_test)
+
+        # 训练三个模型
+        model_lgb = lgb.LGBMClassifier(objective='binary', metric='auc', verbosity=-1, seed=42)
+        model_lgb.fit(X_train_scaled, y_train)
+        prob_lgb = model_lgb.predict_proba(X_test_scaled)[:, 1]
+
+        model_cb = cb.CatBoostClassifier(verbose=0, random_seed=42)
+        model_cb.fit(X_train_scaled, y_train)
+        prob_cb = model_cb.predict_proba(X_test_scaled)[:, 1]
+
+        model_xgb = xgb.XGBClassifier(objective='binary:logistic', eval_metric='logloss', verbosity=0, seed=42)
+        model_xgb.fit(X_train_scaled, y_train)
+        prob_xgb = model_xgb.predict_proba(X_test_scaled)[:, 1]
+
+        # 平均概率
+        prob_ensemble = (prob_lgb + prob_cb + prob_xgb) / 3.0
+        meta.loc[X_test.index, 'pred_prob'] = prob_ensemble
+
+    # 生成信号（与之前相同）
+    position = 0
+    holding_days = 0
+    for i in range(1, len(meta)):
+        prob = meta['pred_prob'].iloc[i]
+        if pd.isna(prob):
+            meta.loc[meta.index[i], 'Position'] = position
+            holding_days = holding_days + 1 if position > 0 else 0
+            continue
+
+        if position == 0:
+            if prob > buy_threshold:
+                meta.loc[meta.index[i], 'Trade'] = 1
+                position = 1
+                holding_days = 1
+            else:
+                position = 0
+                holding_days = 0
+        else:
+            holding_days += 1
+            if prob < sell_threshold or holding_days >= max_holding_days:
+                meta.loc[meta.index[i], 'Trade'] = -1
+                position = 0
+                holding_days = 0
+        meta.loc[meta.index[i], 'Position'] = position
+
+    meta['Returns'] = meta['Close'].pct_change()
+    meta['Strategy'] = meta['Returns'] * meta['Position'].shift(1)
+    return meta
+
+def get_ensemble_signal(symbol: str, **kwargs) -> Tuple[str, str]:
+    """实时集成信号"""
+    if not LGB_AVAILABLE or not CATBOOST_AVAILABLE or not XGBOOST_AVAILABLE:
+        return "HOLD", "需要安装 lightgbm, catboost, xgboost"
+
+    try:
+        ticker = yf.Ticker(symbol)
+        df = ticker.history(period="1y")
+        if df.empty or len(df) < 60:
+            return "HOLD", "历史数据不足"
+
+        df = compute_features(df)
+        feature_cols = [
+            'ret_1', 'ret_5', 'ret_10', 'ret_20',
+            'vol_5', 'vol_20',
+            'volume_ratio', 'volume_change_5',
+            'price_to_ma_5', 'price_to_ma_20', 'price_to_ma_50', 'ma_5_20_cross',
+            'rsi', 'bb_position',
+            'macd', 'macd_diff',
+            'atr_ratio', 'high_low_ratio'
+        ]
+        X = df[feature_cols].copy()
+        X = X.replace([np.inf, -np.inf], np.nan).ffill().fillna(0)
+
+        y = create_target(df, horizon=kwargs.get('target_horizon', 5))
+        common_idx = X.dropna().index.intersection(y.dropna().index)
+        X = X.loc[common_idx]
+        y = y.loc[common_idx]
+
+        train_window = kwargs.get('train_window', 60)
+        if len(X) < train_window:
+            return "HOLD", f"数据不足，需要至少 {train_window} 个有效样本"
+
+        X_train = X.iloc[-train_window:]
+        y_train = y.iloc[-train_window:]
+
+        scaler = StandardScaler()
+        X_train_scaled = scaler.fit_transform(X_train)
+
+        model_lgb = lgb.LGBMClassifier(objective='binary', metric='auc', verbosity=-1, seed=42)
+        model_lgb.fit(X_train_scaled, y_train)
+        prob_lgb = model_lgb.predict_proba(scaler.transform(X.iloc[[-1]]))[0, 1]
+
+        model_cb = cb.CatBoostClassifier(verbose=0, random_seed=42)
+        model_cb.fit(X_train_scaled, y_train)
+        prob_cb = model_cb.predict_proba(scaler.transform(X.iloc[[-1]]))[0, 1]
+
+        model_xgb = xgb.XGBClassifier(objective='binary:logistic', eval_metric='logloss', verbosity=0, seed=42)
+        model_xgb.fit(X_train_scaled, y_train)
+        prob_xgb = model_xgb.predict_proba(scaler.transform(X.iloc[[-1]]))[0, 1]
+
+        prob = (prob_lgb + prob_cb + prob_xgb) / 3.0
+
+        buy_threshold = kwargs.get('buy_threshold', 0.55)
+        sell_threshold = kwargs.get('sell_threshold', 0.45)
+
+        if prob > buy_threshold:
+            return "BUY", f"集成模型预测上涨概率 {prob:.1%} > {buy_threshold:.0%}，建议买入"
+        elif prob < sell_threshold:
+            return "SELL", f"集成模型预测上涨概率 {prob:.1%} < {sell_threshold:.0%}，建议卖出"
+        else:
+            return "HOLD", f"集成模型预测上涨概率 {prob:.1%}，处于中性区间，建议持有"
+    except Exception as e:
+        return "HOLD", f"信号计算异常：{str(e)}"

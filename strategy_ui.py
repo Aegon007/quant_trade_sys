@@ -31,8 +31,12 @@ def get_signal(strategy, symbol):
     """统一的信号获取接口"""
     strategy_id = strategy.get("id")
     params = strategy.get("params", {})
-    
-    if strategy_id == "ml_lightgbm":
-        return ml_utils.get_ml_signal(symbol, **params)
-    else:
-        return qa.get_signal_for_strategy(symbol, strategy)
+    try:
+        if strategy_id == "ml_lightgbm":
+            return ml_utils.get_ml_signal(symbol, **params)
+        elif strategy_id == "ensemble_voting":
+            return ml_utils.get_ensemble_signal(symbol, **params)
+        else:
+            return qa.get_signal_for_strategy(symbol, strategy)
+    except Exception as e:
+        return "HOLD", f"信号计算异常: {str(e)}"

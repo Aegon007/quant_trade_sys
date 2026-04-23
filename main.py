@@ -7,18 +7,23 @@ import transactions as tx
 import quant_analysis as qa
 import strategy_ui as su
 import ml_strategy as ml_utils
+import locales as loc
 
+# 引擎
 from engine import BacktraderEngine, PyBrokerEngine, BacktestResult
+# 策略类
 from strategies import (
     MACrossoverStrategy, BollingerStrategy, MACDStrategy, RSIStrategy,
-    LightGBMStrategy
+    LightGBMStrategy, EnsembleVotingStrategy
 )
 
-st.set_page_config(page_title="持仓·关注追踪器", layout="wide")
-st.title("📊 持仓与关注追踪器")
-st.caption("实时行情 · 卖出记录 · 编辑持仓 · 量化回测 · ML增强信号 · 双引擎切换")
+st.set_page_config(page_title="Portfolio Tracker", layout="wide")
 
-# ---------- 加载数据 ----------
+# ---------- 语言设置 ----------
+if "lang" not in st.session_state:
+    st.session_state.lang = "zh"
+
+# ---------- 数据状态 ----------
 if "app_data" not in st.session_state:
     st.session_state.app_data = du.load_data()
 if "sell_dialog_index" not in st.session_state:
@@ -30,101 +35,109 @@ if "selected_strategy_id" not in st.session_state:
 
 data = st.session_state.app_data
 
-# ---------- 加载策略配置 ----------
+# ---------- 策略配置 ----------
 strategies = su.load_strategies()
 if not strategies:
-    st.error("策略配置文件加载失败，请检查 config/strategies.json 是否存在且格式正确。")
+    st.error("策略配置文件加载失败，请检查 config/strategies.json")
     st.stop()
 
 strategy_map = {s["id"]: s for s in strategies}
 strategy_names = [s["name"] for s in strategies]
 
-# ---------- 侧边栏 ----------
+# ========== 侧边栏 ==========
 with st.sidebar:
-    st.header("➕ 添加持仓")
+    # 语言切换
+    lang_choice = st.selectbox("🌐 Language / 语言", ["中文", "English"],
+                               index=0 if st.session_state.lang == "zh" else 1)
+    st.session_state.lang = "zh" if lang_choice == "中文" else "en"
+    L = lambda key, **kwargs: loc.get_text(st.session_state.lang, key, **kwargs)
+
+    st.header(L("add_holding"))
     with st.form("add_holding"):
-        sym = st.text_input("股票代码", placeholder="AAPL, TSM...")
-        shares = st.number_input("股数", min_value=0.0, step=1.0)
-        cost = st.number_input("成本价 (USD)", min_value=0.0, step=0.01, format="%.2f")
-        if st.form_submit_button("添加持仓"):
+        sym = st.text_input(L("stock_code"), placeholder="AAPL, TSM...")
+        shares = st.number_input(L("shares"), min_value=0.0, step=1.0)
+        cost = st.number_input(L("cost_price"), min_value=0.0, step=0.01, format="%.2f")
+        if st.form_submit_button(L("submit_add_holding")):
             if sym and shares > 0 and cost > 0:
                 du.add_holding(sym, shares, cost)
                 st.session_state.app_data = du.load_data()
-                st.success(f"已添加 {sym.upper()}")
+                st.success(f"{sym.upper()} {L('submit_add_holding')} 成功")
                 st.rerun()
             else:
-                st.warning("请完整填写")
+                st.warning(L("submit_add_holding") + " 请完整填写")
 
     st.divider()
-    st.header("👀 添加关注")
+    st.header(L("add_watch"))
     with st.form("add_watch"):
-        w_sym = st.text_input("股票代码", placeholder="NVDA, MSFT...", key="watch_sym")
-        notes = st.text_input("备注（可选）", placeholder="等待回调")
-        target = st.number_input("目标买入价 (USD)", min_value=0.0, step=0.01, format="%.2f")
-        if st.form_submit_button("添加关注"):
+        w_sym = st.text_input(L("stock_code"), key="watch_sym", placeholder="NVDA, MSFT...")
+        notes = st.text_input(L("notes"), placeholder="等待回调")
+        target = st.number_input(L("target_buy_price"), min_value=0.0, step=0.01, format="%.2f")
+        if st.form_submit_button(L("submit_add_watch")):
             if w_sym:
                 du.add_watch(w_sym, notes, target if target > 0 else None)
                 st.session_state.app_data = du.load_data()
-                st.success(f"已关注 {w_sym.upper()}")
+                st.success(f"{w_sym.upper()} {L('submit_add_watch')} 成功")
                 st.rerun()
             else:
-                st.warning("至少输入代码")
+                st.warning(L("submit_add_watch") + " 至少输入代码")
 
     st.divider()
-    if st.button("🔄 刷新实时价格", use_container_width=True):
-        with st.spinner("正在获取实时价格..."):
+    if st.button(L("refresh_price")):
+        with st.spinner("刷新中..."):
             try:
-                updated_data = du.update_all_prices(data)
-                st.session_state.app_data = updated_data
-                du.save_data(updated_data)
-                st.success("价格已更新！")
+                updated = du.update_all_prices(data)
+                st.session_state.app_data = updated
+                du.save_data(updated)
+                st.success(L("refresh_price") + " 完成！")
                 st.rerun()
             except Exception as e:
                 st.error(f"刷新失败: {e}")
 
     st.divider()
-    st.header("🧹 清空操作")
-    col1, col2 = st.columns(2)
-    with col1:
-        if st.button("🗑️ 清空持仓", use_container_width=True):
+    st.header(L("clear_ops"))
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button(L("clear_holdings")):
             du.clear_holdings()
             st.session_state.app_data = du.load_data()
-            st.warning("已清空所有持仓")
+            st.warning(L("clear_holdings") + " 完成")
             st.rerun()
-    with col2:
-        if st.button("🗑️ 清空关注", use_container_width=True):
+    with c2:
+        if st.button(L("clear_watchlist")):
             du.clear_watchlist()
             st.session_state.app_data = du.load_data()
-            st.warning("已清空所有关注")
+            st.warning(L("clear_watchlist") + " 完成")
             st.rerun()
 
     st.divider()
-    st.header("📤 导出")
-    st.markdown("- **Markdown**：生成持仓表格")
-    st.markdown("- **PDF**：使用浏览器打印 (Ctrl+P)")
+    st.header(L("export"))
+    st.markdown(f"- {L('export_md')}")
+    st.markdown(f"- {L('export_pdf')}")
 
-# ---------- 对话框处理 ----------
+# ---------- 辅助函数 ----------
 def render_dialogs():
     if st.session_state.sell_dialog_index is not None:
         idx = st.session_state.sell_dialog_index
         if idx < len(data["holdings"]):
-            holding = data["holdings"][idx]
-            with st.expander(f"💰 卖出 {holding['symbol']}", expanded=True):
+            h = data["holdings"][idx]
+            with st.expander(f"{L('sell_dialog_title')} {h['symbol']}", expanded=True):
                 col1, col2 = st.columns(2)
                 with col1:
-                    sell_price = st.number_input("卖出价 (USD)", min_value=0.0, value=holding.get("current_price") or 0.0, step=0.01, format="%.2f")
+                    sell_price = st.number_input(L("sell_price"), min_value=0.0,
+                                                value=h.get("current_price") or 0.0, step=0.01, format="%.2f")
                 with col2:
-                    max_shares = holding["shares"]
-                    sell_shares = st.number_input("卖出股数", min_value=0.0, max_value=max_shares, value=max_shares, step=1.0)
-                if st.button("确认卖出", type="primary"):
+                    max_s = h["shares"]
+                    sell_shares = st.number_input(L("sell_shares"), min_value=0.0,
+                                                 max_value=max_s, value=max_s, step=1.0)
+                if st.button(L("confirm_sell")):
                     if sell_shares > 0:
-                        symbol, cost_basis = du.sell_partial_holding(idx, sell_shares, sell_price)
-                        tx.add_transaction(symbol, sell_price, sell_shares, cost_basis)
+                        sym, cb = du.sell_partial_holding(idx, sell_shares, sell_price)
+                        tx.add_transaction(sym, sell_price, sell_shares, cb)
                         st.session_state.app_data = du.load_data()
-                        st.success(f"已卖出 {symbol} {sell_shares:,.0f} 股 @ ${sell_price:.2f}")
+                        st.success(f"已卖出 {sym} {sell_shares:,.0f} 股 @ ${sell_price:.2f}")
                         st.session_state.sell_dialog_index = None
                         st.rerun()
-                if st.button("取消"):
+                if st.button(L("cancel")):
                     st.session_state.sell_dialog_index = None
                     st.rerun()
         else:
@@ -134,26 +147,26 @@ def render_dialogs():
     if st.session_state.editing_holding is not None:
         idx = st.session_state.editing_holding
         if idx < len(data["holdings"]):
-            holding = data["holdings"][idx]
-            with st.expander(f"✏️ 编辑 {holding['symbol']}", expanded=True):
+            h = data["holdings"][idx]
+            with st.expander(f"{L('edit_dialog_title')} {h['symbol']}", expanded=True):
                 with st.form("edit_holding_form"):
-                    new_shares = st.number_input("股数", min_value=0.0, value=float(holding["shares"]), step=1.0)
-                    new_cost = st.number_input("成本价 (USD)", min_value=0.0, value=float(holding["cost"]), step=0.01, format="%.2f")
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        if st.form_submit_button("保存"):
+                    new_shares = st.number_input(L("shares"), min_value=0.0, value=float(h["shares"]), step=1.0)
+                    new_cost = st.number_input(L("cost_price"), min_value=0.0, value=float(h["cost"]), step=0.01, format="%.2f")
+                    c1, c2 = st.columns(2)
+                    with c1:
+                        if st.form_submit_button(L("save")):
                             if new_shares > 0:
                                 data["holdings"][idx]["shares"] = new_shares
                                 data["holdings"][idx]["cost"] = new_cost
                                 du.save_data(data)
                                 st.session_state.app_data = du.load_data()
-                                st.success("持仓已更新")
+                                st.success(L("save") + " 成功")
                                 st.session_state.editing_holding = None
                                 st.rerun()
                             else:
-                                st.error("股数必须大于0")
-                    with col2:
-                        if st.form_submit_button("取消"):
+                                st.error(L("shares") + " 必须大于0")
+                    with c2:
+                        if st.form_submit_button(L("cancel")):
                             st.session_state.editing_holding = None
                             st.rerun()
         else:
@@ -162,19 +175,26 @@ def render_dialogs():
 
 render_dialogs()
 
-# ---------- 主区域 Tab ----------
-tab1, tab2, tab3, tab4 = st.tabs(["📋 持仓", "👀 关注列表", "📜 交易记录", "📈 量化分析"])
+# ---------- 主区域 ----------
+st.title(L("app_title"))
+st.caption(L("app_caption"))
 
+tab1, tab2, tab3, tab4 = st.tabs([
+    L("holdings_tab"), L("watchlist_tab"),
+    L("transactions_tab"), L("quant_tab")
+])
+
+# ----- Tab1 持仓 -----
 with tab1:
-    st.caption("选择应用于持仓信号的短线策略")
+    st.caption(L("strategy_signal"))
     selected_strategy_name = st.selectbox(
-        "策略信号",
+        L("strategy_signal"),
         strategy_names,
         index=[s["id"] for s in strategies].index(st.session_state.selected_strategy_id)
     )
     selected_strategy = next((s for s in strategies if s["name"] == selected_strategy_name), strategies[0])
     st.session_state.selected_strategy_id = selected_strategy["id"]
-    with st.expander("📌 策略说明"):
+    with st.expander(L("strategy_desc")):
         st.markdown(selected_strategy.get("description", "无说明"))
 
     def handle_sell(idx):
@@ -188,13 +208,13 @@ with tab1:
         strategy=selected_strategy
     )
     if data["holdings"]:
-        col1, col2, col3, col4 = st.columns(4)
-        col1.metric("总成本", f"${total_cost:,.2f}")
-        col2.metric("总市值", f"${total_value:,.2f}")
-        col3.metric("总盈亏", f"${total_pl:+,.2f}", delta=f"{total_pl_pct:+.2f}%")
-        col4.metric("持仓数量", f"{len(data['holdings'])} 只")
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric(L("total_cost"), f"${total_cost:,.2f}")
+        c2.metric(L("total_value"), f"${total_value:,.2f}")
+        c3.metric(L("total_pl"), f"${total_pl:+,.2f}", delta=f"{total_pl_pct:+.2f}%")
+        c4.metric(L("holdings_count"), f"{len(data['holdings'])}")
 
-        if st.button("📝 生成持仓 Markdown"):
+        if st.button(L("gen_md")):
             lines = ["| 代码 | 股数 | 成本价 | 现价 | 市值 | 盈亏 ($) | 盈亏 (%) | 信号 |"]
             lines.append("|------|------|--------|------|------|----------|----------|------|")
             for h in data["holdings"]:
@@ -213,18 +233,20 @@ with tab1:
                     f"{f'{pl_pct:+.2f}%' if pl_pct is not None else '—'} | "
                     f"{signal} |"
                 )
-            lines.append(f"\n**总成本**: ${total_cost:,.2f}  \n**总市值**: ${total_value:,.2f}  \n**总盈亏**: ${total_pl:+,.2f} ({total_pl_pct:+.2f}%)")
+            lines.append(f"\n**{L('total_cost')}**: ${total_cost:,.2f}  \n**{L('total_value')}**: ${total_value:,.2f}  \n**{L('total_pl')}**: ${total_pl:+,.2f} ({total_pl_pct:+.2f}%)")
             md_text = "\n".join(lines)
             st.code(md_text, language="markdown")
             st.download_button("⬇️ 下载 Markdown", data=md_text, file_name=f"holdings_{datetime.now().strftime('%Y%m%d')}.md")
 
+# ----- Tab2 关注列表 -----
 with tab2:
     ui.render_watchlist_table(data, on_delete_batch=du.delete_watch_batch)
 
+# ----- Tab3 交易记录 -----
 with tab3:
     transactions = tx.load_transactions()
     if not transactions:
-        st.info("暂无交易记录。")
+        st.info(L("no_transactions"))
     else:
         df = pd.DataFrame(transactions)
         df_display = df.copy()
@@ -234,105 +256,95 @@ with tab3:
         df_display.columns = ["日期", "代码", "股数", "卖出价", "成本价", "收入", "盈亏 ($)", "盈亏 (%)"]
         st.dataframe(df_display, hide_index=True, use_container_width=True)
         total_proceeds = sum(t["proceeds"] for t in transactions)
-        total_pl = sum(t["pl"] for t in transactions)
-        col1, col2 = st.columns(2)
-        col1.metric("累计收入", f"${total_proceeds:,.2f}")
-        col2.metric("累计盈亏", f"${total_pl:+,.2f}")
+        total_pl_trans = sum(t["pl"] for t in transactions)
+        c1, c2 = st.columns(2)
+        c1.metric(L("total_income"), f"${total_proceeds:,.2f}")
+        c2.metric(L("total_pl_trans"), f"${total_pl_trans:+,.2f}")
 
+# ----- Tab4 量化分析 -----
 with tab4:
-    st.header("量化分析工具")
-    st.markdown("基于持仓和关注列表的技术指标、风险度量和短线策略回测")
+    st.header(L("quant_title"))
+    st.markdown(L("quant_desc"))
 
     all_symbols = list(set([h["symbol"] for h in data["holdings"]] + [w["symbol"] for w in data["watchlist"]]))
     if not all_symbols:
-        st.warning("暂无持仓或关注标的，请先添加。")
+        st.warning("暂无数据")
     else:
-        st.subheader("⚙️ 回测引擎设置")
-        engine_option = st.selectbox(
-            "选择回测引擎",
-            ["Backtrader (推荐)", "PyBroker"],
-            help="Backtrader 社区活跃、稳定；PyBroker 为备选引擎。"
-        )
+        st.subheader(L("engine_setting"))
+        engine_option = st.selectbox(L("select_engine"), ["Backtrader (推荐)", "PyBroker"])
         use_backtrader = (engine_option == "Backtrader (推荐)")
 
-        st.subheader("📊 策略选择与说明")
+        st.subheader(L("strategy_select"))
         selected_strategy_tab4 = su.render_strategy_selector(strategies)
         if selected_strategy_tab4:
             su.display_strategy_description(selected_strategy_tab4)
 
-        selected_symbol = st.selectbox("选择股票代码", all_symbols)
+        selected_symbol = st.selectbox(L("select_stock"), all_symbols)
 
-        # ---- 模型管理按钮（带训练周期选择） ----
-        if selected_strategy_tab4 and selected_strategy_tab4.get("id") == "ml_lightgbm":
-            st.subheader("🔄 模型管理")
+        # ---- 模型重训练（仅ML/集成策略）----
+        if selected_strategy_tab4 and selected_strategy_tab4["id"] in ("ml_lightgbm", "ensemble_voting"):
+            st.subheader(L("model_management"))
             if selected_symbol:
-                train_period = st.selectbox(
-                    "选择训练数据周期",
-                    ["1y", "2y", "3y", "5y", "10y"],
-                    index=1,
-                    help="使用多长历史数据来训练模型。更长的周期可能捕捉更多规律，但训练时间也更长。"
-                )
-                if st.button("🔄 重新训练并保存 ML 模型"):
-                    with st.spinner(f"正在为 {selected_symbol} 重训练模型（周期：{train_period}），可能需要一些时间..."):
+                train_period = st.selectbox(L("select_train_period"), ["1y", "2y", "3y", "5y", "10y"], index=1)
+                if st.button(L("retrain_btn")):
+                    with st.spinner("训练中..."):
                         try:
                             train_hist = qa.get_historical_data(selected_symbol, period=train_period)
                             if train_hist.empty:
-                                st.error("无法获取足够的历史数据用于训练。")
+                                st.error("无法获取足够数据。")
                             else:
                                 params = selected_strategy_tab4.get("params", {})
-                                status_msg = ml_utils.retrain_and_save_model(selected_symbol, train_hist, params)
-                                if "✅" in status_msg:
-                                    st.success(status_msg)
+                                status = ml_utils.retrain_and_save_model(selected_symbol, train_hist, params)
+                                if "✅" in status:
+                                    st.success(status)
                                     st.cache_data.clear()
                                 else:
-                                    st.warning(status_msg)
+                                    st.warning(status)
                         except Exception as e:
-                            st.error(f"重训练失败: {e}")
+                            st.error(f"训练失败: {e}")
             else:
-                st.info("👆 请先在上方选择一只股票，才能进行模型训练。")
+                st.info(L("need_select_stock"))
 
         if selected_symbol and selected_strategy_tab4:
             with st.spinner("加载历史数据..."):
                 hist = qa.get_historical_data(selected_symbol, period="6mo")
                 if hist.empty:
-                    st.error("无法获取历史数据")
+                    st.error("无历史数据")
                 else:
                     st.subheader(f"{selected_symbol} 技术指标")
                     df_ma = qa.calculate_ma(hist)
                     rsi = qa.calculate_rsi(hist)
+                    c1, c2 = st.columns(2)
+                    with c1:
+                        st.metric(L("latest_price"), f"${hist['Close'].iloc[-1]:.2f}")
+                        st.metric(L("ma20"), f"${df_ma['MA20'].iloc[-1]:.2f}")
+                        st.metric(L("ma50"), f"${df_ma['MA50'].iloc[-1]:.2f}")
+                    with c2:
+                        st.metric(L("rsi14"), f"{rsi.iloc[-1]:.2f}")
+                        st.metric(L("annual_vol"), f"{qa.calculate_volatility(hist):.2%}")
+                        st.metric(L("max_dd"), f"{qa.calculate_max_drawdown(hist):.2%}")
 
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        st.metric("最新价", f"${hist['Close'].iloc[-1]:.2f}")
-                        st.metric("20日均线", f"${df_ma['MA20'].iloc[-1]:.2f}")
-                        st.metric("50日均线", f"${df_ma['MA50'].iloc[-1]:.2f}")
-                    with col2:
-                        st.metric("RSI (14)", f"{rsi.iloc[-1]:.2f}")
-                        st.metric("年化波动率", f"{qa.calculate_volatility(hist):.2%}")
-                        st.metric("最大回撤", f"{qa.calculate_max_drawdown(hist):.2%}")
+                    st.line_chart(df_ma[["Close", "MA20", "MA50"]].tail(100))
 
-                    chart_data = df_ma[["Close", "MA20", "MA50"]].tail(100)
-                    st.line_chart(chart_data)
-
+                    # 当前信号
                     try:
                         signal, reason = su.get_signal(selected_strategy_tab4, selected_symbol)
                         if signal == "BUY":
-                            st.success(f"📈 当前信号：买入 — {reason}")
+                            st.success(f"📈 {L('current_signal')}: {L('buy')} — {reason}")
                         elif signal == "SELL":
-                            st.error(f"📉 当前信号：卖出 — {reason}")
+                            st.error(f"📉 {L('current_signal')}: {L('sell')} — {reason}")
                         else:
-                            st.info(f"⏸️ 当前信号：持有 — {reason}")
+                            st.info(f"⏸️ {L('current_signal')}: {L('hold')} — {reason}")
                     except Exception as e:
                         st.warning(f"无法获取信号: {e}")
 
-                    # ========== 回测 ==========
-                    st.subheader(f"策略回测 (当前引擎: {engine_option})")
-                    if st.button("运行回测", key="run_backtest"):
-                        with st.spinner("正在执行回测..."):
+                    # 回测按钮
+                    st.subheader(L("backtest_title") + f" (引擎: {engine_option})")
+                    if st.button(L("run_backtest"), key="run_backtest"):
+                        with st.spinner("回测中..."):
                             try:
                                 strategy_id = selected_strategy_tab4["id"]
                                 params = selected_strategy_tab4.get("params", {})
-
                                 if strategy_id == "ma_crossover":
                                     strategy_obj = MACrossoverStrategy(**params)
                                 elif strategy_id == "bollinger":
@@ -343,27 +355,24 @@ with tab4:
                                     strategy_obj = RSIStrategy(**params)
                                 elif strategy_id == "ml_lightgbm":
                                     strategy_obj = LightGBMStrategy(params)
+                                elif strategy_id == "ensemble_voting":
+                                    strategy_obj = EnsembleVotingStrategy(params)
                                 else:
                                     st.error("未知策略")
                                     strategy_obj = None
 
                                 if strategy_obj:
-                                    if use_backtrader:
-                                        engine = BacktraderEngine(initial_cash=100000)
-                                    else:
-                                        engine = PyBrokerEngine(initial_cash=100000)
-
+                                    engine = BacktraderEngine(initial_cash=100000) if use_backtrader else PyBrokerEngine(initial_cash=100000)
                                     engine.set_data(hist)
                                     engine.set_strategy(strategy_obj)
                                     result = engine.run()
 
                                     st.success("回测完成！")
-                                    col1, col2, col3, col4 = st.columns(4)
-                                    col1.metric("累计收益", f"{result.total_return:.2%}")
-                                    col2.metric("夏普比率", f"{result.sharpe_ratio:.2f}")
-                                    col3.metric("最大回撤", f"{result.max_drawdown:.2%}")
-                                    col4.metric("胜率", f"{result.win_rate:.2%}")
-
+                                    c1, c2, c3, c4 = st.columns(4)
+                                    c1.metric(L("cum_return"), f"{result.total_return:.2%}")
+                                    c2.metric(L("sharpe"), f"{result.sharpe_ratio:.2f}")
+                                    c3.metric(L("max_drawdown"), f"{result.max_drawdown:.2%}")
+                                    c4.metric(L("win_rate"), f"{result.win_rate:.2%}")
                                     if result.equity_curve:
                                         st.line_chart(pd.Series(result.equity_curve))
                             except Exception as e:
@@ -372,27 +381,26 @@ with tab4:
                     # MACD 图表
                     macd, signal_line, hist_macd = qa.calculate_macd(hist)
                     macd_df = pd.DataFrame({"MACD": macd, "Signal": signal_line, "Histogram": hist_macd}).tail(100)
-                    st.subheader("MACD 指标")
+                    st.subheader(L("macd_indicator"))
                     st.line_chart(macd_df[["MACD", "Signal"]])
                     st.bar_chart(macd_df["Histogram"])
 
-        # 组合风险分析
+        # 组合风险
         st.divider()
-        st.subheader("📊 组合风险分析")
+        st.subheader(L("portfolio_risk"))
         if data["holdings"]:
-            if st.button("计算组合 Beta 与相关性"):
+            if st.button(L("calc_beta")):
                 with st.spinner("计算中..."):
                     try:
                         beta, betas = qa.calculate_portfolio_beta(data["holdings"])
-                        st.metric("组合 Beta (vs SPY)", f"{beta:.2f}")
-                        beta_df = pd.DataFrame(list(betas.items()), columns=["代码", "Beta"])
-                        st.dataframe(beta_df, hide_index=True)
+                        st.metric(L("portfolio_beta"), f"{beta:.2f}")
+                        st.dataframe(pd.DataFrame(list(betas.items()), columns=["代码", "Beta"]), hide_index=True)
                         symbols = [h["symbol"] for h in data["holdings"] if h.get("current_price")]
                         if len(symbols) > 1:
                             corr = qa.calculate_correlation_matrix(symbols)
-                            st.write("持仓相关性矩阵")
+                            st.write(L("corr_matrix"))
                             st.dataframe(corr.style.format("{:.2f}"))
                     except Exception as e:
                         st.error(f"计算失败: {e}")
         else:
-            st.info("暂无持仓数据，无法进行组合分析。")
+            st.info("无持仓数据")
