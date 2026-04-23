@@ -6,10 +6,17 @@ import ui_components as ui
 import transactions as tx
 import quant_analysis as qa
 import strategy_ui as su
+import ml_strategy as ml_utils
+
+from engine import BacktraderEngine, PyBrokerEngine, BacktestResult
+from strategies import (
+    MACrossoverStrategy, BollingerStrategy, MACDStrategy, RSIStrategy,
+    LightGBMStrategy
+)
 
 st.set_page_config(page_title="持仓·关注追踪器", layout="wide")
 st.title("📊 持仓与关注追踪器")
-st.caption("实时行情 · 卖出记录 · 编辑持仓 · 短线量化策略 · 动态信号")
+st.caption("实时行情 · 卖出记录 · 编辑持仓 · 量化回测 · ML增强信号 · 双引擎切换")
 
 # ---------- 加载数据 ----------
 if "app_data" not in st.session_state:
@@ -19,12 +26,16 @@ if "sell_dialog_index" not in st.session_state:
 if "editing_holding" not in st.session_state:
     st.session_state.editing_holding = None
 if "selected_strategy_id" not in st.session_state:
-    st.session_state.selected_strategy_id = "ma_crossover"  # 默认策略
+    st.session_state.selected_strategy_id = "ma_crossover"
 
 data = st.session_state.app_data
 
 # ---------- 加载策略配置 ----------
 strategies = su.load_strategies()
+if not strategies:
+    st.error("策略配置文件加载失败，请检查 config/strategies.json 是否存在且格式正确。")
+    st.stop()
+
 strategy_map = {s["id"]: s for s in strategies}
 strategy_names = [s["name"] for s in strategies]
 
@@ -94,7 +105,6 @@ with st.sidebar:
 
 # ---------- 对话框处理 ----------
 def render_dialogs():
-    # 卖出对话框
     if st.session_state.sell_dialog_index is not None:
         idx = st.session_state.sell_dialog_index
         if idx < len(data["holdings"]):
@@ -121,7 +131,6 @@ def render_dialogs():
             st.session_state.sell_dialog_index = None
             st.rerun()
 
-    # 编辑对话框
     if st.session_state.editing_holding is not None:
         idx = st.session_state.editing_holding
         if idx < len(data["holdings"]):
@@ -157,7 +166,6 @@ render_dialogs()
 tab1, tab2, tab3, tab4 = st.tabs(["📋 持仓", "👀 关注列表", "📜 交易记录", "📈 量化分析"])
 
 with tab1:
-    # 策略选择器（放置在持仓表格上方）
     st.caption("选择应用于持仓信号的短线策略")
     selected_strategy_name = st.selectbox(
         "策略信号",
@@ -166,9 +174,8 @@ with tab1:
     )
     selected_strategy = next((s for s in strategies if s["name"] == selected_strategy_name), strategies[0])
     st.session_state.selected_strategy_id = selected_strategy["id"]
-    # 显示策略简短说明
     with st.expander("📌 策略说明"):
-        st.markdown(selected_strategy["description"])
+        st.markdown(selected_strategy.get("description", "无说明"))
 
     def handle_sell(idx):
         st.session_state.sell_dialog_index = idx
@@ -178,7 +185,7 @@ with tab1:
         on_price_change=du.update_holding_price,
         on_delete=du.delete_holding,
         on_sell=handle_sell,
-        strategy=selected_strategy   # 传入策略对象，用于计算信号
+        strategy=selected_strategy
     )
     if data["holdings"]:
         col1, col2, col3, col4 = st.columns(4)
@@ -197,7 +204,7 @@ with tab1:
                 mkt = shares * price if price else None
                 pl = mkt - shares * cost if mkt else None
                 pl_pct = (pl / (shares * cost) * 100) if pl and shares*cost else None
-                signal, reason = qa.get_signal_for_strategy(h["symbol"], selected_strategy)
+                signal, reason = su.get_signal(selected_strategy, h["symbol"])
                 lines.append(
                     f"| {h['symbol']} | {shares:,.0f} | ${cost:,.2f} | "
                     f"{'$'+f'{price:,.2f}' if price else '—'} | "
@@ -240,14 +247,51 @@ with tab4:
     if not all_symbols:
         st.warning("暂无持仓或关注标的，请先添加。")
     else:
-        selected_symbol = st.selectbox("选择股票代码", all_symbols)
+        st.subheader("⚙️ 回测引擎设置")
+        engine_option = st.selectbox(
+            "选择回测引擎",
+            ["Backtrader (推荐)", "PyBroker"],
+            help="Backtrader 社区活跃、稳定；PyBroker 为备选引擎。"
+        )
+        use_backtrader = (engine_option == "Backtrader (推荐)")
 
-        # 策略选择（独立于股票）
         st.subheader("📊 策略选择与说明")
         selected_strategy_tab4 = su.render_strategy_selector(strategies)
-        su.display_strategy_description(selected_strategy_tab4)
+        if selected_strategy_tab4:
+            su.display_strategy_description(selected_strategy_tab4)
 
-        if selected_symbol:
+        selected_symbol = st.selectbox("选择股票代码", all_symbols)
+
+        # ---- 模型管理按钮（带训练周期选择） ----
+        if selected_strategy_tab4 and selected_strategy_tab4.get("id") == "ml_lightgbm":
+            st.subheader("🔄 模型管理")
+            if selected_symbol:
+                train_period = st.selectbox(
+                    "选择训练数据周期",
+                    ["1y", "2y", "3y", "5y", "10y"],
+                    index=1,
+                    help="使用多长历史数据来训练模型。更长的周期可能捕捉更多规律，但训练时间也更长。"
+                )
+                if st.button("🔄 重新训练并保存 ML 模型"):
+                    with st.spinner(f"正在为 {selected_symbol} 重训练模型（周期：{train_period}），可能需要一些时间..."):
+                        try:
+                            train_hist = qa.get_historical_data(selected_symbol, period=train_period)
+                            if train_hist.empty:
+                                st.error("无法获取足够的历史数据用于训练。")
+                            else:
+                                params = selected_strategy_tab4.get("params", {})
+                                status_msg = ml_utils.retrain_and_save_model(selected_symbol, train_hist, params)
+                                if "✅" in status_msg:
+                                    st.success(status_msg)
+                                    st.cache_data.clear()
+                                else:
+                                    st.warning(status_msg)
+                        except Exception as e:
+                            st.error(f"重训练失败: {e}")
+            else:
+                st.info("👆 请先在上方选择一只股票，才能进行模型训练。")
+
+        if selected_symbol and selected_strategy_tab4:
             with st.spinner("加载历史数据..."):
                 hist = qa.get_historical_data(selected_symbol, period="6mo")
                 if hist.empty:
@@ -270,25 +314,60 @@ with tab4:
                     chart_data = df_ma[["Close", "MA20", "MA50"]].tail(100)
                     st.line_chart(chart_data)
 
-                    # 显示当前信号
-                    signal, reason = qa.get_signal_for_strategy(selected_symbol, selected_strategy_tab4)
-                    if signal == "BUY":
-                        st.success(f"📈 当前信号：买入 — {reason}")
-                    elif signal == "SELL":
-                        st.error(f"📉 当前信号：卖出 — {reason}")
-                    else:
-                        st.info(f"⏸️ 当前信号：持有 — {reason}")
+                    try:
+                        signal, reason = su.get_signal(selected_strategy_tab4, selected_symbol)
+                        if signal == "BUY":
+                            st.success(f"📈 当前信号：买入 — {reason}")
+                        elif signal == "SELL":
+                            st.error(f"📉 当前信号：卖出 — {reason}")
+                        else:
+                            st.info(f"⏸️ 当前信号：持有 — {reason}")
+                    except Exception as e:
+                        st.warning(f"无法获取信号: {e}")
 
-                    # 回测
-                    st.subheader("策略回测")
-                    bt_df = su.run_backtest(selected_strategy_tab4, selected_symbol)
-                    if bt_df is not None and not bt_df.empty:
-                        cum_ret = (1 + bt_df["Strategy"]).cumprod()
-                        st.line_chart(cum_ret.tail(100))
-                        total_return = (1 + bt_df["Strategy"]).prod() - 1
-                        sharpe = qa.calculate_sharpe_ratio(bt_df["Strategy"].dropna())
-                        st.metric("策略累计收益", f"{total_return:.2%}")
-                        st.metric("年化夏普比率", f"{sharpe:.2f}")
+                    # ========== 回测 ==========
+                    st.subheader(f"策略回测 (当前引擎: {engine_option})")
+                    if st.button("运行回测", key="run_backtest"):
+                        with st.spinner("正在执行回测..."):
+                            try:
+                                strategy_id = selected_strategy_tab4["id"]
+                                params = selected_strategy_tab4.get("params", {})
+
+                                if strategy_id == "ma_crossover":
+                                    strategy_obj = MACrossoverStrategy(**params)
+                                elif strategy_id == "bollinger":
+                                    strategy_obj = BollingerStrategy(**params)
+                                elif strategy_id == "macd":
+                                    strategy_obj = MACDStrategy(**params)
+                                elif strategy_id == "rsi":
+                                    strategy_obj = RSIStrategy(**params)
+                                elif strategy_id == "ml_lightgbm":
+                                    strategy_obj = LightGBMStrategy(params)
+                                else:
+                                    st.error("未知策略")
+                                    strategy_obj = None
+
+                                if strategy_obj:
+                                    if use_backtrader:
+                                        engine = BacktraderEngine(initial_cash=100000)
+                                    else:
+                                        engine = PyBrokerEngine(initial_cash=100000)
+
+                                    engine.set_data(hist)
+                                    engine.set_strategy(strategy_obj)
+                                    result = engine.run()
+
+                                    st.success("回测完成！")
+                                    col1, col2, col3, col4 = st.columns(4)
+                                    col1.metric("累计收益", f"{result.total_return:.2%}")
+                                    col2.metric("夏普比率", f"{result.sharpe_ratio:.2f}")
+                                    col3.metric("最大回撤", f"{result.max_drawdown:.2%}")
+                                    col4.metric("胜率", f"{result.win_rate:.2%}")
+
+                                    if result.equity_curve:
+                                        st.line_chart(pd.Series(result.equity_curve))
+                            except Exception as e:
+                                st.error(f"回测失败: {e}")
 
                     # MACD 图表
                     macd, signal_line, hist_macd = qa.calculate_macd(hist)

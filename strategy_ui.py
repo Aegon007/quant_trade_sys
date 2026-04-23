@@ -2,6 +2,11 @@ import streamlit as st
 import json
 import os
 import quant_analysis as qa
+import ml_strategy as ml_utils
+from strategies import (
+    MACrossoverStrategy, BollingerStrategy, MACDStrategy, RSIStrategy,
+    LightGBMStrategy
+)
 
 CONFIG_PATH = os.path.join("config", "strategies.json")
 
@@ -22,11 +27,12 @@ def display_strategy_description(strategy):
     if strategy and "description" in strategy:
         st.info(strategy["description"])
 
-def run_backtest(strategy, symbol):
-    func_name = strategy.get("function")
+def get_signal(strategy, symbol):
+    """统一的信号获取接口"""
+    strategy_id = strategy.get("id")
     params = strategy.get("params", {})
-    backtest_func = getattr(qa, func_name, None)
-    if backtest_func is None:
-        st.error(f"回测函数 {func_name} 不存在")
-        return None
-    return backtest_func(symbol, **params)
+    
+    if strategy_id == "ml_lightgbm":
+        return ml_utils.get_ml_signal(symbol, **params)
+    else:
+        return qa.get_signal_for_strategy(symbol, strategy)

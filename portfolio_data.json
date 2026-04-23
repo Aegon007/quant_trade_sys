@@ -1,0 +1,121 @@
+{
+  "holdings": [
+    {
+      "symbol": "GOOGL",
+      "shares": 1.0,
+      "cost": 339.2,
+      "current_price": 339.32000732421875
+    },
+    {
+      "symbol": "AVGO",
+      "shares": 1.0,
+      "cost": 398.42,
+      "current_price": 422.6499938964844
+    },
+    {
+      "symbol": "IAU",
+      "shares": 1.0,
+      "cost": 90.4,
+      "current_price": 89.19000244140625
+    },
+    {
+      "symbol": "INTC",
+      "shares": 1.0,
+      "cost": 65.201,
+      "current_price": 65.2699966430664
+    },
+    {
+      "symbol": "XPEV",
+      "shares": 1.0,
+      "cost": 19.88,
+      "current_price": 16.969999313354492
+    },
+    {
+      "symbol": "BYDDY",
+      "shares": 1.0,
+      "cost": 15.68,
+      "current_price": 13.8
+    },
+    {
+      "symbol": "MSFT",
+      "shares": 1.0,
+      "cost": 432.8,
+      "current_price": 432.9200134277344
+    },
+    {
+      "symbol": "NVDA",
+      "shares": 1.0,
+      "cost": 202.0,
+      "current_price": 202.5
+    },
+    {
+      "symbol": "NIO",
+      "shares": 1.0,
+      "cost": 6.61,
+      "current_price": 6.480000019073486
+    },
+    {
+      "symbol": "ASML",
+      "shares": 1.0,
+      "cost": 1444.501,
+      "current_price": 1443.6600341796875
+    },
+    {
+      "symbol": "XLK",
+      "shares": 1.0,
+      "cost": 158.005,
+      "current_price": 158.08999633789062
+    }
+  ],
+  "watchlist": [
+    {
+      "symbol": "TSM",
+      "notes": "AI芯片制造，等待地缘风险释放",
+      "target_buy": 365.0,
+      "last_price": 387.44000244140625
+    },
+    {
+      "symbol": "AMZN",
+      "notes": "AWS加速，PEG<1",
+      "target_buy": 230.0,
+      "last_price": 255.36000061035156
+    },
+    {
+      "symbol": "NVDA",
+      "notes": "AI算力核心，目标$273",
+      "target_buy": 195.0,
+      "last_price": 202.5
+    },
+    {
+      "symbol": "MSFT",
+      "notes": "逆向布局，等财报",
+      "target_buy": 400.0,
+      "last_price": 432.9200134277344
+    },
+    {
+      "symbol": "DELL",
+      "notes": "AI服务器，等回调",
+      "target_buy": 175.0,
+      "last_price": 214.64999389648438
+    },
+    {
+      "symbol": "MU",
+      "notes": "存储回调后再入",
+      "target_buy": 410.0,
+      "last_price": 487.4800109863281
+    },
+    {
+      "symbol": "SNDK",
+      "notes": "存储，等充分回调",
+      "target_buy": 800.0,
+      "last_price": 979.0700073242188
+    },
+    {
+      "symbol": "BABA",
+      "notes": "等AI云验证",
+      "target_buy": 128.0,
+      "last_price": 136.4199981689453
+    }
+  ],
+  "last_updated": "2026-04-22T19:45:29.869985"
+}

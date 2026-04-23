@@ -1,6 +1,6 @@
 import streamlit as st
 import pandas as pd
-import quant_analysis as qa
+import strategy_ui as su
 
 def render_holdings_table(data, on_price_change, on_delete, on_sell, strategy):
     if not data["holdings"]:
@@ -17,7 +17,10 @@ def render_holdings_table(data, on_price_change, on_delete, on_sell, strategy):
         pl_pct = (pl / (shares * cost) * 100) if pl is not None and shares*cost != 0 else None
 
         # 计算策略信号
-        signal, reason = qa.get_signal_for_strategy(h["symbol"], strategy)
+        try:
+            signal, reason = su.get_signal(strategy, h["symbol"])
+        except Exception as e:
+            signal, reason = "HOLD", f"信号计算失败: {e}"
 
         records.append({
             "序号": i,
@@ -87,7 +90,7 @@ def render_holdings_table(data, on_price_change, on_delete, on_sell, strategy):
             c7.write("—")
         c8.write(row["数据来源"])
 
-        # 信号列（带颜色和悬浮提示）
+        # 信号列
         signal = row["信号"]
         if signal == "BUY":
             c9.markdown(f"<span style='color:#0b7b44; font-weight:bold;' title='{row['信号说明']}'>买入</span>", unsafe_allow_html=True)
@@ -96,17 +99,14 @@ def render_holdings_table(data, on_price_change, on_delete, on_sell, strategy):
         else:
             c9.markdown(f"<span style='color:#6b7280;' title='{row['信号说明']}'>持有</span>", unsafe_allow_html=True)
 
-        # 卖出按钮
         if c10.button("💰", key=f"sell_{i}", help="卖出"):
             on_sell(i)
             st.rerun()
 
-        # 编辑按钮
         if c11.button("✏️", key=f"edit_{i}", help="编辑"):
             st.session_state.editing_holding = i
             st.rerun()
 
-        # 删除按钮
         if c12.button("🗑️", key=f"del_{i}"):
             on_delete(i)
             st.rerun()
