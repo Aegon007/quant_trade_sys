@@ -1,22 +1,19 @@
 import streamlit as st
 import pandas as pd
 import strategy_ui as su
+from portfolio_metrics import PortfolioSummary, summarize_holdings
 
-def render_holdings_table(data, on_price_change, on_delete, on_sell, strategy):
-    if not data["holdings"]:
-        st.info("暂无持仓，请在侧边栏添加。")
-        return 0, 0, 0, 0
 
+def build_holding_records(holdings, strategy):
     records = []
-    for i, h in enumerate(data["holdings"]):
+    for i, h in enumerate(holdings):
         cost = h["cost"]
         shares = h["shares"]
         price = h.get("current_price")
         market_value = shares * price if price is not None else None
         pl = market_value - shares * cost if market_value is not None else None
-        pl_pct = (pl / (shares * cost) * 100) if pl is not None and shares*cost != 0 else None
+        pl_pct = (pl / (shares * cost) * 100) if pl is not None and shares * cost != 0 else None
 
-        # 计算策略信号
         try:
             signal, reason = su.get_signal(strategy, h["symbol"])
         except Exception as e:
@@ -35,7 +32,14 @@ def render_holdings_table(data, on_price_change, on_delete, on_sell, strategy):
             "信号": signal,
             "信号说明": reason
         })
+    return records
 
+def render_holdings_table(data, on_price_change, on_delete, on_sell, strategy):
+    if not data["holdings"]:
+        st.info("暂无持仓，请在侧边栏添加。")
+        return PortfolioSummary(), []
+
+    records = build_holding_records(data["holdings"], strategy)
     df = pd.DataFrame(records)
 
     edited_df = st.data_editor(
@@ -56,12 +60,17 @@ def render_holdings_table(data, on_price_change, on_delete, on_sell, strategy):
         key="holdings_editor"
     )
 
+    price_updated = False
     for idx, row in edited_df.iterrows():
         new_price = row["现价"]
         if not pd.isna(new_price):
             old_price = data["holdings"][idx].get("current_price")
             if old_price != new_price:
                 on_price_change(idx, new_price)
+                price_updated = True
+
+    if price_updated:
+        st.rerun()
 
     # 渲染表格头部
     cols = st.columns([1.2, 1, 1, 1, 1.2, 1.2, 1, 0.8, 0.8, 0.7, 0.7, 0.7])
@@ -74,8 +83,8 @@ def render_holdings_table(data, on_price_change, on_delete, on_sell, strategy):
         c1.write(row["代码"])
         c2.write(f"{row['股数']:,.0f}")
         c3.write(f"${row['成本价']:,.2f}")
-        c4.write(f"${row['现价']:,.2f}" if row["现价"] else "—")
-        c5.write(f"${row['市值']:,.2f}" if row["市值"] else "—")
+        c4.write(f"${row['现价']:,.2f}" if row["现价"] is not None else "—")
+        c5.write(f"${row['市值']:,.2f}" if row["市值"] is not None else "—")
         pl_val = row["盈亏 ($)"]
         if pl_val is not None:
             color = "#0b7b44" if pl_val >= 0 else "#c2410c"
@@ -111,11 +120,10 @@ def render_holdings_table(data, on_price_change, on_delete, on_sell, strategy):
             on_delete(i)
             st.rerun()
 
-    total_cost = sum(h["shares"] * h["cost"] for h in data["holdings"])
-    total_value = sum(h["shares"] * h.get("current_price", 0) for h in data["holdings"] if h.get("current_price"))
-    total_pl = total_value - total_cost
-    total_pl_pct = (total_pl / total_cost * 100) if total_cost != 0 else 0
-    return total_cost, total_value, total_pl, total_pl_pct
+    summary = summarize_holdings(data["holdings"])
+    if summary.missing_price_count:
+        st.caption(f"注：有 {summary.missing_price_count} 个持仓缺少现价，盈亏仅基于已定价持仓计算。")
+    return summary, records
 
 
 def render_watchlist_table(data, on_delete_batch):

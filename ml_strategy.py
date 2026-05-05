@@ -62,6 +62,9 @@ def get_model_path(symbol: str) -> str:
 
 
 def load_model_if_exists(symbol: str):
+    if not SKLEARN_AVAILABLE:
+        return None, None
+
     model_path = get_model_path(symbol)
     if os.path.exists(model_path):
         try:
@@ -130,7 +133,10 @@ def compute_features(df: pd.DataFrame) -> pd.DataFrame:
 def create_target(df: pd.DataFrame, horizon: int = 5) -> pd.Series:
     close = df['Close']
     future_ret = close.shift(-horizon) / close - 1
-    return (future_ret > 0).astype(int)
+    target = pd.Series(np.nan, index=df.index, dtype=float)
+    valid_mask = future_ret.notna()
+    target.loc[valid_mask] = (future_ret.loc[valid_mask] > 0).astype(float)
+    return target
 
 
 def backtest_ml_lightgbm(

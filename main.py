@@ -8,14 +8,10 @@ import quant_analysis as qa
 import strategy_ui as su
 import ml_strategy as ml_utils
 import locales as loc
+from strategy_registry import create_strategy
 
 # 引擎
-from engine import BacktraderEngine, PyBrokerEngine, BacktestResult
-# 策略类
-from strategies import (
-    MACrossoverStrategy, BollingerStrategy, MACDStrategy, RSIStrategy,
-    LightGBMStrategy, EnsembleVotingStrategy
-)
+from engine import BacktraderEngine, PyBrokerEngine
 
 st.set_page_config(page_title="Portfolio Tracker", layout="wide")
 
@@ -200,7 +196,7 @@ with tab1:
     def handle_sell(idx):
         st.session_state.sell_dialog_index = idx
 
-    total_cost, total_value, total_pl, total_pl_pct = ui.render_holdings_table(
+    summary, holding_records = ui.render_holdings_table(
         data,
         on_price_change=du.update_holding_price,
         on_delete=du.delete_holding,
@@ -209,31 +205,32 @@ with tab1:
     )
     if data["holdings"]:
         c1, c2, c3, c4 = st.columns(4)
-        c1.metric(L("total_cost"), f"${total_cost:,.2f}")
-        c2.metric(L("total_value"), f"${total_value:,.2f}")
-        c3.metric(L("total_pl"), f"${total_pl:+,.2f}", delta=f"{total_pl_pct:+.2f}%")
+        c1.metric(L("total_cost"), f"${summary.total_cost:,.2f}")
+        c2.metric(L("total_value"), f"${summary.total_value:,.2f}")
+        c3.metric(L("total_pl"), f"${summary.total_pl:+,.2f}", delta=f"{summary.total_pl_pct:+.2f}%")
         c4.metric(L("holdings_count"), f"{len(data['holdings'])}")
 
         if st.button(L("gen_md")):
             lines = ["| 代码 | 股数 | 成本价 | 现价 | 市值 | 盈亏 ($) | 盈亏 (%) | 信号 |"]
             lines.append("|------|------|--------|------|------|----------|----------|------|")
-            for h in data["holdings"]:
-                shares = h["shares"]
-                cost = h["cost"]
-                price = h.get("current_price")
-                mkt = shares * price if price else None
-                pl = mkt - shares * cost if mkt else None
-                pl_pct = (pl / (shares * cost) * 100) if pl and shares*cost else None
-                signal, reason = su.get_signal(selected_strategy, h["symbol"])
+            for row in holding_records:
+                price_text = f"${row['现价']:,.2f}" if row["现价"] is not None else "—"
+                value_text = f"${row['市值']:,.2f}" if row["市值"] is not None else "—"
+                pl_text = f"${row['盈亏 ($)']:+,.2f}" if row["盈亏 ($)"] is not None else "—"
+                pl_pct_text = f"{row['盈亏 (%)']:+.2f}%" if row["盈亏 (%)"] is not None else "—"
                 lines.append(
-                    f"| {h['symbol']} | {shares:,.0f} | ${cost:,.2f} | "
-                    f"{'$'+f'{price:,.2f}' if price else '—'} | "
-                    f"{'$'+f'{mkt:,.2f}' if mkt else '—'} | "
-                    f"{'$'+f'{pl:+,.2f}' if pl is not None else '—'} | "
-                    f"{f'{pl_pct:+.2f}%' if pl_pct is not None else '—'} | "
-                    f"{signal} |"
+                    f"| {row['代码']} | {row['股数']:,.0f} | ${row['成本价']:,.2f} | "
+                    f"{price_text} | "
+                    f"{value_text} | "
+                    f"{pl_text} | "
+                    f"{pl_pct_text} | "
+                    f"{row['信号']} |"
                 )
-            lines.append(f"\n**{L('total_cost')}**: ${total_cost:,.2f}  \n**{L('total_value')}**: ${total_value:,.2f}  \n**{L('total_pl')}**: ${total_pl:+,.2f} ({total_pl_pct:+.2f}%)")
+            lines.append(
+                f"\n**{L('total_cost')}**: ${summary.total_cost:,.2f}  "
+                f"\n**{L('total_value')}**: ${summary.total_value:,.2f}  "
+                f"\n**{L('total_pl')}**: ${summary.total_pl:+,.2f} ({summary.total_pl_pct:+.2f}%)"
+            )
             md_text = "\n".join(lines)
             st.code(md_text, language="markdown")
             st.download_button("⬇️ 下载 Markdown", data=md_text, file_name=f"holdings_{datetime.now().strftime('%Y%m%d')}.md")
@@ -343,23 +340,7 @@ with tab4:
                     if st.button(L("run_backtest"), key="run_backtest"):
                         with st.spinner("回测中..."):
                             try:
-                                strategy_id = selected_strategy_tab4["id"]
-                                params = selected_strategy_tab4.get("params", {})
-                                if strategy_id == "ma_crossover":
-                                    strategy_obj = MACrossoverStrategy(**params)
-                                elif strategy_id == "bollinger":
-                                    strategy_obj = BollingerStrategy(**params)
-                                elif strategy_id == "macd":
-                                    strategy_obj = MACDStrategy(**params)
-                                elif strategy_id == "rsi":
-                                    strategy_obj = RSIStrategy(**params)
-                                elif strategy_id == "ml_lightgbm":
-                                    strategy_obj = LightGBMStrategy(params)
-                                elif strategy_id == "ensemble_voting":
-                                    strategy_obj = EnsembleVotingStrategy(params)
-                                else:
-                                    st.error("未知策略")
-                                    strategy_obj = None
+                                strategy_obj = create_strategy(selected_strategy_tab4)
 
                                 if strategy_obj:
                                     engine = BacktraderEngine(initial_cash=100000) if use_backtrader else PyBrokerEngine(initial_cash=100000)

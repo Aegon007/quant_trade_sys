@@ -63,16 +63,20 @@ def calculate_correlation_matrix(symbols, period="6mo"):
 
 def calculate_portfolio_beta(holdings_data, benchmark="SPY", period="6mo"):
     """计算组合 Beta（市值加权）"""
-    total_value = sum(h["shares"] * (h.get("current_price") or 0) for h in holdings_data)
-    weights = {}
-    symbols = []
+    symbol_values = {}
     for h in holdings_data:
         price = h.get("current_price")
         if price is None:
             continue
         val = h["shares"] * price
-        weights[h["symbol"]] = val / total_value
-        symbols.append(h["symbol"])
+        symbol_values[h["symbol"]] = symbol_values.get(h["symbol"], 0) + val
+
+    if not symbol_values:
+        raise ValueError("至少需要一个带有当前价格的持仓才能计算 Beta。")
+
+    total_value = sum(symbol_values.values())
+    weights = {symbol: value / total_value for symbol, value in symbol_values.items()}
+    symbols = list(weights.keys())
 
     symbols.append(benchmark)
     prices = pd.DataFrame()
@@ -340,8 +344,14 @@ def get_signal_macd(symbol, fast=12, slow=26, signal=9, period="3mo"):
         return "HOLD", "MACD在信号线下方，维持观望"
 
 def get_signal_rsi(symbol, rsi_period=14, oversold=30, overbought=70, period="3mo"):
-    hist = get_historical_data(symbol, period=period)
-    if hist.empty:
+    history_period = period
+    if isinstance(period, (int, float)) and not isinstance(period, bool):
+        # 兼容当前 RSI 配置：period 表示 RSI 窗口，而不是 yfinance 的历史周期字符串。
+        rsi_period = int(period)
+        history_period = "3mo"
+
+    hist = get_historical_data(symbol, period=history_period)
+    if hist.empty or len(hist) < max(int(rsi_period) + 1, 2):
         return "HOLD", "数据不足"
     rsi = calculate_rsi(hist, rsi_period)
     last_rsi = rsi.iloc[-1]

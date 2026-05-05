@@ -108,20 +108,19 @@ class BacktraderEngine(BaseBacktestEngine):
                 # 调用用户策略，获取信号
                 signal = self.user_strategy.next(current_idx)
 
-                # 如果没有信号或没有持仓，不操作
-                if signal is None:
-                    return
+                if signal is not None:
+                    action = signal.get('action', 'HOLD')
+                    size = signal.get('size', 100)
 
-                action = signal.get('action', 'HOLD')
-                size = signal.get('size', 100)
+                    # 检查当前持仓
+                    current_position = self.getposition().size
 
-                # 检查当前持仓
-                current_position = self.getposition().size
+                    if action == 'BUY' and current_position == 0:
+                        self.buy(size=size)
+                    elif action == 'SELL' and current_position > 0:
+                        self.sell(size=current_position)
 
-                if action == 'BUY' and current_position == 0:
-                    self.buy(size=size)
-                elif action == 'SELL' and current_position > 0:
-                    self.sell(size=current_position)
+                self.equity.append(self.broker.getvalue())
 
             def notify_order(self, order):
                 """订单状态变化通知"""
@@ -152,7 +151,8 @@ class BacktraderEngine(BaseBacktestEngine):
 
             def stop(self):
                 """回测结束时调用，记录权益曲线"""
-                self.equity = [self.broker.getvalue() for _ in range(len(self))]
+                if not self.equity:
+                    self.equity = [self.broker.getvalue()]
 
         self._strategy_class = BtStrategyAdapter
 
