@@ -5,6 +5,8 @@
       "name": "双均线交叉 (20/50)",
       "description": "**📈 双均线交叉策略 (仅做多)**\n- **逻辑**：短期均线（20日）上穿长期均线（50日）是上涨趋势开始的信号，称为“金叉”；下穿则是趋势转弱信号。\n- **交易规则**：\n    - **买入信号**：20日均线由下向上穿过50日均线（金叉） → 买入或加仓。\n    - **卖出信号**：20日均线由上向下穿过50日均线（死叉） → 卖出持仓，转为空仓等待。",
       "function": "backtest_ma_crossover",
+      "strategy_class": "strategies.classic_strategies.MACrossoverStrategy",
+      "signal_function": "quant_analysis.get_signal_ma_crossover",
       "params": {
         "short_window": 20,
         "long_window": 50
@@ -15,6 +17,8 @@
       "name": "布林带反转",
       "description": "**📊 布林带反转策略 (仅做多)**\n- **逻辑**：股价在布林带下轨附近时被视为超卖，有反弹需求；回到中轨或上轨时则可能遇阻。\n- **交易规则**：\n    - **买入信号**：股价触及或跌破布林带下轨后回升 → 可分批买入。\n    - **卖出信号**：持仓后，当股价回升至布林带中轨（20日均线）或上轨时 → 考虑止盈卖出。",
       "function": "backtest_bollinger_reversal",
+      "strategy_class": "strategies.classic_strategies.BollingerStrategy",
+      "signal_function": "quant_analysis.get_signal_bollinger",
       "params": {
         "window": 20,
         "num_std": 2
@@ -25,6 +29,8 @@
       "name": "MACD金叉死叉",
       "description": "**📉 MACD 金叉死叉策略 (仅做多)**\n- **逻辑**：MACD线（快线）上穿信号线（慢线）为金叉，表示动能转强；下穿为死叉，表示动能转弱。\n- **交易规则**：\n    - **买入信号**：MACD线由下向上穿过信号线（金叉） → 买入。\n    - **卖出信号**：MACD线由上向下穿过信号线（死叉） → 卖出平仓。",
       "function": "backtest_macd_crossover",
+      "strategy_class": "strategies.classic_strategies.MACDStrategy",
+      "signal_function": "quant_analysis.get_signal_macd",
       "params": {
         "fast": 12,
         "slow": 26,
@@ -36,6 +42,8 @@
       "name": "RSI超买超卖",
       "description": "**📌 RSI 超买超卖策略 (仅做多)**\n- **逻辑**：RSI低于30表示超卖，股价可能反弹；高于70表示超买，股价可能回调。\n- **交易规则**：\n    - **买入信号**：RSI从超卖区（<30）向上回升 → 可考虑买入。\n    - **卖出信号**：持仓后，RSI进入超买区（>70）并开始回落 → 可考虑卖出止盈。",
       "function": "backtest_rsi_oversold",
+      "strategy_class": "strategies.classic_strategies.RSIStrategy",
+      "signal_function": "quant_analysis.get_signal_rsi",
       "params": {
         "period": 14,
         "oversold": 30,
@@ -47,6 +55,9 @@
       "name": "🤖 LightGBM ML 策略",
       "description": "**🤖 LightGBM 机器学习策略 (仅做多)**\n- **逻辑**：使用 LightGBM 梯度提升树模型，通过滚动训练预测未来5日收益率方向。\n- **交易规则**：\n    - **买入信号**：模型预测上涨概率 > 0.55。\n    - **卖出信号**：模型预测上涨概率 < 0.45，或持仓超过 20 个交易日。",
       "function": "backtest_ml_lightgbm",
+      "strategy_class": "strategies.ml_strategy.LightGBMStrategy",
+      "signal_function": "ml_strategy.get_ml_signal",
+      "params_mode": "dict",
       "params": {
         "lookback": 252,
         "train_window": 60,
@@ -64,6 +75,9 @@
       "name": "🤝 集成投票 (LightGBM+CatBoost+XGBoost)",
       "description": "**🤝 集成学习投票策略 (仅做多)**\n- **逻辑**：同时使用 LightGBM、CatBoost、XGBoost 三个模型预测，取概率平均值作为最终信号，降低单一模型过拟合风险。\n- **交易规则**：\n    - **买入信号**：平均预测上涨概率 > 0.55。\n    - **卖出信号**：平均预测上涨概率 < 0.45，或持仓超过 20 个交易日。",
       "function": "backtest_ensemble_voting",
+      "strategy_class": "strategies.ensemble_strategy.EnsembleVotingStrategy",
+      "signal_function": "ml_strategy.get_ensemble_signal",
+      "params_mode": "dict",
       "params": {
         "lookback": 252,
         "train_window": 60,
@@ -73,6 +87,36 @@
         "sell_threshold": 0.45,
         "max_holding_days": 20,
         "period": "2y"
+      }
+    },
+    {
+      "id": "deep_tcn",
+      "name": "🧠 TCN 深度学习策略",
+      "description": "**🧠 Temporal CNN 深度学习策略 (仅做多)**\n- **逻辑**：把最近一段 OHLCV 技术特征序列输入一维时序卷积网络，预测未来多个交易日的上涨概率和条件预期收益。\n- **平台适配**：设备参数默认为 `auto`，会自动选择 CUDA、Apple Silicon MPS 或 CPU，无需为不同部署平台改代码。\n- **交易规则**：\n    - **买入信号**：上涨概率高于阈值，且预期收益超过最低收益要求。\n    - **卖出信号**：上涨概率低于阈值、预期收益转负，或持仓超过最大持有天数。",
+      "function": "backtest_deep_tcn",
+      "strategy_class": "strategies.deep_learning_strategy.DeepTCNStrategy",
+      "signal_function": "deep_learning_strategy.get_deep_tcn_signal",
+      "params_mode": "dict",
+      "params": {
+        "sequence_length": 60,
+        "lookback": 120,
+        "train_window": 180,
+        "retrain_freq": 20,
+        "target_horizon": 5,
+        "buy_threshold": 0.57,
+        "sell_threshold": 0.43,
+        "min_expected_return": 0.005,
+        "max_holding_days": 20,
+        "epochs": 20,
+        "batch_size": 32,
+        "learning_rate": 0.001,
+        "hidden_channels": 32,
+        "num_layers": 3,
+        "kernel_size": 3,
+        "dropout": 0.15,
+        "min_train_samples": 30,
+        "device": "auto",
+        "period": "3y"
       }
     }
   ]

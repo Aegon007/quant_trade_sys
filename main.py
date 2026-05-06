@@ -9,6 +9,10 @@ import strategy_ui as su
 import ml_strategy as ml_utils
 import locales as loc
 from strategy_registry import create_strategy
+from share_utils import format_share_quantity, validate_share_quantity
+from portfolio_metrics import summarize_holdings
+from position_advisor import recommend_position_action, summarize_backtest_guidance
+from portfolio_advisor import analyze_portfolio_risk
 
 # 引擎
 from engine import BacktraderEngine, PyBrokerEngine
@@ -20,8 +24,12 @@ if "lang" not in st.session_state:
     st.session_state.lang = "zh"
 
 # ---------- 数据状态 ----------
-if "app_data" not in st.session_state:
-    st.session_state.app_data = du.load_data()
+try:
+    if "app_data" not in st.session_state or du.has_newer_editable_data():
+        st.session_state.app_data = du.load_data()
+except ValueError as e:
+    st.error(f"数据文件加载失败: {e}")
+    st.stop()
 if "sell_dialog_index" not in st.session_state:
     st.session_state.sell_dialog_index = None
 if "editing_holding" not in st.session_state:
@@ -51,14 +59,18 @@ with st.sidebar:
     st.header(L("add_holding"))
     with st.form("add_holding"):
         sym = st.text_input(L("stock_code"), placeholder="AAPL, TSM...")
-        shares = st.number_input(L("shares"), min_value=0.0, step=1.0)
+        shares = st.number_input(L("shares"), min_value=0.0, step=0.001, format="%.3f")
         cost = st.number_input(L("cost_price"), min_value=0.0, step=0.01, format="%.2f")
+        sector = st.text_input(L("sector"), placeholder="Technology, Healthcare...")
         if st.form_submit_button(L("submit_add_holding")):
             if sym and shares > 0 and cost > 0:
-                du.add_holding(sym, shares, cost)
-                st.session_state.app_data = du.load_data()
-                st.success(f"{sym.upper()} {L('submit_add_holding')} 成功")
-                st.rerun()
+                try:
+                    du.add_holding(sym, shares, cost, sector)
+                    st.session_state.app_data = du.load_data()
+                    st.success(f"{sym.upper()} {L('submit_add_holding')} 成功")
+                    st.rerun()
+                except ValueError as e:
+                    st.error(str(e))
             else:
                 st.warning(L("submit_add_holding") + " 请完整填写")
 
@@ -88,6 +100,22 @@ with st.sidebar:
                 st.rerun()
             except Exception as e:
                 st.error(f"刷新失败: {e}")
+
+    st.divider()
+    st.header(L("data_files"))
+    st.caption(L("editable_data_file", path=du.EDITABLE_DATA_FILE))
+    if du.has_newer_editable_data():
+        st.info(L("editable_data_pending"))
+    if st.button(L("reload_data_file")):
+        if not du.editable_data_file_exists():
+            st.warning(L("editable_data_missing", path=du.EDITABLE_DATA_FILE))
+        else:
+            try:
+                st.session_state.app_data = du.load_data(force_editable_sync=True)
+                st.success(L("reload_data_file_done"))
+                st.rerun()
+            except ValueError as e:
+                st.error(f"{L('reload_data_file_failed')}: {e}")
 
     st.divider()
     st.header(L("clear_ops"))
@@ -124,15 +152,18 @@ def render_dialogs():
                 with col2:
                     max_s = h["shares"]
                     sell_shares = st.number_input(L("sell_shares"), min_value=0.0,
-                                                 max_value=max_s, value=max_s, step=1.0)
+                                                 max_value=float(max_s), value=float(max_s), step=0.001, format="%.3f")
                 if st.button(L("confirm_sell")):
                     if sell_shares > 0:
-                        sym, cb = du.sell_partial_holding(idx, sell_shares, sell_price)
-                        tx.add_transaction(sym, sell_price, sell_shares, cb)
-                        st.session_state.app_data = du.load_data()
-                        st.success(f"已卖出 {sym} {sell_shares:,.0f} 股 @ ${sell_price:.2f}")
-                        st.session_state.sell_dialog_index = None
-                        st.rerun()
+                        try:
+                            sym, cb = du.sell_partial_holding(idx, sell_shares, sell_price)
+                            tx.add_transaction(sym, sell_price, sell_shares, cb)
+                            st.session_state.app_data = du.load_data()
+                            st.success(f"已卖出 {sym} {format_share_quantity(sell_shares)} 股 @ ${sell_price:.2f}")
+                            st.session_state.sell_dialog_index = None
+                            st.rerun()
+                        except ValueError as e:
+                            st.error(str(e))
                 if st.button(L("cancel")):
                     st.session_state.sell_dialog_index = None
                     st.rerun()
@@ -146,19 +177,24 @@ def render_dialogs():
             h = data["holdings"][idx]
             with st.expander(f"{L('edit_dialog_title')} {h['symbol']}", expanded=True):
                 with st.form("edit_holding_form"):
-                    new_shares = st.number_input(L("shares"), min_value=0.0, value=float(h["shares"]), step=1.0)
+                    new_shares = st.number_input(L("shares"), min_value=0.0, value=float(h["shares"]), step=0.001, format="%.3f")
                     new_cost = st.number_input(L("cost_price"), min_value=0.0, value=float(h["cost"]), step=0.01, format="%.2f")
+                    new_sector = st.text_input(L("sector"), value=h.get("sector", ""))
                     c1, c2 = st.columns(2)
                     with c1:
                         if st.form_submit_button(L("save")):
                             if new_shares > 0:
-                                data["holdings"][idx]["shares"] = new_shares
-                                data["holdings"][idx]["cost"] = new_cost
-                                du.save_data(data)
-                                st.session_state.app_data = du.load_data()
-                                st.success(L("save") + " 成功")
-                                st.session_state.editing_holding = None
-                                st.rerun()
+                                try:
+                                    data["holdings"][idx]["shares"] = validate_share_quantity(new_shares, field_name="shares")
+                                    data["holdings"][idx]["cost"] = new_cost
+                                    data["holdings"][idx]["sector"] = new_sector.strip()
+                                    du.save_data(data)
+                                    st.session_state.app_data = du.load_data()
+                                    st.success(L("save") + " 成功")
+                                    st.session_state.editing_holding = None
+                                    st.rerun()
+                                except ValueError as e:
+                                    st.error(str(e))
                             else:
                                 st.error(L("shares") + " 必须大于0")
                     with c2:
@@ -219,7 +255,7 @@ with tab1:
                 pl_text = f"${row['盈亏 ($)']:+,.2f}" if row["盈亏 ($)"] is not None else "—"
                 pl_pct_text = f"{row['盈亏 (%)']:+.2f}%" if row["盈亏 (%)"] is not None else "—"
                 lines.append(
-                    f"| {row['代码']} | {row['股数']:,.0f} | ${row['成本价']:,.2f} | "
+                    f"| {row['代码']} | {format_share_quantity(row['股数'])} | ${row['成本价']:,.2f} | "
                     f"{price_text} | "
                     f"{value_text} | "
                     f"{pl_text} | "
@@ -247,6 +283,7 @@ with tab3:
     else:
         df = pd.DataFrame(transactions)
         df_display = df.copy()
+        df_display["shares"] = df_display["shares"].apply(format_share_quantity)
         df_display["盈亏 ($)"] = df_display["pl"].apply(lambda x: f"${x:+,.2f}")
         df_display["盈亏 (%)"] = df_display["pl_pct"].apply(lambda x: f"{x:+.2f}%")
         df_display = df_display[["date", "symbol", "shares", "sell_price", "cost_basis", "proceeds", "盈亏 ($)", "盈亏 (%)"]]
@@ -262,6 +299,7 @@ with tab3:
 with tab4:
     st.header(L("quant_title"))
     st.markdown(L("quant_desc"))
+    portfolio_summary = summarize_holdings(data["holdings"])
 
     all_symbols = list(set([h["symbol"] for h in data["holdings"]] + [w["symbol"] for w in data["watchlist"]]))
     if not all_symbols:
@@ -304,7 +342,8 @@ with tab4:
 
         if selected_symbol and selected_strategy_tab4:
             with st.spinner("加载历史数据..."):
-                hist = qa.get_historical_data(selected_symbol, period="6mo")
+                history_period = selected_strategy_tab4.get("params", {}).get("period", "6mo")
+                hist = qa.get_historical_data(selected_symbol, period=history_period)
                 if hist.empty:
                     st.error("无历史数据")
                 else:
@@ -324,14 +363,16 @@ with tab4:
                     st.line_chart(df_ma[["Close", "MA20", "MA50"]].tail(100))
 
                     # 当前信号
+                    current_signal = "HOLD"
+                    current_reason = "暂无信号"
                     try:
-                        signal, reason = su.get_signal(selected_strategy_tab4, selected_symbol)
-                        if signal == "BUY":
-                            st.success(f"📈 {L('current_signal')}: {L('buy')} — {reason}")
-                        elif signal == "SELL":
-                            st.error(f"📉 {L('current_signal')}: {L('sell')} — {reason}")
+                        current_signal, current_reason = su.get_signal(selected_strategy_tab4, selected_symbol)
+                        if current_signal == "BUY":
+                            st.success(f"📈 {L('current_signal')}: {L('buy')} — {current_reason}")
+                        elif current_signal == "SELL":
+                            st.error(f"📉 {L('current_signal')}: {L('sell')} — {current_reason}")
                         else:
-                            st.info(f"⏸️ {L('current_signal')}: {L('hold')} — {reason}")
+                            st.info(f"⏸️ {L('current_signal')}: {L('hold')} — {current_reason}")
                     except Exception as e:
                         st.warning(f"无法获取信号: {e}")
 
@@ -347,6 +388,10 @@ with tab4:
                                     engine.set_data(hist)
                                     engine.set_strategy(strategy_obj)
                                     result = engine.run()
+                                    guidance = summarize_backtest_guidance(
+                                        result.trade_log,
+                                        current_price=float(hist["Close"].iloc[-1]),
+                                    )
 
                                     st.success("回测完成！")
                                     c1, c2, c3, c4 = st.columns(4)
@@ -356,6 +401,45 @@ with tab4:
                                     c4.metric(L("win_rate"), f"{result.win_rate:.2%}")
                                     if result.equity_curve:
                                         st.line_chart(pd.Series(result.equity_curve))
+
+                                    st.subheader("仓位与退出参考")
+                                    if guidance.completed_trades:
+                                        g1, g2, g3, g4 = st.columns(4)
+                                        g1.metric("单笔期望收益", f"{guidance.expected_return_pct:.2%}" if guidance.expected_return_pct is not None else "—")
+                                        g2.metric("平均持有天数", f"{guidance.expected_holding_days} 天" if guidance.expected_holding_days is not None else "—")
+                                        g3.metric("参考卖出价", f"${guidance.suggested_exit_price:.2f}" if guidance.suggested_exit_price is not None else "—")
+                                        g4.metric("完成交易数", f"{guidance.completed_trades}")
+                                    else:
+                                        st.info("当前回测没有形成完整买卖对，暂时无法估计持有周期和参考卖出价。")
+
+                                    current_holding = next((h for h in data["holdings"] if h["symbol"] == selected_symbol), None)
+                                    if current_holding and current_holding.get("current_price") is not None and portfolio_summary.total_value > 0:
+                                        advice = recommend_position_action(
+                                            holding=current_holding,
+                                            portfolio_value=portfolio_summary.total_value,
+                                            signal=current_signal,
+                                            signal_reason=current_reason,
+                                            guidance=guidance,
+                                        )
+                                        delta_text = (
+                                            format_share_quantity(abs(advice.delta_shares))
+                                            if advice.delta_shares is not None
+                                            else "—"
+                                        )
+                                        if advice.action == "ADD":
+                                            st.info(
+                                                f"当前持仓建议：加仓约 {delta_text} 股，目标仓位 {advice.target_weight_pct:.1f}%。"
+                                                f" {advice.reason}"
+                                            )
+                                        elif advice.action == "TRIM":
+                                            st.warning(
+                                                f"当前持仓建议：减仓约 {delta_text} 股，目标仓位 {advice.target_weight_pct:.1f}%。"
+                                                f" {advice.reason}"
+                                            )
+                                        elif advice.action == "EXIT":
+                                            st.error(f"当前持仓建议：考虑逐步卖出该仓位。 {advice.reason}")
+                                        else:
+                                            st.success(f"当前持仓建议：继续持有。 {advice.reason}")
                             except Exception as e:
                                 st.error(f"回测失败: {e}")
 
@@ -376,11 +460,34 @@ with tab4:
                         beta, betas = qa.calculate_portfolio_beta(data["holdings"])
                         st.metric(L("portfolio_beta"), f"{beta:.2f}")
                         st.dataframe(pd.DataFrame(list(betas.items()), columns=["代码", "Beta"]), hide_index=True)
-                        symbols = [h["symbol"] for h in data["holdings"] if h.get("current_price")]
+                        symbols = list(dict.fromkeys([h["symbol"] for h in data["holdings"] if h.get("current_price")]))
+                        corr = None
                         if len(symbols) > 1:
                             corr = qa.calculate_correlation_matrix(symbols)
                             st.write(L("corr_matrix"))
                             st.dataframe(corr.style.format("{:.2f}"))
+
+                        portfolio_advice = analyze_portfolio_risk(
+                            data["holdings"],
+                            correlation_matrix=corr,
+                        )
+                        st.subheader(L("portfolio_advice"))
+                        if portfolio_advice.sector_exposures:
+                            sector_df = pd.DataFrame([
+                                {
+                                    "Sector": exposure.sector,
+                                    "Value": exposure.value,
+                                    "Weight": f"{exposure.weight_pct:.1f}%",
+                                }
+                                for exposure in portfolio_advice.sector_exposures
+                            ])
+                            st.dataframe(sector_df, hide_index=True, use_container_width=True)
+
+                        if portfolio_advice.recommendations:
+                            for recommendation in portfolio_advice.recommendations:
+                                st.warning(recommendation)
+                        else:
+                            st.success(L("portfolio_advice_ok"))
                     except Exception as e:
                         st.error(f"计算失败: {e}")
         else:

@@ -1,10 +1,19 @@
 import streamlit as st
 import json
 import os
-import quant_analysis as qa
-import ml_strategy as ml_utils
+from module_loader import import_from_path
 
 CONFIG_PATH = os.path.join("config", "strategies.json")
+
+DEFAULT_SIGNAL_FUNCTIONS = {
+    "ma_crossover": "quant_analysis.get_signal_ma_crossover",
+    "bollinger": "quant_analysis.get_signal_bollinger",
+    "macd": "quant_analysis.get_signal_macd",
+    "rsi": "quant_analysis.get_signal_rsi",
+    "ml_lightgbm": "ml_strategy.get_ml_signal",
+    "ensemble_voting": "ml_strategy.get_ensemble_signal",
+    "deep_tcn": "deep_learning_strategy.get_deep_tcn_signal",
+}
 
 def load_strategies():
     if not os.path.exists(CONFIG_PATH):
@@ -28,11 +37,10 @@ def get_signal(strategy, symbol):
     strategy_id = strategy.get("id")
     params = strategy.get("params", {})
     try:
-        if strategy_id == "ml_lightgbm":
-            return ml_utils.get_ml_signal(symbol, **params)
-        elif strategy_id == "ensemble_voting":
-            return ml_utils.get_ensemble_signal(symbol, **params)
-        else:
-            return qa.get_signal_for_strategy(symbol, strategy)
+        signal_function_path = strategy.get("signal_function") or DEFAULT_SIGNAL_FUNCTIONS.get(strategy_id)
+        if not signal_function_path:
+            return "HOLD", "未知策略"
+        signal_function = import_from_path(signal_function_path)
+        return signal_function(symbol, **params)
     except Exception as e:
         return "HOLD", f"信号计算异常: {str(e)}"

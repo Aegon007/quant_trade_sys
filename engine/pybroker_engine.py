@@ -4,6 +4,7 @@ from typing import Optional, List, Dict, Any
 import pybroker as pb
 from pybroker import Strategy, StrategyConfig
 from .base import BaseBacktestEngine, BaseStrategy, BacktestResult
+from share_utils import validate_share_quantity
 
 class PyBrokerEngine(BaseBacktestEngine):
     """PyBroker 回测引擎适配器"""
@@ -91,7 +92,7 @@ class PyBrokerEngine(BaseBacktestEngine):
             
             if action == 'BUY' and position == 0:
                 # 买入
-                shares = int(size) if size > 0 else 100  # 默认买入100股
+                shares = validate_share_quantity(size, field_name="size") if size > 0 else 100.0
                 ctx.buy_shares = shares
                 position = shares
                 entry_price = current_price

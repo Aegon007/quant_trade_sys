@@ -15,6 +15,8 @@ class ProjectFilesTests(unittest.TestCase):
         if "ensemble_voting" in strategy_ids:
             self.assertIn("catboost", requirements)
             self.assertIn("xgboost", requirements)
+        if "deep_tcn" in strategy_ids:
+            self.assertIn("torch", requirements)
 
     def test_gitignore_covers_generated_runtime_artifacts(self):
         gitignore_path = ROOT / ".gitignore"

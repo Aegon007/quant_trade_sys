@@ -48,11 +48,57 @@ def install_fake_yfinance(histories=None):
 
 
 def install_fake_pybroker():
+    context = SimpleNamespace(
+        buy_sizes=[],
+        sell_sizes=[],
+        execution_calls=0,
+    )
+
     pybroker_module = types.ModuleType("pybroker")
 
     class Strategy:
-        def __init__(self, *args, **kwargs):
-            pass
+        def __init__(self, data_source, start_date, end_date, config):
+            self.data_source = data_source
+            self.start_date = start_date
+            self.end_date = end_date
+            self.config = config
+            self._executions = []
+
+        def add_execution(self, exec_fn, symbols):
+            self._executions.append((exec_fn, symbols))
+
+        def backtest(self):
+            symbols = self._executions[0][1]
+            dataframe_map = self.data_source.query(symbols, self.start_date, self.end_date)
+            dataframe = dataframe_map[symbols[0]]
+            dataframe.index = pd.to_datetime(dataframe.index)
+
+            for bar_index, (dt, row) in enumerate(dataframe.iterrows()):
+                ctx = SimpleNamespace(
+                    bar_index=bar_index,
+                    close=row["Close"],
+                    dt=dt,
+                    buy_shares=None,
+                    sell_shares=None,
+                )
+                for exec_fn, _ in self._executions:
+                    exec_fn(ctx)
+                    context.execution_calls += 1
+                    if ctx.buy_shares is not None:
+                        context.buy_sizes.append(ctx.buy_shares)
+                    if ctx.sell_shares is not None:
+                        context.sell_sizes.append(ctx.sell_shares)
+
+            return SimpleNamespace(
+                metrics={
+                    "total_return": 0.0,
+                    "sharpe": 0.0,
+                    "max_drawdown": 0.0,
+                    "win_rate": 0.0,
+                    "total_trades": len(context.buy_sizes) + len(context.sell_sizes),
+                },
+                equity_curve=pd.Series([self.config.initial_cash] * len(dataframe)),
+            )
 
     class StrategyConfig:
         def __init__(self, initial_cash):
@@ -71,6 +117,7 @@ def install_fake_pybroker():
 
     sys.modules["pybroker"] = pybroker_module
     sys.modules["pybroker.data"] = pybroker_data_module
+    return context
 
 
 def install_fake_backtrader(equity_values):
@@ -228,4 +275,3 @@ def install_fake_backtrader(equity_values):
     bt_module.num2date = lambda value: value
 
     sys.modules["backtrader"] = bt_module
-

@@ -12,3 +12,7 @@ quantstats>=0.0.62
 lib-pybroker>=1.2.0
 backtrader>=1.9.76.123
 lightgbm
+catboost
+xgboost
+# Optional backend for the TCN deep learning strategy.
+torch>=2.2.0

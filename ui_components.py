@@ -2,9 +2,11 @@ import streamlit as st
 import pandas as pd
 import strategy_ui as su
 from portfolio_metrics import PortfolioSummary, summarize_holdings
+from share_utils import format_share_quantity
+from position_advisor import recommend_position_action
 
 
-def build_holding_records(holdings, strategy):
+def build_holding_records(holdings, strategy, portfolio_value):
     records = []
     for i, h in enumerate(holdings):
         cost = h["cost"]
@@ -19,6 +21,21 @@ def build_holding_records(holdings, strategy):
         except Exception as e:
             signal, reason = "HOLD", f"信号计算失败: {e}"
 
+        advice = recommend_position_action(
+            holding=h,
+            portfolio_value=portfolio_value,
+            signal=signal,
+            signal_reason=reason,
+        )
+
+        advice_text = "持有"
+        if advice.action == "ADD" and advice.delta_shares:
+            advice_text = f"加仓 +{format_share_quantity(advice.delta_shares)}"
+        elif advice.action == "TRIM" and advice.delta_shares:
+            advice_text = f"减仓 -{format_share_quantity(abs(advice.delta_shares))}"
+        elif advice.action == "EXIT" and advice.delta_shares is not None:
+            advice_text = f"清仓 -{format_share_quantity(abs(advice.delta_shares))}"
+
         records.append({
             "序号": i,
             "代码": h["symbol"],
@@ -30,7 +47,11 @@ def build_holding_records(holdings, strategy):
             "盈亏 (%)": pl_pct,
             "数据来源": "自动" if price is not None else "待刷新",
             "信号": signal,
-            "信号说明": reason
+            "信号说明": reason,
+            "当前仓位": advice.current_weight_pct,
+            "目标仓位": advice.target_weight_pct,
+            "仓位建议": advice_text,
+            "仓位说明": advice.reason,
         })
     return records
 
@@ -39,13 +60,15 @@ def render_holdings_table(data, on_price_change, on_delete, on_sell, strategy):
         st.info("暂无持仓，请在侧边栏添加。")
         return PortfolioSummary(), []
 
-    records = build_holding_records(data["holdings"], strategy)
+    summary = summarize_holdings(data["holdings"])
+    records = build_holding_records(data["holdings"], strategy, summary.total_value)
     df = pd.DataFrame(records)
 
     edited_df = st.data_editor(
         df,
         column_config={
             "序号": None,
+            "股数": st.column_config.NumberColumn("股数", min_value=0.0, step=0.001, format="%.3f"),
             "现价": st.column_config.NumberColumn("现价 (USD)", min_value=0.0, step=0.01, format="%.2f"),
             "市值": st.column_config.NumberColumn("市值 (USD)", format="%.2f"),
             "盈亏 ($)": st.column_config.NumberColumn("盈亏 ($)", format="%.2f"),
@@ -53,8 +76,12 @@ def render_holdings_table(data, on_price_change, on_delete, on_sell, strategy):
             "数据来源": None,
             "信号": None,
             "信号说明": None,
+            "当前仓位": None,
+            "目标仓位": None,
+            "仓位建议": None,
+            "仓位说明": None,
         },
-        disabled=["序号", "代码", "股数", "成本价", "市值", "盈亏 ($)", "盈亏 (%)", "数据来源", "信号", "信号说明"],
+        disabled=["序号", "代码", "股数", "成本价", "市值", "盈亏 ($)", "盈亏 (%)", "数据来源", "信号", "信号说明", "当前仓位", "目标仓位", "仓位建议", "仓位说明"],
         hide_index=True,
         use_container_width=True,
         key="holdings_editor"
@@ -73,15 +100,15 @@ def render_holdings_table(data, on_price_change, on_delete, on_sell, strategy):
         st.rerun()
 
     # 渲染表格头部
-    cols = st.columns([1.2, 1, 1, 1, 1.2, 1.2, 1, 0.8, 0.8, 0.7, 0.7, 0.7])
-    headers = ["代码", "股数", "成本价", "现价", "市值", "盈亏 ($)", "盈亏 (%)", "来源", "信号", "卖出", "编辑", "删除"]
+    cols = st.columns([1.2, 1, 1, 1, 1.2, 1.2, 1, 1.4, 0.8, 0.7, 0.7, 0.7])
+    headers = ["代码", "股数", "成本价", "现价", "市值", "盈亏 ($)", "盈亏 (%)", "仓位建议", "信号", "卖出", "编辑", "删除"]
     for col, h in zip(cols, headers):
         col.markdown(f"**{h}**")
 
     for i, row in enumerate(records):
-        c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11, c12 = st.columns([1.2, 1, 1, 1, 1.2, 1.2, 1, 0.8, 0.8, 0.7, 0.7, 0.7])
+        c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11, c12 = st.columns([1.2, 1, 1, 1, 1.2, 1.2, 1, 1.4, 0.8, 0.7, 0.7, 0.7])
         c1.write(row["代码"])
-        c2.write(f"{row['股数']:,.0f}")
+        c2.write(format_share_quantity(row["股数"]))
         c3.write(f"${row['成本价']:,.2f}")
         c4.write(f"${row['现价']:,.2f}" if row["现价"] is not None else "—")
         c5.write(f"${row['市值']:,.2f}" if row["市值"] is not None else "—")
@@ -97,7 +124,10 @@ def render_holdings_table(data, on_price_change, on_delete, on_sell, strategy):
             c7.markdown(f"<span style='color:{color};'>{pl_pct_val:+.2f}%</span>", unsafe_allow_html=True)
         else:
             c7.write("—")
-        c8.write(row["数据来源"])
+        c8.markdown(
+            f"<span title='{row['仓位说明']}'>{row['仓位建议']} ({row['目标仓位']:.1f}%)</span>",
+            unsafe_allow_html=True
+        )
 
         # 信号列
         signal = row["信号"]
@@ -120,7 +150,6 @@ def render_holdings_table(data, on_price_change, on_delete, on_sell, strategy):
             on_delete(i)
             st.rerun()
 
-    summary = summarize_holdings(data["holdings"])
     if summary.missing_price_count:
         st.caption(f"注：有 {summary.missing_price_count} 个持仓缺少现价，盈亏仅基于已定价持仓计算。")
     return summary, records
