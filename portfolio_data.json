@@ -136,6 +136,13 @@
       "last_price": 175.52000427246094
     }
   ],
-  "last_updated": "2026-05-09T13:33:35.152737",
-  "prices_last_updated": "2026-05-09T13:33:35.152462"
+  "last_updated": "2026-05-09T17:44:51.393759",
+  "prices_last_updated": "2026-05-09T17:42:02.767966",
+  "account": {
+    "total_capital": 3786.38,
+    "cash_available": 1160.3,
+    "min_cash_buffer_pct": 0.1,
+    "max_single_position_pct": 0.2,
+    "max_total_exposure_pct": 1.0
+  }
 }
