@@ -114,6 +114,7 @@ def recommend_position_action(
     signal: str,
     signal_reason: str,
     guidance: Optional[BacktestGuidance] = None,
+    risk_gate=None,
     max_position_weight: float = 0.20,
     min_position_weight: float = 0.05,
 ) -> PositionAdvice:
@@ -136,15 +137,29 @@ def recommend_position_action(
     current_value = current_shares * float(current_price)
     current_weight = current_value / float(portfolio_value)
     expected_return_pct = getattr(guidance, "expected_return_pct", None)
+    gate_max_weight = None
+    gate_block_buys = False
+    gate_reasons = []
+    if risk_gate is not None:
+        gate_max_weight = getattr(risk_gate, "max_position_weight", None)
+        gate_block_buys = bool(getattr(risk_gate, "block_new_buys", False))
+        gate_reasons = list(getattr(risk_gate, "reasons", []) or [])
+
+    effective_max_weight = max_position_weight
+    if gate_max_weight is not None:
+        effective_max_weight = min(effective_max_weight, float(gate_max_weight))
 
     signal = str(signal).upper()
     if signal == "SELL":
         target_weight = 0.0
     elif signal == "BUY":
-        target_weight = _buy_target_weight(expected_return_pct, max_position_weight)
+        if gate_block_buys:
+            target_weight = min(current_weight, effective_max_weight)
+        else:
+            target_weight = _buy_target_weight(expected_return_pct, effective_max_weight)
     else:
-        if current_weight > max_position_weight:
-            target_weight = max_position_weight
+        if current_weight > effective_max_weight:
+            target_weight = effective_max_weight
         elif expected_return_pct is not None and expected_return_pct < 0 and current_weight > min_position_weight:
             target_weight = min_position_weight
         else:
@@ -180,6 +195,10 @@ def recommend_position_action(
 
     if expected_return_pct is not None:
         reason_parts.append(f"回测单笔期望收益约 {expected_return_pct:.2%}。")
+    if gate_block_buys:
+        reason_parts.append("风险闸门已启用，暂缓新增仓位。")
+    if gate_reasons:
+        reason_parts.append("风险因子：" + " ".join(gate_reasons))
 
     return PositionAdvice(
         action=action,
@@ -192,4 +211,3 @@ def recommend_position_action(
         suggested_exit_price=getattr(guidance, "suggested_exit_price", None),
         reason=" ".join(reason_parts),
     )
-

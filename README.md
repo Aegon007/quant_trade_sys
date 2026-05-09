@@ -10,11 +10,15 @@
 - 观察列表：维护关注股票、备注和目标买入价，并可刷新最新价格。
 - 实时行情：通过 Yahoo Finance 获取持仓和观察列表价格，并使用本地缓存减少重复请求。
 - 单股策略信号：为持仓或关注股票显示买入、持有、卖出信号和原因。
+- 分析师共识增强：夜间抓取分析师买卖共识；当看多或看空比例超过 `90%` 且样本充足时，增强关注列表提示为“强烈买入”或“强烈卖出”。
 - 仓位建议：结合当前持仓、目标仓位和回测结果，给出加仓、减仓、退出或观望建议。
 - 组合级建议：分析行业集中度和高相关股票组合，避免只看单只股票信号而忽略整体风险。
 - 策略回测：支持 Backtrader 和 PyBroker 两个回测引擎，输出收益、夏普比率、最大回撤、胜率和资金曲线。
 - 策略插件化：新增策略时优先通过 `config/strategies.json` 配置类路径和信号函数路径，减少修改注册代码。
 - 深度学习模型：内置 TCN 深度学习策略，可自动适配 CUDA、Apple Silicon MPS 或纯 CPU 环境。
+- 新闻/事件系统：支持本地 `market_events.json` 事件输入，并可通过事件源适配层自动抓取外部新闻事件。
+- 事件风控急刹车：可基于 FOMC/宏观事件和 VIX 高波动阈值触发临时风险收缩（限制仓位或暂停新增仓位）。
+- FinBERT 情绪分析：事件/新闻可选用 FinBERT 进行情绪打分；未安装时自动回退为关键词情绪规则。
 - 本地数据文件：持仓、观察列表、交易记录、价格缓存都保存在本地 JSON 文件中，无需数据库。
 
 ## 快速开始
@@ -89,6 +93,9 @@ PYTHONPYCACHEPREFIX=/tmp/pycache .venv/bin/python -m unittest discover -s tests 
 - `portfolio_input.json`：手工维护入口，适合批量修改持仓和观察列表，不提交到 Git。
 - `portfolio_data.json`：应用运行时数据，保存当前持仓、观察列表、最新价格和更新时间。
 - `price_cache.json`：行情缓存文件，减少短时间内重复请求。
+- `analyst_consensus_cache.json`：夜间生成的分析师共识缓存文件，用于增强关注列表买入提示。
+- `market_events.json`：手工维护事件输入文件（可选）。
+- `config/event_sources.json`：事件源配置，定义本地 mock 与自动抓取源（如 yfinance 新闻）。
 - `transactions.json`：卖出操作产生的交易记录。
 - `config/strategies.json`：策略配置文件，控制 UI 展示、回测策略类和信号函数。
 
@@ -195,6 +202,12 @@ def get_my_signal(symbol, window=20):
 
 ```bash
 pip install "torch>=2.2.0"
+```
+
+如需启用 FinBERT（自动新闻情绪）：
+
+```bash
+pip install "transformers>=4.40.0"
 ```
 
 ## 组合级建议

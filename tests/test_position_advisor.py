@@ -74,6 +74,27 @@ class PositionRecommendationTests(unittest.TestCase):
         self.assertAlmostEqual(advice.delta_shares, 1.0)
         self.assertAlmostEqual(advice.suggested_exit_price, 112.0)
 
+    def test_recommend_position_action_blocks_buy_when_risk_gate_is_off(self):
+        from position_advisor import recommend_position_action
+        from risk_gate import MarketRiskGateDecision
+
+        advice = recommend_position_action(
+            holding={"symbol": "AAPL", "shares": 0.5, "current_price": 100.0},
+            portfolio_value=1000.0,
+            signal="BUY",
+            signal_reason="趋势增强",
+            risk_gate=MarketRiskGateDecision(
+                regime="RISK_OFF",
+                risk_score=6,
+                block_new_buys=True,
+                max_position_weight=0.08,
+                reasons=["风险过高"],
+            ),
+        )
+
+        self.assertNotEqual(advice.action, "ADD")
+        self.assertLessEqual(advice.target_weight_pct, 8.0)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -23,8 +23,24 @@ class ProjectFilesTests(unittest.TestCase):
         self.assertTrue(gitignore_path.exists())
 
         gitignore = gitignore_path.read_text(encoding="utf-8")
-        for entry in ["__pycache__/", ".venv/", "trained_models/", "catboost_info/", "price_cache.json"]:
+        for entry in [
+            "__pycache__/",
+            ".venv/",
+            "trained_models/",
+            "catboost_info/",
+            "price_cache.json",
+            "analyst_consensus_cache.json",
+            "market_events.json",
+        ]:
             self.assertIn(entry, gitignore)
+
+    def test_event_source_config_exists_and_has_sources(self):
+        config_path = ROOT / "config" / "event_sources.json"
+        self.assertTrue(config_path.exists())
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+        self.assertIn("sources", config)
+        self.assertIsInstance(config["sources"], list)
+        self.assertGreaterEqual(len(config["sources"]), 1)
 
 
 if __name__ == "__main__":

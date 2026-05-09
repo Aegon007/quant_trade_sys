@@ -3,6 +3,7 @@ import unittest
 from pathlib import Path
 import os
 import json
+from datetime import datetime, timedelta
 
 from tests.support import clear_modules, install_fake_yfinance, reload_module
 
@@ -151,6 +152,145 @@ class DataUtilsFractionalShareTests(unittest.TestCase):
 
         self.assertEqual(data["holdings"][0]["symbol"], "NVDA")
         self.assertEqual(data["watchlist"][0]["symbol"], "AAPL")
+
+    def test_auto_refresh_market_data_updates_missing_prices_and_timestamp(self):
+        now = datetime(2026, 5, 8, 12, 0, 0)
+        data = {
+            "holdings": [{"symbol": "AAPL", "shares": 1, "cost": 100, "current_price": None}],
+            "watchlist": [{"symbol": "MSFT", "notes": "", "target_buy": 300, "last_price": None}],
+            "last_updated": None,
+        }
+        self.data_utils.fetch_prices = lambda symbols: {"AAPL": 210.5, "MSFT": 405.25}
+
+        refreshed_data, refreshed = self.data_utils.auto_refresh_market_data(
+            data,
+            refresh_interval_seconds=300,
+            now=now,
+        )
+
+        self.assertTrue(refreshed)
+        self.assertEqual(refreshed_data["holdings"][0]["current_price"], 210.5)
+        self.assertEqual(refreshed_data["watchlist"][0]["last_price"], 405.25)
+        self.assertEqual(refreshed_data["prices_last_updated"], now.isoformat())
+
+    def test_auto_refresh_market_data_skips_when_prices_are_fresh(self):
+        now = datetime(2026, 5, 8, 12, 0, 0)
+        data = {
+            "holdings": [{"symbol": "AAPL", "shares": 1, "cost": 100, "current_price": 210.5}],
+            "watchlist": [],
+            "last_updated": None,
+            "prices_last_updated": (now - timedelta(seconds=60)).isoformat(),
+        }
+
+        def fail_fetch(_symbols):
+            raise AssertionError("fetch_prices should not be called for fresh prices")
+
+        self.data_utils.fetch_prices = fail_fetch
+
+        refreshed_data, refreshed = self.data_utils.auto_refresh_market_data(
+            data,
+            refresh_interval_seconds=300,
+            now=now,
+        )
+
+        self.assertFalse(refreshed)
+        self.assertEqual(refreshed_data["holdings"][0]["current_price"], 210.5)
+
+    def test_auto_refresh_market_data_refreshes_stale_prices(self):
+        now = datetime(2026, 5, 8, 12, 0, 0)
+        data = {
+            "holdings": [{"symbol": "AAPL", "shares": 1, "cost": 100, "current_price": 200.0}],
+            "watchlist": [],
+            "last_updated": None,
+            "prices_last_updated": (now - timedelta(minutes=20)).isoformat(),
+        }
+        self.data_utils.fetch_prices = lambda symbols: {"AAPL": 215.0}
+
+        refreshed_data, refreshed = self.data_utils.auto_refresh_market_data(
+            data,
+            refresh_interval_seconds=300,
+            now=now,
+        )
+
+        self.assertTrue(refreshed)
+        self.assertEqual(refreshed_data["holdings"][0]["current_price"], 215.0)
+        self.assertEqual(refreshed_data["prices_last_updated"], now.isoformat())
+
+    def test_move_holding_to_watchlist_moves_position_and_uses_latest_price_as_target(self):
+        self.data_utils.save_data({
+            "holdings": [
+                {"symbol": "AAPL", "shares": 1.5, "cost": 180.0, "current_price": 205.0, "sector": "Tech"}
+            ],
+            "watchlist": []
+        })
+
+        symbol = self.data_utils.move_holding_to_watchlist(0)
+        data = self.data_utils.load_data()
+
+        self.assertEqual(symbol, "AAPL")
+        self.assertEqual(data["holdings"], [])
+        self.assertEqual(len(data["watchlist"]), 1)
+        self.assertEqual(data["watchlist"][0]["symbol"], "AAPL")
+        self.assertEqual(data["watchlist"][0]["target_buy"], 205.0)
+        self.assertEqual(data["watchlist"][0]["last_price"], 205.0)
+
+    def test_move_holding_to_watchlist_does_not_duplicate_existing_watch_symbol(self):
+        self.data_utils.save_data({
+            "holdings": [
+                {"symbol": "AAPL", "shares": 1.0, "cost": 180.0, "current_price": 210.0, "sector": ""}
+            ],
+            "watchlist": [
+                {"symbol": "AAPL", "notes": "existing", "target_buy": 195.0, "last_price": None}
+            ]
+        })
+
+        self.data_utils.move_holding_to_watchlist(0)
+        data = self.data_utils.load_data()
+
+        self.assertEqual(data["holdings"], [])
+        self.assertEqual(len(data["watchlist"]), 1)
+        self.assertEqual(data["watchlist"][0]["target_buy"], 195.0)
+        self.assertEqual(data["watchlist"][0]["last_price"], 210.0)
+
+    def test_move_watch_to_holding_buys_default_one_share(self):
+        self.data_utils.save_data({
+            "holdings": [],
+            "watchlist": [
+                {"symbol": "MSFT", "notes": "watch", "target_buy": 300.0, "last_price": 310.0}
+            ]
+        })
+
+        symbol, shares, entry_price = self.data_utils.move_watch_to_holding(0)
+        data = self.data_utils.load_data()
+
+        self.assertEqual(symbol, "MSFT")
+        self.assertEqual(shares, 1.0)
+        self.assertEqual(entry_price, 310.0)
+        self.assertEqual(data["watchlist"], [])
+        self.assertEqual(len(data["holdings"]), 1)
+        self.assertEqual(data["holdings"][0]["symbol"], "MSFT")
+        self.assertEqual(data["holdings"][0]["shares"], 1.0)
+        self.assertEqual(data["holdings"][0]["cost"], 310.0)
+        self.assertEqual(data["holdings"][0]["current_price"], 310.0)
+
+    def test_move_watch_to_holding_merges_existing_position_with_weighted_cost(self):
+        self.data_utils.save_data({
+            "holdings": [
+                {"symbol": "NVDA", "shares": 2.0, "cost": 100.0, "current_price": 105.0, "sector": ""}
+            ],
+            "watchlist": [
+                {"symbol": "NVDA", "notes": "re-enter", "target_buy": 95.0, "last_price": 110.0}
+            ]
+        })
+
+        self.data_utils.move_watch_to_holding(0)
+        data = self.data_utils.load_data()
+
+        self.assertEqual(data["watchlist"], [])
+        self.assertEqual(len(data["holdings"]), 1)
+        self.assertEqual(data["holdings"][0]["shares"], 3.0)
+        self.assertAlmostEqual(data["holdings"][0]["cost"], (2 * 100.0 + 110.0) / 3.0)
+        self.assertEqual(data["holdings"][0]["current_price"], 110.0)
 
 
 if __name__ == "__main__":

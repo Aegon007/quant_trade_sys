@@ -11,14 +11,17 @@ CACHE_FILE = "price_cache.json"
 DEFAULT_DATA = {
     "holdings": [],
     "watchlist": [],
-    "last_updated": None
+    "last_updated": None,
+    "prices_last_updated": None
 }
+DEFAULT_AUTO_REFRESH_SECONDS = 300
 
 def _default_data():
     return {
         "holdings": [],
         "watchlist": [],
-        "last_updated": None
+        "last_updated": None,
+        "prices_last_updated": None
     }
 
 def _read_json_file(path):
@@ -33,6 +36,7 @@ def _load_runtime_data():
     data.setdefault("holdings", [])
     data.setdefault("watchlist", [])
     data.setdefault("last_updated", None)
+    data.setdefault("prices_last_updated", None)
     return data
 
 def editable_data_file_exists():
@@ -122,7 +126,8 @@ def normalize_editable_data(editable_data, existing_data=None):
             _normalize_editable_watch(record, index, existing_watchlist)
             for index, record in enumerate(watchlist)
         ],
-        "last_updated": existing_data.get("last_updated")
+        "last_updated": existing_data.get("last_updated"),
+        "prices_last_updated": existing_data.get("prices_last_updated")
     }
 
 def load_data(force_editable_sync=False):
@@ -130,6 +135,7 @@ def load_data(force_editable_sync=False):
     if force_editable_sync or has_newer_editable_data():
         if editable_data_file_exists():
             data = normalize_editable_data(_read_json_file(EDITABLE_DATA_FILE), data)
+            invalidate_market_data_timestamp(data)
             save_data(data)
     return data
 
@@ -137,6 +143,63 @@ def save_data(data):
     data["last_updated"] = datetime.now().isoformat()
     with open(DATA_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
+
+def _tracked_symbols(data):
+    symbols = set()
+    for holding in data.get("holdings", []):
+        symbol = holding.get("symbol")
+        if symbol:
+            symbols.add(str(symbol).strip().upper())
+    for watch in data.get("watchlist", []):
+        symbol = watch.get("symbol")
+        if symbol:
+            symbols.add(str(symbol).strip().upper())
+    return sorted(symbols)
+
+def _parse_iso_datetime(value):
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except (TypeError, ValueError):
+        return None
+
+def market_data_age_seconds(data, now=None):
+    now = now or datetime.now()
+    last_refresh = _parse_iso_datetime(data.get("prices_last_updated"))
+    if last_refresh is None:
+        return None
+    return max(0.0, (now - last_refresh).total_seconds())
+
+def should_auto_refresh_market_data(data, refresh_interval_seconds=DEFAULT_AUTO_REFRESH_SECONDS, now=None, force=False):
+    if not _tracked_symbols(data):
+        return False
+    if force:
+        return True
+    age_seconds = market_data_age_seconds(data, now=now)
+    if age_seconds is None:
+        return True
+    return age_seconds >= refresh_interval_seconds
+
+def mark_prices_updated(data, now=None):
+    now = now or datetime.now()
+    data["prices_last_updated"] = now.isoformat()
+    return data
+
+def invalidate_market_data_timestamp(data):
+    data["prices_last_updated"] = None
+    return data
+
+def refresh_market_data(data, now=None):
+    if not _tracked_symbols(data):
+        return data
+    updated = update_all_prices(data)
+    return mark_prices_updated(updated, now=now)
+
+def auto_refresh_market_data(data, refresh_interval_seconds=DEFAULT_AUTO_REFRESH_SECONDS, now=None, force=False):
+    if not should_auto_refresh_market_data(data, refresh_interval_seconds, now=now, force=force):
+        return data, False
+    return refresh_market_data(data, now=now), True
 
 def _load_cache():
     if os.path.exists(CACHE_FILE):
@@ -222,6 +285,7 @@ def add_holding(symbol, shares, cost, sector=""):
         "current_price": None,
         "sector": sector.strip() if isinstance(sector, str) else ""
     })
+    invalidate_market_data_timestamp(data)
     save_data(data)
 
 def update_holding_price(index, price):
@@ -266,6 +330,7 @@ def add_watch(symbol, notes="", target_buy=None):
         "target_buy": target_buy,
         "last_price": None
     })
+    invalidate_market_data_timestamp(data)
     save_data(data)
 
 def delete_watch(index):
@@ -283,3 +348,74 @@ def delete_watch_batch(indices):
     for i in sorted(indices, reverse=True):
         data["watchlist"].pop(i)
     save_data(data)
+
+
+def _find_record_index_by_symbol(records, symbol):
+    normalized_symbol = str(symbol).strip().upper()
+    for idx, record in enumerate(records):
+        if str(record.get("symbol", "")).strip().upper() == normalized_symbol:
+            return idx
+    return None
+
+
+def move_holding_to_watchlist(index, notes=""):
+    data = load_data()
+    holding = data["holdings"].pop(index)
+
+    symbol = str(holding.get("symbol", "")).strip().upper()
+    latest_price = holding.get("current_price")
+    target_buy = latest_price if latest_price is not None else holding.get("cost")
+
+    existing_watch_idx = _find_record_index_by_symbol(data["watchlist"], symbol)
+    if existing_watch_idx is None:
+        data["watchlist"].append({
+            "symbol": symbol,
+            "notes": str(notes or ""),
+            "target_buy": target_buy,
+            "last_price": latest_price,
+        })
+    else:
+        existing_watch = data["watchlist"][existing_watch_idx]
+        if latest_price is not None:
+            existing_watch["last_price"] = latest_price
+        if existing_watch.get("target_buy") is None and target_buy is not None:
+            existing_watch["target_buy"] = target_buy
+
+    invalidate_market_data_timestamp(data)
+    save_data(data)
+    return symbol
+
+
+def move_watch_to_holding(index, shares=1.0):
+    shares_to_buy = validate_share_quantity(shares, field_name="shares")
+    data = load_data()
+    watch = data["watchlist"].pop(index)
+
+    symbol = str(watch.get("symbol", "")).strip().upper()
+    latest_price = watch.get("last_price")
+    target_buy = watch.get("target_buy")
+    entry_price = latest_price if latest_price is not None else (target_buy if target_buy is not None else 0.0)
+
+    existing_holding_idx = _find_record_index_by_symbol(data["holdings"], symbol)
+    if existing_holding_idx is None:
+        data["holdings"].append({
+            "symbol": symbol,
+            "shares": shares_to_buy,
+            "cost": float(entry_price),
+            "current_price": latest_price,
+            "sector": "",
+        })
+    else:
+        holding = data["holdings"][existing_holding_idx]
+        current_shares = normalize_share_quantity(holding.get("shares", 0))
+        current_cost = float(holding.get("cost", 0.0))
+        total_shares = normalize_share_quantity(current_shares + shares_to_buy)
+        total_cost_amount = (current_shares * current_cost) + (shares_to_buy * float(entry_price))
+        holding["shares"] = total_shares
+        holding["cost"] = total_cost_amount / total_shares if total_shares > 0 else float(entry_price)
+        if latest_price is not None:
+            holding["current_price"] = latest_price
+
+    invalidate_market_data_timestamp(data)
+    save_data(data)
+    return symbol, shares_to_buy, float(entry_price)

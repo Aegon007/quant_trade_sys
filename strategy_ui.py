@@ -15,16 +15,34 @@ DEFAULT_SIGNAL_FUNCTIONS = {
     "deep_tcn": "deep_learning_strategy.get_deep_tcn_signal",
 }
 
-def load_strategies():
+def load_strategies(include_disabled=False):
     if not os.path.exists(CONFIG_PATH):
         return []
     with open(CONFIG_PATH, "r", encoding="utf-8") as f:
         data = json.load(f)
-    return data.get("strategies", [])
+    strategies = data.get("strategies", [])
+    if include_disabled:
+        return strategies
+    return [strategy for strategy in strategies if strategy.get("enabled", True)]
 
-def render_strategy_selector(strategies):
+def get_default_strategy_id(strategies):
+    for strategy in strategies:
+        if strategy.get("is_default"):
+            return strategy["id"]
+    if not strategies:
+        return None
+    return strategies[0]["id"]
+
+def render_strategy_selector(strategies, default_strategy_id=None):
+    if not strategies:
+        return None
     strategy_names = [s["name"] for s in strategies]
-    selected_name = st.selectbox("选择策略", strategy_names)
+    strategy_ids = [s["id"] for s in strategies]
+    if default_strategy_id in strategy_ids:
+        default_index = strategy_ids.index(default_strategy_id)
+    else:
+        default_index = 0
+    selected_name = st.selectbox("选择策略", strategy_names, index=default_index)
     selected_strategy = next((s for s in strategies if s["name"] == selected_name), None)
     return selected_strategy
 

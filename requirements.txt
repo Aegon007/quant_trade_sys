@@ -16,3 +16,5 @@ catboost
 xgboost
 # Optional backend for the TCN deep learning strategy.
 torch>=2.2.0
+# Optional NLP backend for FinBERT sentiment scoring.
+transformers>=4.40.0

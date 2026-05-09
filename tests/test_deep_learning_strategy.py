@@ -2,6 +2,7 @@ import unittest
 
 import numpy as np
 import pandas as pd
+from datetime import datetime
 
 from tests.support import clear_modules, install_fake_yfinance, reload_module
 
@@ -30,6 +31,12 @@ class DeepLearningStrategyTests(unittest.TestCase):
             "strategies.deep_learning_strategy",
         )
         self.deep_learning_strategy = reload_module("deep_learning_strategy")
+        import tempfile
+
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp_dir.cleanup)
+        self.deep_learning_strategy.MODEL_DIR = self.temp_dir.name
+        self.deep_learning_strategy._SIGNAL_CACHE.clear()
 
     def test_prepare_dataset_creates_fixed_length_sequences_without_future_tail(self):
         dataset = self.deep_learning_strategy.prepare_deep_learning_dataset(
@@ -76,6 +83,11 @@ class DeepLearningStrategyTests(unittest.TestCase):
         self.assertEqual(select_device("mps", cuda_available=True, mps_available=False), "cuda")
         self.assertEqual(select_device("cpu", cuda_available=True, mps_available=True), "cpu")
 
+    def test_select_device_name_handles_non_string_preference(self):
+        select_device = self.deep_learning_strategy.select_device_name
+
+        self.assertEqual(select_device(1, cuda_available=False, mps_available=False), "cpu")
+
     def test_strategy_adapter_uses_deep_tcn_trade_series(self):
         strategy_module = reload_module("strategies.deep_learning_strategy")
 
@@ -93,6 +105,70 @@ class DeepLearningStrategyTests(unittest.TestCase):
 
         self.assertEqual(strategy.next(1), {"action": "BUY", "size": 100})
         self.assertEqual(strategy.next(3), {"action": "SELL", "size": 100})
+
+    def test_nightly_retrain_window_and_cycle_key(self):
+        module = self.deep_learning_strategy
+        late_night = datetime(2026, 5, 8, 23, 30)
+        after_midnight = datetime(2026, 5, 9, 0, 30)
+        daytime = datetime(2026, 5, 9, 14, 0)
+
+        self.assertTrue(module.is_nightly_retrain_window(late_night))
+        self.assertTrue(module.is_nightly_retrain_window(after_midnight))
+        self.assertFalse(module.is_nightly_retrain_window(daytime))
+        self.assertEqual(module.training_cycle_key_for_timestamp(late_night), "2026-05-08")
+        self.assertEqual(module.training_cycle_key_for_timestamp(after_midnight), "2026-05-08")
+
+    def test_should_run_nightly_retraining_respects_saved_cycle(self):
+        module = self.deep_learning_strategy
+        now = datetime(2026, 5, 8, 23, 15)
+
+        self.assertTrue(module.should_run_nightly_retraining(now=now))
+        module.mark_nightly_retraining_done(now=now)
+        self.assertFalse(module.should_run_nightly_retraining(now=now))
+
+    def test_force_retraining_bypasses_night_window(self):
+        module = self.deep_learning_strategy
+        original_torch_available = module.TORCH_AVAILABLE
+        original_train_func = module.train_and_save_deep_tcn_model
+        self.addCleanup(setattr, module, "TORCH_AVAILABLE", original_torch_available)
+        self.addCleanup(setattr, module, "train_and_save_deep_tcn_model", original_train_func)
+        module.TORCH_AVAILABLE = True
+        module.train_and_save_deep_tcn_model = lambda symbol, **params: (True, f"{symbol} ok")
+
+        ok, message = module.run_nightly_retraining_for_symbols(
+            ["AAPL", "MSFT"],
+            params={"period": "2y"},
+            now=datetime(2026, 5, 8, 14, 0),
+            force=True,
+        )
+
+        self.assertTrue(ok)
+        self.assertIn("成功 2", message)
+
+    def test_get_signal_profile_uses_prediction_output(self):
+        module = self.deep_learning_strategy
+        original_torch_available = module.TORCH_AVAILABLE
+        original_predict = module.predict_with_saved_deep_tcn_model
+        self.addCleanup(setattr, module, "TORCH_AVAILABLE", original_torch_available)
+        self.addCleanup(setattr, module, "predict_with_saved_deep_tcn_model", original_predict)
+        module.TORCH_AVAILABLE = True
+        module._PROFILE_CACHE.clear()
+        module.predict_with_saved_deep_tcn_model = lambda *args, **kwargs: {
+            "probability": 0.66,
+            "expected_return": 0.08,
+            "device": "cpu",
+            "trained_at": "2026-05-08T23:10:00",
+            "latest_price": 100.0,
+        }
+
+        profile = module.get_deep_tcn_signal_profile("AAPL")
+
+        self.assertEqual(profile.signal, "BUY")
+        self.assertAlmostEqual(profile.probability, 0.66)
+        self.assertAlmostEqual(profile.expected_return_pct, 0.08)
+        self.assertAlmostEqual(profile.take_profit_price, 108.0)
+        self.assertLess(profile.stop_loss_price, 100.0)
+        self.assertEqual(profile.device, "cpu")
 
 
 if __name__ == "__main__":

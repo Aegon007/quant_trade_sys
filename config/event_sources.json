@@ -1,0 +1,20 @@
+{
+  "sources": [
+    {
+      "id": "local_mock",
+      "type": "local_file",
+      "enabled": true,
+      "path": "market_events.json"
+    },
+    {
+      "id": "yfinance_news",
+      "type": "yfinance_news",
+      "enabled": true,
+      "verified": false,
+      "severity": "medium",
+      "lookback_hours": 24,
+      "max_items_per_symbol": 10,
+      "use_finbert": true
+    }
+  ]
+}
