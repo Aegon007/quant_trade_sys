@@ -13,6 +13,8 @@ import event_news as en
 import event_fetcher as ef
 import news_summary as ns
 import analyst_consensus as ac
+import notification_config as ncfg
+import notification_channels as nch
 import locales as loc
 from strategy_registry import create_strategy
 from share_utils import format_share_quantity, validate_share_quantity
@@ -546,6 +548,108 @@ def render_active_events_panel(active_events, event_decision, source_reports, L)
     st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
 
 
+def render_notification_config_page():
+    config = ncfg.load_notification_config()
+    st.header("通知配置")
+    st.caption("配置保存在本地 `notification_config.json`，该文件已加入 `.gitignore`。")
+
+    with st.expander("Slack", expanded=True):
+        slack = config["slack"]
+        with st.form("slack_notification_config_form"):
+            slack_enabled = st.checkbox("启用 Slack 通知", value=bool(slack.get("enabled")))
+            slack_webhook_url = st.text_input(
+                "Incoming Webhook URL",
+                value=slack.get("webhook_url", ""),
+                type="password",
+                placeholder="https://hooks.slack.com/services/...",
+            )
+            c1, c2 = st.columns(2)
+            save_slack = c1.form_submit_button("保存 Slack 配置")
+            test_slack = c2.form_submit_button("发送 Slack 测试")
+
+        if save_slack or test_slack:
+            config["slack"] = {
+                "enabled": slack_enabled,
+                "webhook_url": slack_webhook_url.strip(),
+            }
+            config = ncfg.save_notification_config(config)
+            st.success("Slack 配置已保存")
+            if test_slack:
+                ok, message = nch.send_slack_message(
+                    nch.build_test_notification_message("Slack"),
+                    config["slack"]["webhook_url"],
+                )
+                if ok:
+                    st.success(message)
+                else:
+                    st.error(message)
+
+    with st.expander("Email / SMTP", expanded=True):
+        st.caption("Outlook 账号可以作为发件人，Gmail 可以作为收件人；实际是否可用取决于该 Outlook 账号是否允许 SMTP 登录。")
+        if st.button("使用 Outlook SMTP 预设"):
+            config = ncfg.apply_outlook_smtp_preset(config)
+            config = ncfg.save_notification_config(config)
+            st.success("已应用 Outlook SMTP 预设")
+            st.rerun()
+
+        email_cfg = config["email"]
+        with st.form("email_notification_config_form"):
+            email_enabled = st.checkbox("启用 Email 通知", value=bool(email_cfg.get("enabled")))
+            ec1, ec2, ec3 = st.columns([2, 1, 1])
+            smtp_host = ec1.text_input("SMTP Host", value=email_cfg.get("smtp_host", "smtp-mail.outlook.com"))
+            smtp_port = ec2.number_input("SMTP Port", min_value=1, max_value=65535, value=int(email_cfg.get("smtp_port", 587)))
+            use_starttls = ec3.checkbox("STARTTLS", value=bool(email_cfg.get("use_starttls", True)))
+            username = st.text_input("SMTP 用户名", value=email_cfg.get("username", ""), placeholder="your_account@outlook.com")
+            password = st.text_input("SMTP 密码 / App Password", value=email_cfg.get("password", ""), type="password")
+            from_email = st.text_input(
+                "发件人",
+                value=email_cfg.get("from_email") or email_cfg.get("username", ""),
+                placeholder="your_account@outlook.com",
+            )
+            to_emails = st.text_input(
+                "收件人",
+                value=", ".join(email_cfg.get("to_emails", [])),
+                placeholder="your_gmail@gmail.com",
+            )
+            c1, c2 = st.columns(2)
+            save_email = c1.form_submit_button("保存 Email 配置")
+            test_email = c2.form_submit_button("发送 Email 测试")
+
+        if save_email or test_email:
+            config["email"] = {
+                "enabled": email_enabled,
+                "smtp_host": smtp_host.strip(),
+                "smtp_port": int(smtp_port),
+                "use_starttls": bool(use_starttls),
+                "username": username.strip(),
+                "password": password,
+                "from_email": from_email.strip(),
+                "to_emails": to_emails,
+            }
+            config = ncfg.save_notification_config(config)
+            st.success("Email 配置已保存")
+            if test_email:
+                ok, message = nch.send_email_message(
+                    "Quant Trade System Email 测试",
+                    nch.build_test_notification_message("Email"),
+                    config["email"],
+                )
+                if ok:
+                    st.success(message)
+                else:
+                    st.error(message)
+
+    st.subheader("当前状态")
+    slack_status = "已启用" if config["slack"].get("enabled") else "未启用"
+    email_status = "已启用" if config["email"].get("enabled") else "未启用"
+    st.write(f"Slack: {slack_status}")
+    st.write(
+        "Email: "
+        f"{email_status} | {config['email'].get('smtp_host')}:{config['email'].get('smtp_port')} "
+        f"| 收件人 {len(config['email'].get('to_emails', []))} 个"
+    )
+
+
 def render_dialogs():
     if st.session_state.sell_dialog_index is not None:
         idx = st.session_state.sell_dialog_index
@@ -665,9 +769,9 @@ if data["holdings"]:
 st.title(L("app_title"))
 st.caption(L("app_caption"))
 
-tab1, tab2, tab3, tab4 = st.tabs([
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
     L("holdings_tab"), L("watchlist_tab"),
-    L("transactions_tab"), L("quant_tab")
+    L("transactions_tab"), L("quant_tab"), "通知配置"
 ])
 
 # ----- Tab1 持仓 -----
@@ -706,6 +810,7 @@ with tab1:
         on_move_to_watch=handle_move_holding_to_watch,
         strategy=selected_strategy_runtime,
         risk_gate=market_risk_gate_decision,
+        analyst_consensus_cache=analyst_consensus_cache,
     )
     if data["holdings"]:
         c1, c2, c3, c4 = st.columns(4)
@@ -715,8 +820,8 @@ with tab1:
         c4.metric(L("holdings_count"), f"{len(data['holdings'])}")
 
         if st.button(L("gen_md")):
-            lines = ["| 代码 | 股数 | 成本价 | 现价 | 市值 | 盈亏 ($) | 盈亏 (%) | 信号 |"]
-            lines.append("|------|------|--------|------|------|----------|----------|------|")
+            lines = ["| 代码 | 股数 | 成本价 | 现价 | 市值 | 盈亏 ($) | 盈亏 (%) | 信号 | 分析师意见 |"]
+            lines.append("|------|------|--------|------|------|----------|----------|------|------------|")
             for row in holding_records:
                 price_text = f"${row['现价']:,.2f}" if row["现价"] is not None else "—"
                 value_text = f"${row['市值']:,.2f}" if row["市值"] is not None else "—"
@@ -728,7 +833,8 @@ with tab1:
                     f"{value_text} | "
                     f"{pl_text} | "
                     f"{pl_pct_text} | "
-                    f"{row['信号']} |"
+                    f"{row['信号']} | "
+                    f"{row.get('分析师意见', '无数据')} |"
                 )
             lines.append(
                 f"\n**{L('total_cost')}**: ${summary.total_cost:,.2f}  "
@@ -1032,3 +1138,7 @@ with tab4:
                         st.error(f"计算失败: {e}")
         else:
             st.info("无持仓数据")
+
+# ----- Tab5 通知配置 -----
+with tab5:
+    render_notification_config_page()

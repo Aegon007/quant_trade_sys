@@ -1,70 +1,53 @@
 {
   "holdings": [
     {
-      "symbol": "GOOGL",
+      "symbol": "SCHD",
       "shares": 1.0,
-      "cost": 339.2,
-      "current_price": 340.25
+      "cost": 31.45,
+      "current_price": 31.6200008392334,
+      "sector": ""
     },
     {
-      "symbol": "AVGO",
-      "shares": 1.0,
-      "cost": 398.42,
-      "current_price": 422.1400146484375
+      "symbol": "XLU",
+      "shares": 0.5,
+      "cost": 46.74,
+      "current_price": 44.720001220703125,
+      "sector": ""
     },
     {
-      "symbol": "IAU",
-      "shares": 1.0,
-      "cost": 90.4,
-      "current_price": 88.59500122070312
-    },
-    {
-      "symbol": "INTC",
-      "shares": 1.0,
-      "cost": 65.201,
-      "current_price": 67.5250015258789
-    },
-    {
-      "symbol": "XPEV",
-      "shares": 1.0,
-      "cost": 19.88,
-      "current_price": 15.960000038146973
+      "symbol": "SQQQ",
+      "shares": 0.1,
+      "cost": 50.9,
+      "current_price": 42.56999969482422,
+      "sector": ""
     },
     {
       "symbol": "BYDDY",
-      "shares": 1.0,
-      "cost": 15.68,
-      "current_price": 13.170000076293945
+      "shares": 143,
+      "cost": 15.58,
+      "current_price": 12.789999961853027,
+      "sector": ""
     },
     {
-      "symbol": "MSFT",
-      "shares": 1.0,
-      "cost": 432.8,
-      "current_price": 414.760009765625
+      "symbol": "XPEV",
+      "shares": 42,
+      "cost": 19.52,
+      "current_price": 15.619999885559082,
+      "sector": ""
     },
     {
-      "symbol": "NVDA",
-      "shares": 1.0,
-      "cost": 202.0,
-      "current_price": 199.32859802246094
+      "symbol": "AMD",
+      "shares": 0.05,
+      "cost": 441.0,
+      "current_price": 455.19000244140625,
+      "sector": ""
     },
     {
-      "symbol": "NIO",
-      "shares": 1.0,
-      "cost": 6.61,
-      "current_price": 6.261099815368652
-    },
-    {
-      "symbol": "ASML",
-      "shares": 1.0,
-      "cost": 1444.501,
-      "current_price": 1411.324951171875
-    },
-    {
-      "symbol": "XLK",
-      "shares": 1.0,
-      "cost": 158.005,
-      "current_price": 155.80499267578125
+      "symbol": "MU",
+      "shares": 0.05,
+      "cost": 726.4,
+      "current_price": 746.8099975585938,
+      "sector": ""
     }
   ],
   "watchlist": [
@@ -72,50 +55,87 @@
       "symbol": "TSM",
       "notes": "AI芯片制造，等待地缘风险释放",
       "target_buy": 365.0,
-      "last_price": 381.05999755859375
+      "last_price": 411.67999267578125
     },
     {
       "symbol": "AMZN",
       "notes": "AWS加速，PEG<1",
       "target_buy": 230.0,
-      "last_price": 255.4600067138672
+      "last_price": 272.67999267578125
     },
     {
       "symbol": "NVDA",
       "notes": "AI算力核心，目标$273",
       "target_buy": 195.0,
-      "last_price": 199.32859802246094
+      "last_price": 215.1999969482422
     },
     {
       "symbol": "MSFT",
       "notes": "逆向布局，等财报",
       "target_buy": 400.0,
-      "last_price": 414.760009765625
+      "last_price": 415.1199951171875
     },
     {
       "symbol": "DELL",
       "notes": "AI服务器，等回调",
       "target_buy": 175.0,
-      "last_price": 213.74000549316406
+      "last_price": 260.4599914550781
     },
     {
       "symbol": "MU",
       "notes": "存储回调后再入",
       "target_buy": 410.0,
-      "last_price": 480.8550109863281
+      "last_price": 746.8099975585938
     },
     {
       "symbol": "SNDK",
       "notes": "存储，等充分回调",
       "target_buy": 800.0,
-      "last_price": 945.7960205078125
+      "last_price": 1562.3399658203125
     },
     {
       "symbol": "BABA",
       "notes": "等AI云验证",
       "target_buy": 128.0,
-      "last_price": 131.10000610351562
+      "last_price": 140.05999755859375
+    },
+    {
+      "symbol": "IAU",
+      "notes": "",
+      "target_buy": 88.87000274658203,
+      "last_price": 88.87000274658203
+    },
+    {
+      "symbol": "GOOGL",
+      "notes": "",
+      "target_buy": 400.79998779296875,
+      "last_price": 400.79998779296875
+    },
+    {
+      "symbol": "AAPL",
+      "notes": "",
+      "target_buy": 293.32000732421875,
+      "last_price": 293.32000732421875
+    },
+    {
+      "symbol": "VOO",
+      "notes": "",
+      "target_buy": 678.0399780273438,
+      "last_price": 678.0399780273438
+    },
+    {
+      "symbol": "ARM",
+      "notes": "",
+      "target_buy": 213.27000427246094,
+      "last_price": 213.27000427246094
+    },
+    {
+      "symbol": "XLK",
+      "notes": "",
+      "target_buy": 175.52000427246094,
+      "last_price": 175.52000427246094
     }
   ],
-  "last_updated": "2026-04-23T13:46:33.939589"
+  "last_updated": "2026-05-09T13:33:35.152737",
+  "prices_last_updated": "2026-05-09T13:33:35.152462"
 }

@@ -8,7 +8,18 @@ from share_utils import format_share_quantity
 from position_advisor import recommend_position_action
 
 
-def build_holding_records(holdings, strategy, portfolio_value, risk_gate=None):
+def _consensus_display_fields(consensus, now=None):
+    summary = ac.summarize_consensus_status(consensus, now=now)
+    return {
+        "分析师意见": summary["status"],
+        "分析师看多": summary["bullish_display"],
+        "分析师看空": summary["bearish_display"],
+        "分析师样本": summary["sample_display"],
+        "分析师说明": summary["reason"],
+    }
+
+
+def build_holding_records(holdings, strategy, portfolio_value, risk_gate=None, analyst_consensus_cache=None):
     records = []
     for i, h in enumerate(holdings):
         cost = h["cost"]
@@ -29,6 +40,9 @@ def build_holding_records(holdings, strategy, portfolio_value, risk_gate=None):
             signal=signal,
             signal_reason=reason,
             risk_gate=risk_gate,
+        )
+        consensus_fields = _consensus_display_fields(
+            ac.get_cached_analyst_consensus(h["symbol"], analyst_consensus_cache)
         )
 
         advice_text = "持有"
@@ -55,6 +69,7 @@ def build_holding_records(holdings, strategy, portfolio_value, risk_gate=None):
             "目标仓位": advice.target_weight_pct,
             "仓位建议": advice_text,
             "仓位说明": advice.reason,
+            **consensus_fields,
         })
     return records
 
@@ -66,13 +81,20 @@ def render_holdings_table(
     on_move_to_watch,
     strategy,
     risk_gate=None,
+    analyst_consensus_cache=None,
 ):
     if not data["holdings"]:
         st.info("暂无持仓，请在侧边栏添加。")
         return PortfolioSummary(), []
 
     summary = summarize_holdings(data["holdings"])
-    records = build_holding_records(data["holdings"], strategy, summary.total_value, risk_gate=risk_gate)
+    records = build_holding_records(
+        data["holdings"],
+        strategy,
+        summary.total_value,
+        risk_gate=risk_gate,
+        analyst_consensus_cache=analyst_consensus_cache,
+    )
     df = pd.DataFrame(records)
 
     edited_df = st.data_editor(
@@ -91,8 +113,17 @@ def render_holdings_table(
             "目标仓位": None,
             "仓位建议": None,
             "仓位说明": None,
+            "分析师意见": None,
+            "分析师看多": None,
+            "分析师看空": None,
+            "分析师样本": None,
+            "分析师说明": None,
         },
-        disabled=["序号", "代码", "股数", "成本价", "市值", "盈亏 ($)", "盈亏 (%)", "数据来源", "信号", "信号说明", "当前仓位", "目标仓位", "仓位建议", "仓位说明"],
+        disabled=[
+            "序号", "代码", "股数", "成本价", "市值", "盈亏 ($)", "盈亏 (%)",
+            "数据来源", "信号", "信号说明", "当前仓位", "目标仓位", "仓位建议", "仓位说明",
+            "分析师意见", "分析师看多", "分析师看空", "分析师样本", "分析师说明",
+        ],
         hide_index=True,
         width="stretch",
         key="holdings_editor"
@@ -111,18 +142,20 @@ def render_holdings_table(
         st.rerun()
 
     # 渲染表格头部
-    cols = st.columns([1.2, 1, 1, 1, 1.2, 1.2, 1, 1.4, 0.8, 0.7, 0.7, 0.7, 1.2])
-    headers = ["代码", "股数", "成本价", "现价", "市值", "盈亏 ($)", "盈亏 (%)", "仓位建议", "信号", "卖出", "编辑", "删除", "转到关注"]
+    cols = st.columns([1.1, 0.95, 0.95, 0.95, 1.15, 1.15, 0.95, 1.25, 0.8, 1.15, 0.7, 0.7, 0.7, 1.1])
+    headers = ["代码", "股数", "成本价", "现价", "市值", "盈亏 ($)", "盈亏 (%)", "仓位建议", "信号", "分析师", "卖出", "编辑", "删除", "转到关注"]
     for col, h in zip(cols, headers):
         col.markdown(f"**{h}**")
 
     for i, row in enumerate(records):
-        c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11, c12, c13 = st.columns(
-            [1.2, 1, 1, 1, 1.2, 1.2, 1, 1.4, 0.8, 0.7, 0.7, 0.7, 1.2]
+        c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11, c12, c13, c14 = st.columns(
+            [1.1, 0.95, 0.95, 0.95, 1.15, 1.15, 0.95, 1.25, 0.8, 1.15, 0.7, 0.7, 0.7, 1.1]
         )
         signal_reason = html.escape(str(row["信号说明"]))
         advice_reason = html.escape(str(row["仓位说明"]))
         advice_text = html.escape(str(row["仓位建议"]))
+        analyst_status = html.escape(str(row.get("分析师意见", "无数据")))
+        analyst_reason = html.escape(str(row.get("分析师说明", "")))
         c1.write(row["代码"])
         c2.write(format_share_quantity(row["股数"]))
         c3.write(f"${row['成本价']:,.2f}")
@@ -154,18 +187,20 @@ def render_holdings_table(
         else:
             c9.markdown(f"<span style='color:#6b7280;' title='{signal_reason}'>持有</span>", unsafe_allow_html=True)
 
-        if c10.button("💰", key=f"sell_{i}", help="卖出"):
+        c10.markdown(f"<span title='{analyst_reason}'>{analyst_status}</span>", unsafe_allow_html=True)
+
+        if c11.button("💰", key=f"sell_{i}", help="卖出"):
             on_sell(i)
             st.rerun()
 
-        if c11.button("✏️", key=f"edit_{i}", help="编辑"):
+        if c12.button("✏️", key=f"edit_{i}", help="编辑"):
             st.session_state.editing_holding = i
             st.rerun()
 
-        if c12.button("🗑️", key=f"del_{i}"):
+        if c13.button("🗑️", key=f"del_{i}"):
             on_delete(i)
             st.rerun()
-        if c13.button("转到关注", key=f"to_watch_{i}", help="清仓并转入关注列表"):
+        if c14.button("转到关注", key=f"to_watch_{i}", help="清仓并转入关注列表"):
             on_move_to_watch(i)
             st.rerun()
 
@@ -204,35 +239,7 @@ def render_watchlist_table(data, on_delete_batch, on_move_to_holding, strategy=N
         else:
             signal, reason = su.get_signal(strategy, w["symbol"])
         consensus = ac.get_cached_analyst_consensus(w["symbol"], analyst_consensus_cache)
-        analyst_status = "无数据"
-        analyst_bullish = "—"
-        analyst_bearish = "—"
-        analyst_sample = "—"
-        analyst_reason = "暂无分析师共识数据。"
-        if consensus:
-            is_fresh = ac.is_cached_consensus_fresh(consensus)
-            raw_signal = str(consensus.get("signal") or "").upper()
-            bullish_ratio = consensus.get("bullish_ratio")
-            bearish_ratio = consensus.get("bearish_ratio")
-            total = consensus.get("total")
-            if bullish_ratio is not None:
-                analyst_bullish = f"{float(bullish_ratio):.1%}"
-            if bearish_ratio is not None:
-                analyst_bearish = f"{float(bearish_ratio):.1%}"
-            if total is not None:
-                analyst_sample = str(total)
-            if not is_fresh:
-                analyst_status = "已过期"
-                analyst_reason = "分析师共识缓存已过期（超过 7 天），不参与当前提示。"
-            elif raw_signal == "STRONG_BUY":
-                analyst_status = "强烈看多"
-                analyst_reason = str(consensus.get("reason") or "分析师共识触发强烈买入。")
-            elif raw_signal == "STRONG_SELL":
-                analyst_status = "强烈看空"
-                analyst_reason = str(consensus.get("reason") or "分析师共识触发强烈卖出。")
-            else:
-                analyst_status = "不触发"
-                analyst_reason = str(consensus.get("reason") or "分析师共识未达到触发阈值。")
+        consensus_fields = _consensus_display_fields(consensus)
         signal, reason = ac.apply_analyst_consensus_to_signal(signal, reason, consensus)
         watch_hint, _ = _watch_hint_by_signal(signal)
         records.append({
@@ -246,11 +253,7 @@ def render_watchlist_table(data, on_delete_batch, on_move_to_holding, strategy=N
             "信号": signal,
             "提示": watch_hint,
             "信号说明": reason,
-            "分析师意见": analyst_status,
-            "分析师看多": analyst_bullish,
-            "分析师看空": analyst_bearish,
-            "分析师样本": analyst_sample,
-            "分析师说明": analyst_reason,
+            **consensus_fields,
         })
 
     df = pd.DataFrame(records)

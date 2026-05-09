@@ -30,6 +30,8 @@ class ProjectFilesTests(unittest.TestCase):
             "catboost_info/",
             "price_cache.json",
             "analyst_consensus_cache.json",
+            "alert_state.json",
+            "notification_config.json",
             "market_events.json",
         ]:
             self.assertIn(entry, gitignore)
@@ -41,6 +43,16 @@ class ProjectFilesTests(unittest.TestCase):
         self.assertIn("sources", config)
         self.assertIsInstance(config["sources"], list)
         self.assertGreaterEqual(len(config["sources"]), 1)
+
+    def test_notification_example_config_exists_without_real_secrets(self):
+        config_path = ROOT / "notification_config.example.json"
+        self.assertTrue(config_path.exists())
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+        self.assertIn("slack", config)
+        self.assertIn("email", config)
+        self.assertIn("alert_settings", config)
+        self.assertFalse(config["slack"]["webhook_url"].startswith("https://hooks.slack.com/services/"))
+        self.assertEqual(config["email"]["password"], "")
 
 
 if __name__ == "__main__":

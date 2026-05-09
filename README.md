@@ -8,17 +8,20 @@
 
 - 持仓管理：支持添加、编辑、删除和部分卖出持仓，最小交易单位为 `0.001` share，适合 Robinhood 等支持 fractional shares 的账户。
 - 观察列表：维护关注股票、备注和目标买入价，并可刷新最新价格。
-- 实时行情：通过 Yahoo Finance 获取持仓和观察列表价格，并使用本地缓存减少重复请求。
+- 实时行情：通过 Yahoo Finance 获取持仓和观察列表价格，并使用本地缓存减少重复请求；应用运行时会自动刷新过期价格。
 - 单股策略信号：为持仓或关注股票显示买入、持有、卖出信号和原因。
 - 分析师共识增强：夜间抓取分析师买卖共识；当看多或看空比例超过 `90%` 且样本充足时，增强关注列表提示为“强烈买入”或“强烈卖出”。
+- ETF 代理意见：当 ETF 本身没有分析师评级时，系统会自动读取前十大持仓，并按权重聚合成分股分析师共识，生成 ETF 的代理买卖意见。
 - 仓位建议：结合当前持仓、目标仓位和回测结果，给出加仓、减仓、退出或观望建议。
 - 组合级建议：分析行业集中度和高相关股票组合，避免只看单只股票信号而忽略整体风险。
 - 策略回测：支持 Backtrader 和 PyBroker 两个回测引擎，输出收益、夏普比率、最大回撤、胜率和资金曲线。
 - 策略插件化：新增策略时优先通过 `config/strategies.json` 配置类路径和信号函数路径，减少修改注册代码。
-- 深度学习模型：内置 TCN 深度学习策略，可自动适配 CUDA、Apple Silicon MPS 或纯 CPU 环境。
+- 深度学习模型：内置 TCN 深度学习策略，当前为默认策略，可自动适配 CUDA、Apple Silicon MPS 或纯 CPU 环境。
 - 新闻/事件系统：支持本地 `market_events.json` 事件输入，并可通过事件源适配层自动抓取外部新闻事件。
 - 事件风控急刹车：可基于 FOMC/宏观事件和 VIX 高波动阈值触发临时风险收缩（限制仓位或暂停新增仓位）。
 - FinBERT 情绪分析：事件/新闻可选用 FinBERT 进行情绪打分；未安装时自动回退为关键词情绪规则。
+- Monte Carlo 预期收益分布：可基于历史波动生成收益分布、VaR/CVaR 和区间预期，辅助决定仓位与止盈止损。
+- 通知与夜间任务：支持 Slack / Email 强信号告警，并提供独立 `jobs.nightly_alerts` 入口用于定时调度。
 - 本地数据文件：持仓、观察列表、交易记录、价格缓存都保存在本地 JSON 文件中，无需数据库。
 
 ## 快速开始
@@ -46,6 +49,17 @@ PYTHONPYCACHEPREFIX=/tmp/pycache .venv/bin/python -m unittest discover -s tests 
 ```
 
 当前测试覆盖 fractional shares、数据文件同步、策略注册、组合建议、仓位建议、回测引擎适配和 RSI 参数修复等关键路径。
+
+## 当前默认工作流
+
+当前版本更偏向“少而硬”的交易辅助，而不是堆很多花哨模型。默认工作流如下：
+
+1. 白天运行 Streamlit 页面时，系统会自动刷新过期价格，并使用已训练好的 TCN 模型做推理。
+2. 当前默认历史窗口为 `2y`，默认策略为 `deep_tcn`。
+3. TCN 默认只在夜间窗口训练，当前代码按 `23:00` 到次日 `00:59` 的周期执行夜间重训；白天只推理不训练。
+4. 如果需要立即更新模型，可在侧边栏手动触发一次 TCN 重训。
+5. 分析师共识与 ETF 代理共识按夜间缓存更新；只有“强一致”结论会增强交易提示，其他状态默认只作信息展示。
+6. 强信号告警和风险告警可以通过独立夜间任务发送到 Slack 或 Email。
 
 ## 手工维护持仓与观察列表
 
@@ -93,7 +107,9 @@ PYTHONPYCACHEPREFIX=/tmp/pycache .venv/bin/python -m unittest discover -s tests 
 - `portfolio_input.json`：手工维护入口，适合批量修改持仓和观察列表，不提交到 Git。
 - `portfolio_data.json`：应用运行时数据，保存当前持仓、观察列表、最新价格和更新时间。
 - `price_cache.json`：行情缓存文件，减少短时间内重复请求。
-- `analyst_consensus_cache.json`：夜间生成的分析师共识缓存文件，用于增强关注列表买入提示。
+- `analyst_consensus_cache.json`：夜间生成的分析师共识缓存文件，用于增强关注列表买入提示，也会保存 ETF 的持仓加权代理意见。
+- `alert_state.json`：告警去重状态文件，记录已发送过的强信号和风险告警。
+- `notification_config.json`：本地通知连接配置，保存 Slack webhook 和 SMTP 参数，不提交到 Git。
 - `market_events.json`：手工维护事件输入文件（可选）。
 - `config/event_sources.json`：事件源配置，定义本地 mock 与自动抓取源（如 yfinance 新闻）。
 - `transactions.json`：卖出操作产生的交易记录。
@@ -107,9 +123,13 @@ PYTHONPYCACHEPREFIX=/tmp/pycache .venv/bin/python -m unittest discover -s tests 
 - 布林带反转：价格接近下轨时关注反弹，回到中轨附近考虑止盈。
 - MACD 金叉死叉：动能转强买入，动能转弱卖出。
 - RSI 超买超卖：低位回升买入，高位回落卖出。
-- LightGBM ML 策略：基于滚动训练预测未来收益方向。
-- 集成投票策略：组合 LightGBM、CatBoost、XGBoost 的预测概率。
 - TCN 深度学习策略：使用一维时序卷积网络学习最近一段技术特征序列，预测未来上涨概率和条件预期收益。
+
+说明：
+
+- `deep_tcn` 当前是默认策略，也是推荐优先投入优化的主线。
+- 传统规则策略仍保留，主要用于做对照、解释和回测基线。
+- 传统 ML / 集成策略代码仍在仓库中，但默认关闭，不作为当前主交易路径。
 
 回测流程：
 
@@ -198,6 +218,14 @@ def get_my_signal(symbol, window=20):
 - 在 Apple Silicon Mac 且 PyTorch 支持 MPS 时使用 `mps`。
 - 其他环境自动回落到 `cpu`。
 
+当前默认训练参数：
+
+- 历史窗口：`2y`
+- 训练轮数：`50`
+- 设备：`auto`
+- 白天模式：仅推理，不自动训练
+- 夜间模式：自动更新数据并按夜间周期重训
+
 如果当前环境没有安装 PyTorch，系统不会崩溃，深度学习策略会返回 `HOLD` 并提示依赖缺失。安装方式：
 
 ```bash
@@ -219,6 +247,175 @@ pip install "transformers>=4.40.0"
 - 缺失价格：如果持仓没有现价，组合建议会提示这些标的暂未纳入组合级计算。
 
 为了让行业集中度分析更准确，建议在 `portfolio_input.json` 或 UI 编辑持仓时维护 `sector`。
+
+## 通知配置
+
+应用内提供“通知配置”页，可配置并测试。当前通知能力分两类：
+
+- 已支持：Slack 单向告警（Incoming Webhook）、Email 单向告警（SMTP）。
+- 规划中：Slack -> 系统 的双向消息控制，用于从 Slack 直接更新本地持仓和关注列表。
+
+注意：
+
+- 当前系统不会连接券商，也不会自动实盘下单。
+- Slack / Email 目前只负责发送通知；未来如果开启 Slack 双向控制，也只是更新本地 JSON 持仓状态，不会触发真实交易。
+
+### 当前已支持：Slack 单向告警
+
+- Slack Incoming Webhook：适合实时告警，系统通过 webhook URL 发送消息到指定频道。
+- Email / SMTP：适合每日摘要或留档；可以用一个 Outlook 账号作为发件人，把消息发到 Gmail。
+- 告警去重：`alert_state.json` 会记录已发送告警，避免同一个强烈买入/卖出每天重复发送；风险告警默认 6 小时冷却。
+
+Slack 单向告警推荐配置步骤：
+
+1. 在 Slack API 后台创建一个 Slack App。
+2. 打开 `Incoming Webhooks`。
+3. 为目标频道生成一个 webhook URL。
+4. 在系统的“通知配置”页填入这个 webhook URL，或者在运行环境中设置 `SLACK_WEBHOOK_URL`。
+5. 点击系统中的 Slack 测试发送按钮，确认频道能收到消息。
+
+如果你的系统跑在服务器上，而你平时在本地电脑使用 Slack：
+
+- 服务器上需要保存 `SLACK_WEBHOOK_URL`，由服务器负责发送消息。
+- 你本地电脑不需要额外安装任何代码，只需要登录同一个 Slack workspace，并能看到目标频道即可。
+- 如果目标是私有频道，需要先把 Slack App 对应的 bot / webhook 安装到该频道。
+
+示例环境变量：
+
+```bash
+export SLACK_WEBHOOK_URL="https://hooks.slack.com/services/..."
+```
+
+### 当前已支持：Email 单向告警
+
+Outlook 常用 SMTP 参数：
+
+- SMTP Host: `smtp-mail.outlook.com`
+- SMTP Port: `587`
+- STARTTLS: enabled
+- Username: 完整 Outlook 邮箱地址
+- Password: Outlook 账号密码或 app password（取决于账号安全设置）
+
+如果 Outlook 拒绝 SMTP 登录，请先确认该账号是否允许 SMTP AUTH；若账号强制 Modern Auth/OAuth2，当前简单 SMTP 配置可能无法通过，这时更推荐使用 SendGrid、Mailgun、Resend 等邮件 API。
+
+Email 推荐配置步骤：
+
+1. 确定发件邮箱服务商，例如 Outlook。
+2. 在“通知配置”页填写 SMTP Host、Port、用户名、密码、发件人邮箱、收件人邮箱。
+3. 如果使用 Outlook，通常启用 `STARTTLS`，端口用 `587`。
+4. 点击系统中的 Email 测试发送按钮。
+5. 如果计划长期部署，建议把密码放到服务器环境变量中，而不是直接写入本地 JSON。
+
+如果你的系统跑在服务器上，而你本地电脑只是收邮件：
+
+- SMTP 配置和密码只放在服务器上。
+- 你本地电脑不需要额外配置代码，只需要能登录你的 Gmail / Outlook 收件箱即可。
+
+示例环境变量：
+
+```bash
+export SMTP_HOST="smtp-mail.outlook.com"
+export SMTP_PORT="587"
+export SMTP_USER="your_account@outlook.com"
+export SMTP_PASSWORD="your_password_or_app_password"
+export SMTP_FROM="your_account@outlook.com"
+export ALERT_EMAIL_TO="your_gmail@gmail.com"
+```
+
+独立夜间告警入口：
+
+```bash
+.venv/bin/python -m jobs.nightly_alerts --force
+```
+
+查看将生成哪些告警但不发送：
+
+```bash
+.venv/bin/python -m jobs.nightly_alerts --dry-run --force
+```
+
+说明：
+
+- 个股优先使用直接分析师共识。
+- ETF 若缺少直接分析师数据，会自动回退到“前十大持仓加权代理共识”。
+- 当前默认要求代理覆盖权重至少约 `50%`，且加权后的看多/看空比例超过 `90%`，才会触发强烈信号。
+- 默认只对“强一致”分析师结论发出强化提示或通知，避免弱信号引入额外噪声。
+
+也可以不写真实密钥到配置文件，改用环境变量：
+
+```bash
+export SLACK_WEBHOOK_URL="https://hooks.slack.com/services/..."
+export SMTP_HOST="smtp-mail.outlook.com"
+export SMTP_PORT="587"
+export SMTP_USER="your_account@outlook.com"
+export SMTP_PASSWORD="your_password_or_app_password"
+export ALERT_EMAIL_TO="your_gmail@gmail.com"
+.venv/bin/python -m jobs.nightly_alerts --force
+```
+
+### 规划中：Slack 双向消息控制
+
+如果后续要支持在 Slack 中直接发送命令来更新本地持仓，推荐方案不是 HTTP webhook，而是 `slack_bolt + Socket Mode`。这样系统运行在你自己的服务器或 Mac 上时，不需要再暴露公网 HTTP 回调地址。
+
+推荐原因：
+
+- 不需要 `ngrok` 或公网域名。
+- Slack 官方推荐使用 Bolt / SDK 处理 Socket Mode。
+- 更适合你这种“系统在服务器上跑，我在本地 Slack 发消息”的场景。
+
+规划中的部署方式：
+
+1. 在 Slack API 后台创建一个新的 Slack App。
+2. 打开 `Socket Mode`。
+3. 创建 `App-Level Token`，拿到 `xapp-...`，并授予 `connections:write`。
+4. 安装 App 到你的 workspace，拿到 `Bot Token`，形如 `xoxb-...`。
+5. 为 App 打开需要的 bot scopes，例如读取 DM / slash commands 所需权限。
+6. 在服务器环境变量中保存 `SLACK_APP_TOKEN` 和 `SLACK_BOT_TOKEN`。
+7. 在服务器上运行 Slack bot 进程，由它监听 Slack 消息并调用本系统内部的数据更新函数。
+8. 你本地电脑只需要正常登录 Slack，向 bot 发送消息或 slash command 即可。
+
+这一模式下，配置位置分工如下：
+
+- 服务器：保存 Slack token，并运行 bot。
+- 本地电脑：只作为 Slack 客户端使用，不保存系统代码和 token 也可以。
+
+建议的第一版命令形态：
+
+- `买入 AAPL 0.5`
+- `卖出 AAPL 0.25`
+- `全部卖出 TSLA`
+- `转到关注 NVDA`
+- `转到持仓 MSFT 1`
+- `刷新 全部`
+
+第一版不建议直接做自由聊天式 agent，而是先做确定性命令解析，确保行为稳定。
+
+### 未来可选：用小模型处理自然语言输入
+
+未来可以接入小模型（SLM）来把自然语言解析成结构化命令，但建议它作为“解析辅助层”，而不是直接控制执行逻辑。
+
+推荐方式：
+
+- 第一层：规则 / 正则解析器，处理最常见、最明确的命令。
+- 第二层：小模型把自然语言归一化成结构化 JSON，例如 `{"action":"BUY","symbol":"AAPL","shares":0.5}`。
+- 第三层：系统只执行通过校验的结构化动作。
+
+这样做的好处是：
+
+- 既能支持更自然的输入表达；
+- 又不会把核心执行逻辑完全交给模型“自由发挥”。
+
+如果未来要选本地小模型，我更倾向于从指令微调的小模型开始，而不是过小的基础模型。像 `Qwen2.5-0.5B-Instruct` 这一类 0.5B 级别模型，更适合做轻量命令归一化；`0.3B` 级别模型可以尝试，但对中英文混合、股票代码、数值和动作词的稳定解析能力通常会更吃紧。
+
+## 项目取舍
+
+这个系统的首要目标是辅助真实交易并提高风险调整后收益，而不是堆叠看起来先进但无法稳定赚钱的功能。因此当前版本遵循以下取舍：
+
+- 优先做能改善胜率、盈亏比、回撤控制和执行纪律的功能。
+- 新功能如果不能明显改善交易决策质量，宁可不做。
+- 模型数量不是优势；稳定的数据流程、风险约束和可验证的回测更重要。
+- 对新闻、情绪和分析师信息采取“少量高置信度接入”的原则，而不是无差别喂给模型。
+- 仓位控制不应是僵硬的固定规则，也不应是无法解释的大黑盒；更适合走“风险状态 + 模型强度 + 组合约束”的混合资金分配引擎。
 
 ## 目录结构
 
