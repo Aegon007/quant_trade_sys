@@ -44,6 +44,13 @@ class DataUtilsFractionalShareTests(unittest.TestCase):
     def test_load_data_imports_newer_editable_portfolio_file(self):
         editable_path = Path(self.data_utils.EDITABLE_DATA_FILE)
         editable_path.write_text(json.dumps({
+            "account": {
+                "total_capital": 25000,
+                "cash_available": 8000,
+                "min_cash_buffer_pct": 0.1,
+                "max_single_position_pct": 0.18,
+                "max_total_exposure_pct": 0.9
+            },
             "holdings": [
                 {"symbol": "aapl", "shares": 0.125, "cost": 180.5, "sector": "Technology"}
             ],
@@ -54,6 +61,11 @@ class DataUtilsFractionalShareTests(unittest.TestCase):
 
         data = self.data_utils.load_data()
 
+        self.assertEqual(data["account"]["total_capital"], 25000.0)
+        self.assertEqual(data["account"]["cash_available"], 8000.0)
+        self.assertEqual(data["account"]["min_cash_buffer_pct"], 0.1)
+        self.assertEqual(data["account"]["max_single_position_pct"], 0.18)
+        self.assertEqual(data["account"]["max_total_exposure_pct"], 0.9)
         self.assertEqual(data["holdings"][0]["symbol"], "AAPL")
         self.assertEqual(data["holdings"][0]["shares"], 0.125)
         self.assertEqual(data["holdings"][0]["cost"], 180.5)
@@ -133,6 +145,13 @@ class DataUtilsFractionalShareTests(unittest.TestCase):
 
     def test_missing_editable_sections_preserve_runtime_sections(self):
         self.data_utils.save_data({
+            "account": {
+                "total_capital": 50000.0,
+                "cash_available": 12000.0,
+                "min_cash_buffer_pct": 0.08,
+                "max_single_position_pct": 0.22,
+                "max_total_exposure_pct": 0.95,
+            },
             "holdings": [
                 {"symbol": "NVDA", "shares": 1.25, "cost": 190, "current_price": 205}
             ],
@@ -150,6 +169,8 @@ class DataUtilsFractionalShareTests(unittest.TestCase):
 
         data = self.data_utils.load_data()
 
+        self.assertEqual(data["account"]["total_capital"], 50000.0)
+        self.assertEqual(data["account"]["cash_available"], 12000.0)
         self.assertEqual(data["holdings"][0]["symbol"], "NVDA")
         self.assertEqual(data["watchlist"][0]["symbol"], "AAPL")
 

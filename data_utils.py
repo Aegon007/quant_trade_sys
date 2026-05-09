@@ -8,7 +8,16 @@ DATA_FILE = "portfolio_data.json"
 EDITABLE_DATA_FILE = "portfolio_input.json"
 CACHE_FILE = "price_cache.json"
 
+DEFAULT_ACCOUNT = {
+    "total_capital": None,
+    "cash_available": None,
+    "min_cash_buffer_pct": 0.05,
+    "max_single_position_pct": 0.20,
+    "max_total_exposure_pct": 1.0,
+}
+
 DEFAULT_DATA = {
+    "account": DEFAULT_ACCOUNT,
     "holdings": [],
     "watchlist": [],
     "last_updated": None,
@@ -16,13 +25,26 @@ DEFAULT_DATA = {
 }
 DEFAULT_AUTO_REFRESH_SECONDS = 300
 
+def _default_account():
+    return {
+        "total_capital": None,
+        "cash_available": None,
+        "min_cash_buffer_pct": 0.05,
+        "max_single_position_pct": 0.20,
+        "max_total_exposure_pct": 1.0,
+    }
+
 def _default_data():
     return {
+        "account": _default_account(),
         "holdings": [],
         "watchlist": [],
         "last_updated": None,
         "prices_last_updated": None
     }
+
+def default_account_data():
+    return _default_account()
 
 def _read_json_file(path):
     with open(path, "r", encoding="utf-8") as f:
@@ -33,6 +55,7 @@ def _load_runtime_data():
         data = _read_json_file(DATA_FILE)
     else:
         data = _default_data()
+    data["account"] = _normalize_account(data.get("account"), _default_account())
     data.setdefault("holdings", [])
     data.setdefault("watchlist", [])
     data.setdefault("last_updated", None)
@@ -63,10 +86,58 @@ def _coerce_required_float(value, field_name):
     except (TypeError, ValueError) as exc:
         raise ValueError(f"{field_name} must be a number") from exc
 
+def _coerce_optional_non_negative_float(value, field_name):
+    if value in (None, ""):
+        return None
+    coerced = _coerce_required_float(value, field_name)
+    if coerced < 0:
+        raise ValueError(f"{field_name} must be >= 0")
+    return coerced
+
+def _coerce_pct(value, field_name, default):
+    if value in (None, ""):
+        return float(default)
+    coerced = _coerce_required_float(value, field_name)
+    if not 0 <= coerced <= 1:
+        raise ValueError(f"{field_name} must be between 0 and 1")
+    return coerced
+
 def _normalize_symbol(raw_symbol, collection_name, index):
     if not isinstance(raw_symbol, str) or not raw_symbol.strip():
         raise ValueError(f"{collection_name}[{index}].symbol is required")
     return raw_symbol.strip().upper()
+
+def _normalize_account(account, existing_account=None):
+    existing_account = existing_account or _default_account()
+    if account is None:
+        account = {}
+    if not isinstance(account, dict):
+        raise ValueError("account must be an object")
+    return {
+        "total_capital": _coerce_optional_non_negative_float(
+            account.get("total_capital", existing_account.get("total_capital")),
+            "account.total_capital",
+        ),
+        "cash_available": _coerce_optional_non_negative_float(
+            account.get("cash_available", existing_account.get("cash_available")),
+            "account.cash_available",
+        ),
+        "min_cash_buffer_pct": _coerce_pct(
+            account.get("min_cash_buffer_pct", existing_account.get("min_cash_buffer_pct", 0.05)),
+            "account.min_cash_buffer_pct",
+            0.05,
+        ),
+        "max_single_position_pct": _coerce_pct(
+            account.get("max_single_position_pct", existing_account.get("max_single_position_pct", 0.20)),
+            "account.max_single_position_pct",
+            0.20,
+        ),
+        "max_total_exposure_pct": _coerce_pct(
+            account.get("max_total_exposure_pct", existing_account.get("max_total_exposure_pct", 1.0)),
+            "account.max_total_exposure_pct",
+            1.0,
+        ),
+    }
 
 def _index_by_symbol(records):
     indexed = {}
@@ -108,6 +179,7 @@ def normalize_editable_data(editable_data, existing_data=None):
         raise ValueError("editable portfolio data must be a JSON object")
 
     existing_data = existing_data or _default_data()
+    account = editable_data.get("account", existing_data.get("account", _default_account()))
     holdings = editable_data.get("holdings", existing_data.get("holdings", []))
     watchlist = editable_data.get("watchlist", existing_data.get("watchlist", []))
     if not isinstance(holdings, list):
@@ -118,6 +190,7 @@ def normalize_editable_data(editable_data, existing_data=None):
     existing_holdings = _index_by_symbol(existing_data.get("holdings", []))
     existing_watchlist = _index_by_symbol(existing_data.get("watchlist", []))
     return {
+        "account": _normalize_account(account, existing_data.get("account")),
         "holdings": [
             _normalize_editable_holding(record, index, existing_holdings)
             for index, record in enumerate(holdings)
@@ -140,6 +213,7 @@ def load_data(force_editable_sync=False):
     return data
 
 def save_data(data):
+    data["account"] = _normalize_account(data.get("account"), _default_account())
     data["last_updated"] = datetime.now().isoformat()
     with open(DATA_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2, ensure_ascii=False)

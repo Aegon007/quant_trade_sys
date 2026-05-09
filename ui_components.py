@@ -3,6 +3,8 @@ import pandas as pd
 import html
 import strategy_ui as su
 import analyst_consensus as ac
+import capital_allocator as ca
+import deep_learning_strategy as dl_utils
 from portfolio_metrics import PortfolioSummary, summarize_holdings
 from share_utils import format_share_quantity
 from position_advisor import recommend_position_action
@@ -19,6 +21,45 @@ def _consensus_display_fields(consensus, now=None):
     }
 
 
+def _resolve_signal_and_profile(strategy, symbol):
+    if strategy is None:
+        return "HOLD", "未选择策略，默认观望", None
+    if str(strategy.get("id") or "") == "deep_tcn":
+        profile = dl_utils.get_deep_tcn_signal_profile(symbol, **strategy.get("params", {}))
+        return profile.signal, profile.reason, profile
+    signal, reason = su.get_signal(strategy, symbol)
+    return signal, reason, None
+
+
+def _allocation_display_fields(symbol, last_price, signal, account, signal_profile=None, risk_gate=None, current_invested_dollars=None):
+    if last_price is None:
+        return {
+            "建议动作": "—",
+            "建议投入": "—",
+            "建议股数": "—",
+            "资金说明": "缺少最新价格，暂无法估算建议投入金额。",
+        }
+
+    plan = ca.recommend_allocation(
+        symbol=symbol,
+        current_price=float(last_price),
+        signal=signal,
+        account=account or {},
+        signal_profile=signal_profile,
+        risk_gate=risk_gate,
+        current_invested_dollars=current_invested_dollars,
+    )
+    action_label = "买入" if plan.action == "BUY" else "观望"
+    dollars_text = f"${plan.recommended_dollars:,.2f}" if plan.recommended_dollars > 0 else "—"
+    shares_text = format_share_quantity(plan.recommended_shares) if plan.recommended_shares > 0 else "—"
+    return {
+        "建议动作": action_label,
+        "建议投入": dollars_text,
+        "建议股数": shares_text,
+        "资金说明": plan.reason,
+    }
+
+
 def build_holding_records(holdings, strategy, portfolio_value, risk_gate=None, analyst_consensus_cache=None):
     records = []
     for i, h in enumerate(holdings):
@@ -30,7 +71,7 @@ def build_holding_records(holdings, strategy, portfolio_value, risk_gate=None, a
         pl_pct = (pl / (shares * cost) * 100) if pl is not None and shares * cost != 0 else None
 
         try:
-            signal, reason = su.get_signal(strategy, h["symbol"])
+            signal, reason, _ = _resolve_signal_and_profile(strategy, h["symbol"])
         except Exception as e:
             signal, reason = "HOLD", f"信号计算失败: {e}"
 
@@ -69,6 +110,52 @@ def build_holding_records(holdings, strategy, portfolio_value, risk_gate=None, a
             "目标仓位": advice.target_weight_pct,
             "仓位建议": advice_text,
             "仓位说明": advice.reason,
+            **consensus_fields,
+        })
+    return records
+
+
+def build_watchlist_records(
+    watchlist,
+    strategy=None,
+    analyst_consensus_cache=None,
+    account=None,
+    risk_gate=None,
+    current_invested_dollars=None,
+):
+    records = []
+    for i, w in enumerate(watchlist):
+        last_price = w.get("last_price")
+        target_buy = w.get("target_buy")
+        diff = None
+        if last_price and target_buy:
+            diff = last_price - target_buy
+        signal, reason, signal_profile = _resolve_signal_and_profile(strategy, w["symbol"])
+        consensus = ac.get_cached_analyst_consensus(w["symbol"], analyst_consensus_cache)
+        consensus_fields = _consensus_display_fields(consensus)
+        signal, reason = ac.apply_analyst_consensus_to_signal(signal, reason, consensus)
+        watch_hint, _ = _watch_hint_by_signal(signal)
+        allocation_fields = _allocation_display_fields(
+            w["symbol"],
+            last_price,
+            signal,
+            account or {},
+            signal_profile=signal_profile,
+            risk_gate=risk_gate,
+            current_invested_dollars=current_invested_dollars,
+        )
+        records.append({
+            "选择": False,
+            "序号": i,
+            "代码": w["symbol"],
+            "备注": w.get("notes", ""),
+            "目标买入价": f"${target_buy:,.2f}" if target_buy else "—",
+            "最新价": f"${last_price:,.2f}" if last_price else "—",
+            "距目标": f"${diff:+,.2f}" if diff is not None else "—",
+            "信号": signal,
+            "提示": watch_hint,
+            "信号说明": reason,
+            **allocation_fields,
             **consensus_fields,
         })
     return records
@@ -190,19 +277,22 @@ def render_holdings_table(
         c10.markdown(f"<span title='{analyst_reason}'>{analyst_status}</span>", unsafe_allow_html=True)
 
         if c11.button("💰", key=f"sell_{i}", help="卖出"):
-            on_sell(i)
-            st.rerun()
+            result = on_sell(i)
+            if result is not False:
+                st.rerun()
 
         if c12.button("✏️", key=f"edit_{i}", help="编辑"):
             st.session_state.editing_holding = i
             st.rerun()
 
         if c13.button("🗑️", key=f"del_{i}"):
-            on_delete(i)
-            st.rerun()
+            result = on_delete(i)
+            if result is not False:
+                st.rerun()
         if c14.button("转到关注", key=f"to_watch_{i}", help="清仓并转入关注列表"):
-            on_move_to_watch(i)
-            st.rerun()
+            result = on_move_to_watch(i)
+            if result is not False:
+                st.rerun()
 
     if summary.missing_price_count:
         st.caption(f"注：有 {summary.missing_price_count} 个持仓缺少现价，盈亏仅基于已定价持仓计算。")
@@ -222,39 +312,20 @@ def _watch_hint_by_signal(signal):
     return "观望", "#6b7280"
 
 
-def render_watchlist_table(data, on_delete_batch, on_move_to_holding, strategy=None, analyst_consensus_cache=None):
+def render_watchlist_table(data, on_delete_batch, on_move_to_holding, strategy=None, analyst_consensus_cache=None, risk_gate=None):
     if not data["watchlist"]:
         st.info("暂无关注标的，请在侧边栏添加。")
-        return
+        return []
 
-    records = []
-    for i, w in enumerate(data["watchlist"]):
-        last_price = w.get("last_price")
-        target_buy = w.get("target_buy")
-        diff = None
-        if last_price and target_buy:
-            diff = last_price - target_buy
-        if strategy is None:
-            signal, reason = "HOLD", "未选择策略，默认观望"
-        else:
-            signal, reason = su.get_signal(strategy, w["symbol"])
-        consensus = ac.get_cached_analyst_consensus(w["symbol"], analyst_consensus_cache)
-        consensus_fields = _consensus_display_fields(consensus)
-        signal, reason = ac.apply_analyst_consensus_to_signal(signal, reason, consensus)
-        watch_hint, _ = _watch_hint_by_signal(signal)
-        records.append({
-            "选择": False,
-            "序号": i,
-            "代码": w["symbol"],
-            "备注": w.get("notes", ""),
-            "目标买入价": f"${target_buy:,.2f}" if target_buy else "—",
-            "最新价": f"${last_price:,.2f}" if last_price else "—",
-            "距目标": f"${diff:+,.2f}" if diff is not None else "—",
-            "信号": signal,
-            "提示": watch_hint,
-            "信号说明": reason,
-            **consensus_fields,
-        })
+    current_invested_dollars = summarize_holdings(data.get("holdings", [])).total_value
+    records = build_watchlist_records(
+        data["watchlist"],
+        strategy=strategy,
+        analyst_consensus_cache=analyst_consensus_cache,
+        account=data.get("account", {}),
+        risk_gate=risk_gate,
+        current_invested_dollars=current_invested_dollars,
+    )
 
     df = pd.DataFrame(records)
     edited_df = st.data_editor(
@@ -266,6 +337,7 @@ def render_watchlist_table(data, on_delete_batch, on_move_to_holding, strategy=N
         disabled=[
             "序号", "代码", "备注", "目标买入价", "最新价", "距目标",
             "信号", "提示", "信号说明",
+            "建议动作", "建议投入", "建议股数", "资金说明",
             "分析师意见", "分析师看多", "分析师看空", "分析师样本", "分析师说明",
         ],
         hide_index=True,
@@ -276,33 +348,39 @@ def render_watchlist_table(data, on_delete_batch, on_move_to_holding, strategy=N
     selected_indices = [i for i, row in edited_df.iterrows() if row["选择"]]
     if selected_indices:
         if st.button(f"🗑️ 批量删除选中 ({len(selected_indices)})", type="secondary"):
-            on_delete_batch(selected_indices)
-            st.rerun()
+            result = on_delete_batch(selected_indices)
+            if result is not False:
+                st.rerun()
 
     st.markdown("**单条操作**")
-    header_cols = st.columns([1.2, 1, 1.1, 1.1, 0.9, 2.2, 1.1])
+    header_cols = st.columns([1.1, 1, 1.2, 1.1, 1.1, 0.9, 2.0, 1.1])
     header_cols[0].markdown("**代码**")
     header_cols[1].markdown("**提示**")
-    header_cols[2].markdown("**分析师意见**")
-    header_cols[3].markdown("**看多/看空**")
-    header_cols[4].markdown("**样本**")
-    header_cols[5].markdown("**原因**")
-    header_cols[6].markdown("**操作**")
+    header_cols[2].markdown("**建议投入**")
+    header_cols[3].markdown("**建议股数**")
+    header_cols[4].markdown("**分析师意见**")
+    header_cols[5].markdown("**样本**")
+    header_cols[6].markdown("**原因**")
+    header_cols[7].markdown("**操作**")
     for row in records:
         hint_text, hint_color = _watch_hint_by_signal(row.get("信号"))
-        c1, c2, c3, c4, c5, c6, c7 = st.columns([1.2, 1, 1.1, 1.1, 0.9, 2.2, 1.1])
+        c1, c2, c3, c4, c5, c6, c7, c8 = st.columns([1.1, 1, 1.2, 1.1, 1.1, 0.9, 2.0, 1.1])
         c1.write(row["代码"])
         c2.markdown(
             f"<span style='color:{hint_color}; font-weight:bold;'>{hint_text}</span>",
             unsafe_allow_html=True,
         )
+        allocation_reason = html.escape(str(row.get("资金说明", "")))
+        c3.markdown(f"<span title='{allocation_reason}'>{row.get('建议投入', '—')}</span>", unsafe_allow_html=True)
+        c4.write(row.get("建议股数", "—"))
         analyst_status = html.escape(str(row.get("分析师意见", "无数据")))
         analyst_reason = html.escape(str(row.get("分析师说明", "")))
-        c3.markdown(f"<span title='{analyst_reason}'>{analyst_status}</span>", unsafe_allow_html=True)
-        c4.write(f"{row.get('分析师看多', '—')} / {row.get('分析师看空', '—')}")
-        c5.write(row.get("分析师样本", "—"))
+        c5.markdown(f"<span title='{analyst_reason}'>{analyst_status}</span>", unsafe_allow_html=True)
+        c6.write(row.get("分析师样本", "—"))
         reason = html.escape(str(row.get("信号说明", "")))
-        c6.markdown(f"<span title='{reason}'>{reason}</span>", unsafe_allow_html=True)
-        if c7.button("转到持仓", key=f"to_holding_{row['序号']}", help="按 1 股转入持仓"):
-            on_move_to_holding(row["序号"])
-            st.rerun()
+        c7.markdown(f"<span title='{reason}'>{reason}</span>", unsafe_allow_html=True)
+        if c8.button("转到持仓", key=f"to_holding_{row['序号']}", help="按 1 股转入持仓"):
+            result = on_move_to_holding(row["序号"])
+            if result is not False:
+                st.rerun()
+    return records

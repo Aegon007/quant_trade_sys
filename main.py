@@ -15,6 +15,8 @@ import news_summary as ns
 import analyst_consensus as ac
 import notification_config as ncfg
 import notification_channels as nch
+import portfolio_actions as pactions
+import system_snapshot as ss
 import locales as loc
 from strategy_registry import create_strategy
 from share_utils import format_share_quantity, validate_share_quantity
@@ -39,6 +41,10 @@ NEWS_AUTO_REFRESH_INTERVAL_SECONDS = 600
 # ---------- 语言设置 ----------
 if "lang" not in st.session_state:
     st.session_state.lang = "zh"
+
+
+def ui_text(zh_text, en_text):
+    return zh_text if st.session_state.get("lang", "zh") == "zh" else en_text
 
 # ---------- 数据状态 ----------
 try:
@@ -173,6 +179,75 @@ with st.sidebar:
                 st.warning(retrain_message)
             st.rerun()
 
+    st.divider()
+    st.header(ui_text("账户资金", "Account & Capital"))
+    account_config = dict(data.get("account", {}) or {})
+    if "account_track_cash_available" not in st.session_state:
+        st.session_state.account_track_cash_available = account_config.get("cash_available") is not None
+    track_cash_available = st.checkbox(
+        ui_text("跟踪可用现金", "Track available cash"),
+        key="account_track_cash_available",
+    )
+    with st.form("account_config_form"):
+        total_capital = st.number_input(
+            ui_text("总资金 (USD)", "Total capital (USD)"),
+            min_value=0.0,
+            value=float(account_config.get("total_capital") or 0.0),
+            step=100.0,
+            format="%.2f",
+        )
+        cash_available = st.number_input(
+            ui_text("可用现金 (USD)", "Cash available (USD)"),
+            min_value=0.0,
+            value=float(account_config.get("cash_available") or 0.0),
+            step=100.0,
+            format="%.2f",
+            disabled=not track_cash_available,
+        )
+        account_col1, account_col2 = st.columns(2)
+        min_cash_buffer_pct = account_col1.number_input(
+            ui_text("最低现金缓冲 (%)", "Min cash buffer (%)"),
+            min_value=0.0,
+            max_value=100.0,
+            value=float(account_config.get("min_cash_buffer_pct", 0.05) or 0.0) * 100.0,
+            step=1.0,
+            format="%.1f",
+        )
+        max_single_position_pct = account_col2.number_input(
+            ui_text("单票上限 (%)", "Max single position (%)"),
+            min_value=0.0,
+            max_value=100.0,
+            value=float(account_config.get("max_single_position_pct", 0.20) or 0.0) * 100.0,
+            step=1.0,
+            format="%.1f",
+        )
+        max_total_exposure_pct = st.number_input(
+            ui_text("总暴露上限 (%)", "Max total exposure (%)"),
+            min_value=0.0,
+            max_value=100.0,
+            value=float(account_config.get("max_total_exposure_pct", 1.0) or 0.0) * 100.0,
+            step=1.0,
+            format="%.1f",
+        )
+        if st.form_submit_button(ui_text("保存资金参数", "Save capital settings")):
+            data["account"] = {
+                "total_capital": float(total_capital),
+                "cash_available": float(cash_available) if track_cash_available else None,
+                "min_cash_buffer_pct": float(min_cash_buffer_pct) / 100.0,
+                "max_single_position_pct": float(max_single_position_pct) / 100.0,
+                "max_total_exposure_pct": float(max_total_exposure_pct) / 100.0,
+            }
+            du.save_data(data)
+            st.session_state.app_data = du.load_data()
+            st.success(ui_text("资金参数已保存", "Capital settings saved"))
+            st.rerun()
+    st.caption(
+        ui_text(
+            "账户资金用于计算建议投入金额、建议股数和可用现金约束。",
+            "These settings drive recommended dollars, share sizing, and cash constraints.",
+        )
+    )
+
     st.header(L("add_holding"))
     with st.form("add_holding"):
         sym = st.text_input(L("stock_code"), placeholder="AAPL, TSM...")
@@ -210,7 +285,7 @@ with st.sidebar:
     if st.button(L("refresh_price")):
         with st.spinner("刷新中..."):
             try:
-                updated = du.refresh_market_data(data)
+                updated = pactions.refresh_all_market_data()
                 st.session_state.app_data = updated
                 du.save_data(updated)
                 st.success(L("refresh_price") + " 完成！")
@@ -301,6 +376,44 @@ def apply_runtime_strategy_params(strategy):
     runtime_params["period"] = st.session_state.get("history_period", runtime_params.get("period", "2y"))
     runtime_strategy["params"] = runtime_params
     return runtime_strategy
+
+
+def render_account_snapshot_panel(account_snapshot):
+    total_capital = account_snapshot.get("total_capital")
+    cash_available = account_snapshot.get("cash_available")
+    deployable_cash = float(account_snapshot.get("deployable_cash") or 0.0)
+    exposure_pct = float(account_snapshot.get("exposure_pct") or 0.0)
+
+    st.subheader(ui_text("账户资金概览", "Account Overview"))
+    if total_capital is None:
+        st.info(
+            ui_text(
+                "尚未配置总资金，系统还无法给出完整的资金分配建议。",
+                "Total capital is not configured yet, so full allocation guidance is not available.",
+            )
+        )
+        return
+
+    cols = st.columns(4)
+    cols[0].metric(ui_text("总资金", "Total Capital"), f"${float(total_capital):,.2f}")
+    cols[1].metric(
+        ui_text("可用现金", "Cash Available"),
+        "—" if cash_available is None else f"${float(cash_available):,.2f}",
+    )
+    cols[2].metric(ui_text("可部署现金", "Deployable Cash"), f"${deployable_cash:,.2f}")
+    cols[3].metric(ui_text("当前暴露", "Current Exposure"), f"{exposure_pct:.1f}%")
+    st.caption(
+        ui_text(
+            "现金缓冲 "
+            f"${float(account_snapshot.get('cash_buffer_dollars') or 0.0):,.2f} | "
+            f"单票上限 {float(account_snapshot.get('max_single_position_pct') or 0.0):.1f}% | "
+            f"总暴露上限 {float(account_snapshot.get('max_total_exposure_pct') or 0.0):.1f}%",
+            "Cash buffer "
+            f"${float(account_snapshot.get('cash_buffer_dollars') or 0.0):,.2f} | "
+            f"Single-position cap {float(account_snapshot.get('max_single_position_pct') or 0.0):.1f}% | "
+            f"Total exposure cap {float(account_snapshot.get('max_total_exposure_pct') or 0.0):.1f}%",
+        )
+    )
 
 
 def _normalize_symbols(symbols):
@@ -667,10 +780,11 @@ def render_dialogs():
                 if st.button(L("confirm_sell")):
                     if sell_shares > 0:
                         try:
-                            sym, cb = du.sell_partial_holding(idx, sell_shares, sell_price)
-                            tx.add_transaction(sym, sell_price, sell_shares, cb)
+                            result = pactions.sell_symbol(h["symbol"], sell_shares, price=sell_price)
                             st.session_state.app_data = du.load_data()
-                            st.success(f"已卖出 {sym} {format_share_quantity(sell_shares)} 股 @ ${sell_price:.2f}")
+                            st.success(
+                                f"已卖出 {result['symbol']} {format_share_quantity(sell_shares)} 股 @ ${result['price']:.2f}"
+                            )
                             st.session_state.sell_dialog_index = None
                             st.rerun()
                         except ValueError as e:
@@ -773,6 +887,8 @@ tab1, tab2, tab3, tab4, tab5 = st.tabs([
     L("holdings_tab"), L("watchlist_tab"),
     L("transactions_tab"), L("quant_tab"), "通知配置"
 ])
+holding_records = []
+watchlist_records = []
 
 # ----- Tab1 持仓 -----
 with tab1:
@@ -797,8 +913,13 @@ with tab1:
         st.session_state.app_data = du.load_data()
 
     def handle_move_holding_to_watch(idx):
-        du.move_holding_to_watchlist(idx)
-        st.session_state.app_data = du.load_data()
+        try:
+            symbol = data["holdings"][idx]["symbol"]
+            pactions.sell_all_symbol(symbol)
+            st.session_state.app_data = du.load_data()
+        except ValueError as e:
+            st.error(str(e))
+            return False
 
     if data["holdings"]:
         render_market_risk_gate_banner(market_risk_gate_decision, market_risk_snapshot, L)
@@ -812,6 +933,7 @@ with tab1:
         risk_gate=market_risk_gate_decision,
         analyst_consensus_cache=analyst_consensus_cache,
     )
+    render_account_snapshot_panel(ss.build_account_snapshot(data))
     if data["holdings"]:
         c1, c2, c3, c4 = st.columns(4)
         c1.metric(L("total_cost"), f"${summary.total_cost:,.2f}")
@@ -849,21 +971,28 @@ with tab1:
 with tab2:
     selected_strategy_for_watch = strategy_map.get(st.session_state.selected_strategy_id, strategies[0])
     selected_strategy_for_watch_runtime = apply_runtime_strategy_params(selected_strategy_for_watch)
+    render_account_snapshot_panel(ss.build_account_snapshot(data))
 
     def handle_delete_watch_batch(indices):
         du.delete_watch_batch(indices)
         st.session_state.app_data = du.load_data()
 
     def handle_move_watch_to_holding(idx):
-        du.move_watch_to_holding(idx, shares=1.0)
-        st.session_state.app_data = du.load_data()
+        try:
+            symbol = data["watchlist"][idx]["symbol"]
+            pactions.buy_symbol(symbol, 1.0)
+            st.session_state.app_data = du.load_data()
+        except ValueError as e:
+            st.error(str(e))
+            return False
 
-    ui.render_watchlist_table(
+    watchlist_records = ui.render_watchlist_table(
         data,
         on_delete_batch=handle_delete_watch_batch,
         on_move_to_holding=handle_move_watch_to_holding,
         strategy=selected_strategy_for_watch_runtime,
         analyst_consensus_cache=analyst_consensus_cache,
+        risk_gate=market_risk_gate_decision,
     )
 
 # ----- Tab3 交易记录 -----
@@ -1138,6 +1267,25 @@ with tab4:
                         st.error(f"计算失败: {e}")
         else:
             st.info("无持仓数据")
+
+snapshot_alerts = [
+    {
+        "title": event.title,
+        "symbols": list(event.symbols or []),
+        "severity": event.severity,
+        "sentiment": event.sentiment,
+        "source": event.source,
+        "verified": bool(event.verified),
+    }
+    for event in active_market_events
+]
+st.session_state.latest_system_snapshot = ss.build_system_snapshot(
+    data=st.session_state.app_data,
+    holding_records=holding_records,
+    watchlist_records=watchlist_records,
+    risk_gate=market_risk_gate_decision,
+    alerts=snapshot_alerts,
+)
 
 # ----- Tab5 通知配置 -----
 with tab5:
