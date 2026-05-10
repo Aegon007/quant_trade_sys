@@ -14,6 +14,7 @@ class ProjectFilesTests(unittest.TestCase):
 
         for package_name in ["streamlit", "pandas", "numpy", "yfinance"]:
             self.assertIn(package_name, requirements)
+        self.assertIn("slack-bolt", requirements)
         self.assertIn("backtrader", requirements)
         self.assertIn("lib-pybroker", requirements)
         self.assertIn("scikit-learn", requirements)

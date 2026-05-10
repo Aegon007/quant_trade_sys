@@ -353,34 +353,46 @@ export ALERT_EMAIL_TO="your_gmail@gmail.com"
 .venv/bin/python -m jobs.nightly_alerts --force
 ```
 
-### 规划中：Slack 双向消息控制
+### Slack 双向消息控制
 
-如果后续要支持在 Slack 中直接发送命令来更新本地持仓，推荐方案不是 HTTP webhook，而是 `slack_bolt + Socket Mode`。这样系统运行在你自己的服务器或 Mac 上时，不需要再暴露公网 HTTP 回调地址。
+Slack 的双向控制已经按 `slack_bolt + Socket Mode` 的方式接上了。现在 `/quant` 不是“配置完就自动工作”，它需要一个常驻 bot 进程在服务器上运行，去接收 Slack 的 slash command 并调用本系统内部的命令执行层。
 
-推荐原因：
+最重要的一点是：**token 不要写进代码里**。请把它们放在运行 bot 的那台服务器环境变量里。
 
-- 不需要 `ngrok` 或公网域名。
-- Slack 官方推荐使用 Bolt / SDK 处理 Socket Mode。
-- 更适合你这种“系统在服务器上跑，我在本地 Slack 发消息”的场景。
+```bash
+export SLACK_BOT_TOKEN="xoxb-..."
+export SLACK_APP_TOKEN="xapp-..."
+.venv/bin/python -m jobs.slack_bot
+```
 
-规划中的部署方式：
+如果你在 Slack 里输入 `/quant` 看到 “the app did not respond”，通常表示：
+
+- bot 进程没有启动；
+- `SLACK_BOT_TOKEN` 或 `SLACK_APP_TOKEN` 没配对；
+- Slack App 还没有重新安装到 workspace；
+- slash command 还没有加上 `commands` scope；
+- `Socket Mode` 还没有打开，或者 app-level token 没配好。
+
+建议的 Slack App 配置：
 
 1. 在 Slack API 后台创建一个新的 Slack App。
 2. 打开 `Socket Mode`。
 3. 创建 `App-Level Token`，拿到 `xapp-...`，并授予 `connections:write`。
-4. 安装 App 到你的 workspace，拿到 `Bot Token`，形如 `xoxb-...`。
-5. 为 App 打开需要的 bot scopes，例如读取 DM / slash commands 所需权限。
-6. 在服务器环境变量中保存 `SLACK_APP_TOKEN` 和 `SLACK_BOT_TOKEN`。
-7. 在服务器上运行 Slack bot 进程，由它监听 Slack 消息并调用本系统内部的数据更新函数。
-8. 你本地电脑只需要正常登录 Slack，向 bot 发送消息或 slash command 即可。
+4. 在 `OAuth & Permissions` 里给 bot 加最小可用 scopes，至少要有 `commands`；如果后续要让 bot 主动发消息，可以再加 `chat:write`。
+5. 把 App 安装到你的 workspace，拿到 `Bot Token`，形如 `xoxb-...`。
+6. 在服务器上导出 `SLACK_BOT_TOKEN` 和 `SLACK_APP_TOKEN`，再启动 `python -m jobs.slack_bot`。
 
 这一模式下，配置位置分工如下：
 
 - 服务器：保存 Slack token，并运行 bot。
-- 本地电脑：只作为 Slack 客户端使用，不保存系统代码和 token 也可以。
+- 本地电脑：只作为 Slack 客户端使用，不需要额外保存 bot token。
 
-建议的第一版命令形态：
+当前第一版命令形态保持确定性，已经支持：
 
+- `可用命令`
+- `当前持仓`
+- `当前关注`
+- `状态 AAPL`
 - `买入 AAPL 0.5`
 - `卖出 AAPL 0.25`
 - `全部卖出 TSLA`
@@ -388,7 +400,7 @@ export ALERT_EMAIL_TO="your_gmail@gmail.com"
 - `转到持仓 MSFT 1`
 - `刷新 全部`
 
-第一版不建议直接做自由聊天式 agent，而是先做确定性命令解析，确保行为稳定。
+第一版仍然不建议直接做自由聊天式 agent，而是先让 Slack 稳定地调用这些确定性命令，等执行链路稳定后再接 LLM 做解释层。
 
 ### 未来可选：用小模型处理自然语言输入
 
