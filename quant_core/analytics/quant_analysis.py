@@ -2,12 +2,31 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 
+from quant_core.data import market_data as md
+
 
 def get_historical_data(symbol, period="6mo"):
     """获取历史数据"""
-    ticker = yf.Ticker(symbol)
-    hist = ticker.history(period=period)
-    return hist
+    try:
+        ticker = yf.Ticker(symbol)
+        hist = ticker.history(period=period)
+    except Exception as exc:
+        hist = pd.DataFrame()
+        primary_error = exc
+    else:
+        primary_error = None
+    if md.history_is_usable(hist):
+        md.record_history_source(symbol, "yfinance")
+        return hist
+    fallback = md.fetch_stooq_history(symbol, period=period)
+    if md.history_is_usable(fallback):
+        md.record_history_source(symbol, "stooq", error=primary_error)
+        return fallback
+    if primary_error is not None:
+        md.record_history_source(symbol, "yfinance", error=primary_error)
+        return hist
+    md.record_history_source(symbol, "stooq", error="history unavailable from yfinance and stooq")
+    return fallback
 
 def calculate_ma(hist, windows=[20, 50, 200]):
     """计算移动平均线"""
@@ -55,10 +74,13 @@ def calculate_correlation_matrix(symbols, period="6mo"):
     """计算收益率相关性矩阵"""
     prices = pd.DataFrame()
     for sym in symbols:
-        ticker = yf.Ticker(sym)
-        hist = ticker.history(period=period)["Close"]
-        prices[sym] = hist
+        hist = get_historical_data(sym, period)
+        if hist is None or hist.empty or "Close" not in hist.columns:
+            continue
+        prices[sym] = hist["Close"]
     returns = prices.pct_change().dropna()
+    if returns.empty:
+        return returns.corr()
     return returns.corr()
 
 def calculate_portfolio_beta(holdings_data, benchmark="SPY", period="6mo"):
@@ -81,10 +103,13 @@ def calculate_portfolio_beta(holdings_data, benchmark="SPY", period="6mo"):
     symbols.append(benchmark)
     prices = pd.DataFrame()
     for sym in symbols:
-        ticker = yf.Ticker(sym)
-        hist = ticker.history(period=period)["Close"]
-        prices[sym] = hist
+        hist = get_historical_data(sym, period)
+        if hist is None or hist.empty or "Close" not in hist.columns:
+            continue
+        prices[sym] = hist["Close"]
     returns = prices.pct_change().dropna()
+    if benchmark not in returns.columns:
+        raise ValueError(f"缺少基准 {benchmark} 的历史数据，无法计算 Beta。")
 
     betas = {}
     for sym in weights.keys():

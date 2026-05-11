@@ -48,6 +48,7 @@ def build_system_snapshot(
     watchlist_records: Optional[Iterable[Mapping]] = None,
     risk_gate=None,
     alerts: Optional[Iterable[Mapping]] = None,
+    data_sources: Optional[Mapping] = None,
     performance: Optional[Mapping] = None,
     allocation_regime: Optional[Mapping] = None,
     generated_at: Optional[datetime] = None,
@@ -80,6 +81,7 @@ def build_system_snapshot(
         },
         "risk": risk_payload,
         "alerts": list(alerts or []),
+        "data_sources": dict(data_sources or {}),
         "performance": dict(performance or {}),
         "allocation_regime": dict(allocation_regime or {}),
     }

@@ -86,6 +86,56 @@ class RunAllTests(unittest.TestCase):
         self.assertFalse(result)
         self.assertEqual(calls, [])
 
+    def test_maybe_run_market_refresh_updates_when_stale(self):
+        calls = []
+        sentinel_now = object()
+
+        data = {"holdings": [{"symbol": "AAPL"}], "watchlist": []}
+
+        def fake_refresher(payload, **kwargs):
+            calls.append(("refresher", kwargs))
+            payload = dict(payload)
+            payload["prices_last_updated"] = "2026-05-11T00:00:00"
+            return payload, True
+
+        saved = []
+
+        result = self.module.maybe_run_market_refresh(
+            now=sentinel_now,
+            loader=lambda: data,
+            refresher=fake_refresher,
+            saver=lambda payload: saved.append(payload),
+            refresh_interval_seconds=3600,
+        )
+
+        self.assertTrue(result)
+        self.assertEqual(calls, [("refresher", {"refresh_interval_seconds": 3600, "now": sentinel_now, "force": False})])
+        self.assertEqual(len(saved), 1)
+        self.assertEqual(saved[0]["prices_last_updated"], "2026-05-11T00:00:00")
+
+    def test_maybe_run_market_refresh_skips_when_not_needed(self):
+        calls = []
+        sentinel_now = object()
+        data = {"holdings": [{"symbol": "AAPL"}], "watchlist": []}
+
+        def fake_refresher(payload, **kwargs):
+            calls.append(("refresher", kwargs))
+            return payload, False
+
+        saved = []
+
+        result = self.module.maybe_run_market_refresh(
+            now=sentinel_now,
+            loader=lambda: data,
+            refresher=fake_refresher,
+            saver=lambda payload: saved.append(payload),
+            refresh_interval_seconds=3600,
+        )
+
+        self.assertFalse(result)
+        self.assertEqual(calls, [("refresher", {"refresh_interval_seconds": 3600, "now": sentinel_now, "force": False})])
+        self.assertEqual(saved, [])
+
 
 if __name__ == "__main__":
     unittest.main()

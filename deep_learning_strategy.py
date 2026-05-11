@@ -16,9 +16,9 @@ import time
 
 import numpy as np
 import pandas as pd
-import yfinance as yf
 
 from ml_strategy import compute_features
+from quant_core.analytics import quant_analysis as qa
 
 warnings.filterwarnings("ignore", category=UserWarning)
 
@@ -438,7 +438,7 @@ def train_and_save_deep_tcn_model(
 ) -> Tuple[bool, str]:
     if not TORCH_AVAILABLE:
         return False, TORCH_ERROR_MSG or "PyTorch 不可用"
-    history = yf.Ticker(symbol).history(period=period)
+    history = qa.get_historical_data(symbol, period=period)
     if history.empty:
         return False, "历史数据为空"
     dataset = prepare_deep_learning_dataset(history, sequence_length, target_horizon)
@@ -539,7 +539,7 @@ def predict_with_saved_deep_tcn_model(
         history = data.copy()
     else:
         effective_period = period or bundle.get("period", "2y")
-        history = yf.Ticker(symbol).history(period=effective_period)
+        history = qa.get_historical_data(symbol, period=effective_period)
     if history.empty:
         return None
 
@@ -753,7 +753,7 @@ def backtest_deep_tcn(
     if data is not None:
         source = data.copy()
     elif symbol is not None:
-        source = yf.Ticker(symbol).history(period=period)
+        source = qa.get_historical_data(symbol, period=period)
         if source.empty:
             return None
     else:

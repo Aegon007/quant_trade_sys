@@ -2,6 +2,7 @@ import argparse
 from datetime import datetime
 
 from quant_core.data import storage as du
+from quant_core.data import market_data as md
 from quant_core.notifications import alert_engine as ae
 from quant_core.events import analyst_consensus as ac
 from quant_core.notifications import notification_config as ncfg
@@ -62,6 +63,7 @@ def run_nightly_alerts(
     snapshot_journal_path=ss.DEFAULT_NIGHTLY_JOURNAL_FILE,
 ):
     now = now or datetime.now()
+    md.reset_market_data_status()
     data = du.load_data()
     symbols = _tracked_symbols(data)
 
@@ -115,6 +117,7 @@ def run_nightly_alerts(
         data=data,
         risk_gate=risk_decision,
         alerts=alert_dicts,
+        data_sources=md.get_market_data_status_snapshot(),
         performance={
             "live_scoreboard": {
                 "completed_trades": int(getattr(live_scoreboard, "completed_trades", 0) or 0),

@@ -15,6 +15,7 @@ class NightlyAlertsTests(unittest.TestCase):
 
     def test_run_nightly_alerts_writes_snapshot_journal(self):
         self.module.du.load_data = lambda: {"account": {}, "holdings": [], "watchlist": []}
+        self.module.md.get_market_data_status_snapshot = lambda: {"history": {"last_source": "stooq"}, "prices": {}}
         self.module.ac.should_run_nightly_consensus_update = lambda now=None: False
         self.module.ac.load_analyst_consensus_cache = lambda: {}
         self.module.ae.collect_alerts = lambda **kwargs: []
@@ -39,8 +40,10 @@ class NightlyAlertsTests(unittest.TestCase):
             payload = json.loads(lines[0])
             self.assertIn("generated_at", payload)
             self.assertIn("account", payload)
+            self.assertIn("data_sources", payload)
             self.assertIn("performance", payload)
             self.assertIn("allocation_regime", payload)
+            self.assertEqual(payload["data_sources"]["history"]["last_source"], "stooq")
 
 
 if __name__ == "__main__":

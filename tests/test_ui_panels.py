@@ -113,6 +113,30 @@ class UIPanelsTests(unittest.TestCase):
         self.assertEqual(len(self.fake_st.state["warnings"]), 0)
         self.assertEqual(len(self.fake_st.state["successes"]), 0)
 
+    def test_render_data_source_status_panel_warns_when_fallback_is_active(self):
+        self.panels.render_data_source_status_panel(
+            {
+                "history": {
+                    "last_source": "stooq",
+                    "fallback_requests": 1,
+                    "last_symbol": "SPY",
+                    "last_error": "dns failed",
+                },
+                "prices": {
+                    "last_source": "yfinance",
+                    "fallback_symbols": 0,
+                    "last_symbols": ["AAPL", "MSFT"],
+                    "last_error": "",
+                },
+            },
+            ui_text=lambda zh, en: zh,
+            st_module=self.fake_st,
+        )
+
+        self.assertTrue(any("备用源已介入" in text for text in self.fake_st.state["warnings"]))
+        self.assertTrue(any("历史主源错误" in text for text in self.fake_st.state["captions"]))
+        self.assertTrue(self.fake_st.state["metrics"])
+
     def test_render_active_events_panel_shows_empty_message(self):
         summary = SimpleNamespace(
             overview="overview text",

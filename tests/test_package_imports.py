@@ -37,6 +37,7 @@ class PackageImportTests(unittest.TestCase):
 
     def test_package_paths_are_importable(self):
         storage = reload_module("quant_core.data.storage")
+        market_data = reload_module("quant_core.data.market_data")
         ledger = reload_module("quant_core.ledger.transactions")
         portfolio_actions = reload_module("quant_core.portfolio.actions")
         portfolio_metrics_pkg = reload_module("quant_core.portfolio.metrics")
@@ -62,6 +63,7 @@ class PackageImportTests(unittest.TestCase):
         strategy_registry = reload_module("strategies.registry")
 
         self.assertTrue(hasattr(storage, "load_data"))
+        self.assertTrue(hasattr(market_data, "fetch_stooq_history"))
         self.assertTrue(hasattr(ledger, "add_transaction"))
         self.assertTrue(hasattr(portfolio_actions, "buy_symbol"))
         self.assertTrue(hasattr(portfolio_metrics_pkg, "summarize_holdings"))

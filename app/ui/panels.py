@@ -43,6 +43,80 @@ def render_account_snapshot_panel(account_snapshot, *, ui_text, st_module=None):
     )
 
 
+def render_data_source_status_panel(data_source_status, *, ui_text, st_module=None):
+    st_module = st_module or st
+    st_module.subheader(ui_text("数据源状态", "Data Source Status"))
+    if not data_source_status:
+        st_module.info(ui_text("暂无数据源状态。", "Data source status is not available yet."))
+        return
+
+    history = dict(data_source_status.get("history", {}) or {})
+    prices = dict(data_source_status.get("prices", {}) or {})
+
+    def _source_label(source_value):
+        source = str(source_value or "").strip().lower()
+        if source == "yfinance":
+            return ui_text("主源 Yahoo", "Primary Yahoo")
+        if source == "stooq":
+            return ui_text("备用源 Stooq", "Fallback Stooq")
+        return ui_text("未知", "Unknown")
+
+    history_source = _source_label(history.get("last_source")) if history.get("last_source") else ui_text("暂无请求", "No requests yet")
+    price_source = _source_label(prices.get("last_source")) if prices.get("last_source") else ui_text("暂无请求", "No requests yet")
+    history_fallbacks = int(history.get("fallback_requests") or 0)
+    price_fallbacks = int(prices.get("fallback_symbols") or 0)
+
+    cols = st_module.columns(4)
+    cols[0].metric(ui_text("历史数据来源", "History Source"), history_source)
+    cols[1].metric(ui_text("历史回退次数", "History Fallbacks"), f"{history_fallbacks}")
+    cols[2].metric(ui_text("现价数据来源", "Price Source"), price_source)
+    cols[3].metric(ui_text("现价回退数量", "Price Fallback Count"), f"{price_fallbacks}")
+
+    history_error = str(history.get("last_error") or "").strip()
+    prices_error = str(prices.get("last_error") or "").strip()
+    history_symbol = str(history.get("last_symbol") or "").strip()
+    price_symbols = list(prices.get("last_symbols", []) or [])
+
+    details = []
+    if history_symbol:
+        details.append(
+            ui_text(
+                f"最近历史请求: {history_symbol} -> {history_source}",
+                f"Latest history request: {history_symbol} -> {history_source}",
+            )
+        )
+    if price_symbols:
+        details.append(
+            ui_text(
+                f"最近现价请求: {', '.join(price_symbols[:5])} -> {price_source}",
+                f"Latest price request: {', '.join(price_symbols[:5])} -> {price_source}",
+            )
+        )
+
+    fallback_used = history_fallbacks > 0 or price_fallbacks > 0
+    if fallback_used:
+        st_module.warning(
+            ui_text(
+                "检测到备用源已介入，当前系统仍可运行，但价格/历史数据的时效性可能低于主源。",
+                "Fallback data source is active. The system can keep running, but freshness may be lower than the primary source.",
+            )
+        )
+    else:
+        st_module.success(
+            ui_text(
+                "当前数据请求仍在使用主源。",
+                "Current data requests are using the primary source.",
+            )
+        )
+
+    if details:
+        st_module.caption(" | ".join(details))
+    if history_error:
+        st_module.caption(ui_text(f"历史主源错误: {history_error}", f"History primary-source error: {history_error}"))
+    if prices_error:
+        st_module.caption(ui_text(f"现价主源错误: {prices_error}", f"Price primary-source error: {prices_error}"))
+
+
 def render_market_risk_gate_banner(decision, snapshot, L, *, st_module=None):
     st_module = st_module or st
     if decision is None or snapshot is None:

@@ -9,6 +9,7 @@ from app.ui import panels as up
 from app.ui import notification_page as unp
 from app.ui import components as ui
 from quant_core.data import storage as du
+from quant_core.data import market_data as md
 from quant_core.ledger import transactions as tx
 from quant_core.analytics import quant_analysis as qa
 from strategies import ui as su
@@ -93,6 +94,7 @@ def _scoreboard_to_dict(scoreboard):
     }
 
 # ---------- 数据状态 ----------
+md.reset_market_data_status()
 try:
     rt.bootstrap_app_data(
         st.session_state,
@@ -523,6 +525,7 @@ with tab1:
         allocation_regime=allocation_regime_decision,
     )
     up.render_account_snapshot_panel(account_snapshot, ui_text=ui_text)
+    up.render_data_source_status_panel(md.get_market_data_status_snapshot(), ui_text=ui_text)
     up.render_allocation_regime_panel(allocation_regime_decision, ui_text=ui_text)
     up.render_signal_scoreboard_panel(live_scoreboard, ui_text=ui_text)
     if data["holdings"]:
@@ -554,6 +557,7 @@ with tab2:
         history_period=st.session_state.get("history_period", "2y"),
     )
     up.render_account_snapshot_panel(account_snapshot, ui_text=ui_text)
+    up.render_data_source_status_panel(md.get_market_data_status_snapshot(), ui_text=ui_text)
     up.render_allocation_regime_panel(allocation_regime_decision, ui_text=ui_text)
 
     def handle_delete_watch_batch(indices):
@@ -968,6 +972,7 @@ st.session_state.latest_system_snapshot = ss.build_system_snapshot(
     watchlist_records=watchlist_records,
     risk_gate=market_risk_gate_decision,
     alerts=snapshot_alerts,
+    data_sources=md.get_market_data_status_snapshot(),
     performance={
         "live_scoreboard": _scoreboard_to_dict(live_scoreboard),
         "strategy_comparison": dict(latest_strategy_comparison or {}),

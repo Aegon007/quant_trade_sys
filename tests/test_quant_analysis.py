@@ -10,6 +10,21 @@ def make_history(close_values):
     return pd.DataFrame({"Close": close_values}, index=index)
 
 
+def make_ohlcv(close_values):
+    index = pd.date_range("2024-01-01", periods=len(close_values), freq="D")
+    close = pd.Series(close_values, index=index, dtype=float)
+    return pd.DataFrame(
+        {
+            "Open": close * 0.99,
+            "High": close * 1.01,
+            "Low": close * 0.98,
+            "Close": close,
+            "Volume": [1_000_000] * len(close),
+        },
+        index=index,
+    )
+
+
 class PortfolioBetaTests(unittest.TestCase):
     def setUp(self):
         histories = {
@@ -71,6 +86,19 @@ class PortfolioBetaTests(unittest.TestCase):
         self.assertEqual(captured["period"], "3mo")
         self.assertIn(signal, {"BUY", "SELL", "HOLD"})
         self.assertTrue(reason)
+
+    def test_get_historical_data_falls_back_when_yfinance_history_is_empty(self):
+        fallback_history = make_ohlcv([100, 101, 102, 103, 104])
+        self.quant_analysis.md.fetch_stooq_history = lambda symbol, period="6mo": fallback_history.copy()
+        self.quant_analysis.md.reset_market_data_status()
+
+        history = self.quant_analysis.get_historical_data("QQQ", period="6mo")
+        status = self.quant_analysis.md.get_market_data_status_snapshot()
+
+        self.assertFalse(history.empty)
+        self.assertEqual(list(history["Close"]), [100.0, 101.0, 102.0, 103.0, 104.0])
+        self.assertEqual(status["history"]["fallback_requests"], 1)
+        self.assertEqual(status["history"]["last_source"], "stooq")
 
 
 if __name__ == "__main__":

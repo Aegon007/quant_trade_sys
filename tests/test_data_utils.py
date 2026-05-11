@@ -237,6 +237,75 @@ class DataUtilsFractionalShareTests(unittest.TestCase):
         self.assertEqual(refreshed_data["holdings"][0]["current_price"], 215.0)
         self.assertEqual(refreshed_data["prices_last_updated"], now.isoformat())
 
+    def test_fetch_prices_falls_back_when_yfinance_has_no_price(self):
+        self.data_utils.md.fetch_latest_prices_from_stooq = lambda symbols: {"AAPL": 321.5}
+
+        prices = self.data_utils.fetch_prices(["AAPL"], use_cache=False)
+
+        self.assertEqual(prices["AAPL"], 321.5)
+
+    def test_fetch_prices_uses_cache_when_ttl_not_expired(self):
+        prices_first = self.data_utils.fetch_prices(["AAPL"], use_cache=True, cache_ttl=3600)
+        self.assertIn("AAPL", prices_first)
+
+        original_fetcher = self.data_utils._fetch_prices_from_provider
+
+        def fail_fetch(_provider, _symbols):
+            raise AssertionError("provider should not be called when cache is still fresh")
+
+        self.data_utils._fetch_prices_from_provider = fail_fetch
+        try:
+            prices_second = self.data_utils.fetch_prices(["AAPL"], use_cache=True, cache_ttl=3600)
+        finally:
+            self.data_utils._fetch_prices_from_provider = original_fetcher
+
+        self.assertEqual(prices_first["AAPL"], prices_second["AAPL"])
+
+    def test_fetch_prices_refetches_after_cache_ttl_expired(self):
+        first = self.data_utils.fetch_prices(["AAPL"], use_cache=True, cache_ttl=3600)
+        self.assertIn("AAPL", first)
+
+        original_time = self.data_utils.time.time
+        self.data_utils.time.time = lambda: original_time() + 7200
+
+        calls = []
+        original_fetcher = self.data_utils._fetch_prices_from_provider
+
+        def wrapped_fetch(provider, symbols):
+            calls.append((provider, tuple(symbols)))
+            return original_fetcher(provider, symbols)
+
+        self.data_utils._fetch_prices_from_provider = wrapped_fetch
+        try:
+            second = self.data_utils.fetch_prices(["AAPL"], use_cache=True, cache_ttl=3600)
+        finally:
+            self.data_utils._fetch_prices_from_provider = original_fetcher
+            self.data_utils.time.time = original_time
+
+        self.assertIn("AAPL", second)
+        self.assertTrue(calls)
+
+    def test_fetch_prices_uses_source_order_and_falls_back_on_error(self):
+        self.data_utils.DEFAULT_PRICE_SOURCE_ORDER = ("primary_mock", "secondary_mock")
+
+        def provider_primary(symbols):
+            raise RuntimeError("quota exceeded")
+
+        def provider_secondary(symbols):
+            return {"AAPL": 456.78}
+
+        self.data_utils.CUSTOM_PRICE_PROVIDERS = {
+            "primary_mock": provider_primary,
+            "secondary_mock": provider_secondary,
+        }
+
+        prices = self.data_utils.fetch_prices(["AAPL"], use_cache=False)
+
+        self.assertEqual(prices["AAPL"], 456.78)
+        status = self.data_utils.md.get_market_data_status_snapshot()
+        self.assertEqual(status["prices"]["last_source"], "secondary_mock")
+        self.assertIn("quota exceeded", str(status["prices"]["last_error"]))
+
     def test_move_holding_to_watchlist_moves_position_and_uses_latest_price(self):
         self.data_utils.save_data({
             "holdings": [

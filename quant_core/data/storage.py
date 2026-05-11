@@ -1,9 +1,13 @@
 import json
 import os
+import time
 from datetime import datetime
+
+import pandas as pd
 import yfinance as yf
 from share_utils import MIN_SHARE_QUANTITY, normalize_share_quantity, validate_share_quantity
 from quant_core import paths as qpaths
+from quant_core.data import market_data as md
 
 qpaths.bootstrap_storage_paths()
 
@@ -27,6 +31,9 @@ DEFAULT_DATA = {
     "prices_last_updated": None
 }
 DEFAULT_AUTO_REFRESH_SECONDS = 300
+DEFAULT_PRICE_CACHE_TTL_SECONDS = 3600
+DEFAULT_PRICE_SOURCE_ORDER = ("stooq", "yfinance")
+CUSTOM_PRICE_PROVIDERS = {}
 
 def _default_account():
     return {
@@ -287,62 +294,260 @@ def auto_refresh_market_data(data, refresh_interval_seconds=DEFAULT_AUTO_REFRESH
         return data, False
     return refresh_market_data(data, now=now), True
 
+def _cache_parquet_file(cache_file=None):
+    cache_file = str(cache_file or CACHE_FILE)
+    root, _ = os.path.splitext(cache_file)
+    return f"{root}.parquet"
+
+
+def _normalize_symbols(symbols):
+    normalized = []
+    seen = set()
+    for symbol in symbols or []:
+        text = str(symbol or "").strip().upper()
+        if not text or text in seen:
+            continue
+        normalized.append(text)
+        seen.add(text)
+    return normalized
+
+
+def _coerce_price(value):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _cache_dict_to_frame(cache_dict):
+    rows = []
+    for symbol, payload in (cache_dict or {}).items():
+        price = _coerce_price((payload or {}).get("price"))
+        timestamp = _coerce_price((payload or {}).get("timestamp"))
+        source = str((payload or {}).get("source") or "")
+        if price is None or timestamp is None:
+            continue
+        rows.append({"symbol": str(symbol).strip().upper(), "price": price, "timestamp": timestamp, "source": source})
+    if not rows:
+        return pd.DataFrame(columns=["symbol", "price", "timestamp", "source"])
+    return pd.DataFrame(rows)
+
+
+def _cache_frame_to_dict(frame):
+    cache_dict = {}
+    if frame is None or frame.empty:
+        return cache_dict
+    for row in frame.itertuples(index=False):
+        symbol = str(getattr(row, "symbol", "")).strip().upper()
+        price = _coerce_price(getattr(row, "price", None))
+        timestamp = _coerce_price(getattr(row, "timestamp", None))
+        if not symbol or price is None or timestamp is None:
+            continue
+        source = str(getattr(row, "source", "") or "")
+        cache_dict[symbol] = {
+            "price": price,
+            "timestamp": timestamp,
+            "source": source,
+        }
+    return cache_dict
+
+
 def _load_cache():
-    if os.path.exists(CACHE_FILE):
-        with open(CACHE_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    return {}
-
-def _save_cache(cache):
-    with open(CACHE_FILE, "w", encoding="utf-8") as f:
-        json.dump(cache, f, indent=2, ensure_ascii=False)
-
-def fetch_prices(symbols, use_cache=True, cache_ttl=60):
-    """批量获取价格，支持缓存（默认 60 秒 TTL）"""
-    prices = {}
-    if use_cache:
-        cache = _load_cache()
-    else:
-        cache = {}
-    
-    now = datetime.now().timestamp()
-    symbols_to_fetch = []
-    
-    for sym in symbols:
-        if sym in cache:
-            cached_time = cache[sym].get("timestamp", 0)
-            if now - cached_time < cache_ttl:
-                prices[sym] = cache[sym]["price"]
-                continue
-        symbols_to_fetch.append(sym)
-    
-    if symbols_to_fetch:
+    parquet_path = _cache_parquet_file()
+    if os.path.exists(parquet_path):
         try:
-            tickers = yf.Tickers(" ".join(symbols_to_fetch))
-            for sym in symbols_to_fetch:
-                try:
-                    ticker = tickers.tickers.get(sym)
-                    if ticker:
-                        current_price = ticker.fast_info.last_price
-                        if current_price is not None:
-                            prices[sym] = current_price
-                            cache[sym] = {"price": current_price, "timestamp": now}
-                except Exception:
-                    continue
+            cache_frame = pd.read_parquet(parquet_path)
+            expected_cols = {"symbol", "price", "timestamp"}
+            if expected_cols.issubset(set(cache_frame.columns)):
+                cache_frame = cache_frame.copy()
+                if "source" not in cache_frame.columns:
+                    cache_frame["source"] = ""
+                cache_frame["symbol"] = cache_frame["symbol"].astype(str).str.upper().str.strip()
+                cache_frame = cache_frame.dropna(subset=["symbol", "price", "timestamp"])
+                cache_frame = cache_frame.drop_duplicates(subset=["symbol"], keep="last")
+                return cache_frame[["symbol", "price", "timestamp", "source"]]
         except Exception:
-            for sym in symbols_to_fetch:
-                try:
-                    ticker = yf.Ticker(sym)
-                    current_price = ticker.fast_info.last_price
-                    if current_price is not None:
-                        prices[sym] = current_price
-                        cache[sym] = {"price": current_price, "timestamp": now}
-                except Exception:
-                    continue
-    
-    if use_cache:
-        _save_cache(cache)
+            pass
+
+    if os.path.exists(CACHE_FILE):
+        try:
+            with open(CACHE_FILE, "r", encoding="utf-8") as f:
+                payload = json.load(f)
+        except Exception:
+            return pd.DataFrame(columns=["symbol", "price", "timestamp", "source"])
+        if isinstance(payload, dict):
+            return _cache_dict_to_frame(payload)
+    return pd.DataFrame(columns=["symbol", "price", "timestamp", "source"])
+
+
+def _save_cache(cache_frame):
+    cache_frame = cache_frame if cache_frame is not None else pd.DataFrame(columns=["symbol", "price", "timestamp", "source"])
+    cache_dict = _cache_frame_to_dict(cache_frame)
+    with open(CACHE_FILE, "w", encoding="utf-8") as f:
+        json.dump(cache_dict, f, indent=2, ensure_ascii=False)
+
+    if cache_frame.empty:
+        return
+    parquet_path = _cache_parquet_file()
+    try:
+        cache_frame.to_parquet(parquet_path, index=False)
+    except Exception:
+        # Keep JSON cache as compatibility fallback when parquet engine is unavailable.
+        return
+
+
+def _fetch_prices_from_yfinance(symbols):
+    prices = {}
+    symbols = _normalize_symbols(symbols)
+    if not symbols:
+        return prices
+    try:
+        tickers = yf.Tickers(" ".join(symbols))
+    except Exception:
+        tickers = None
+
+    for symbol in symbols:
+        price = None
+        if tickers is not None:
+            try:
+                ticker = tickers.tickers.get(symbol)
+                if ticker is not None:
+                    price = _coerce_price(getattr(ticker.fast_info, "last_price", None))
+            except Exception:
+                price = None
+        if price is not None:
+            prices[symbol] = price
+            continue
+        try:
+            ticker = yf.Ticker(symbol)
+            price = _coerce_price(getattr(ticker.fast_info, "last_price", None))
+        except Exception:
+            price = None
+        if price is not None:
+            prices[symbol] = price
     return prices
+
+
+def _fetch_prices_from_stooq(symbols):
+    return md.fetch_latest_prices_from_stooq(_normalize_symbols(symbols))
+
+
+def _provider_map():
+    providers = {
+        "stooq": _fetch_prices_from_stooq,
+        "yfinance": _fetch_prices_from_yfinance,
+    }
+    providers.update(dict(CUSTOM_PRICE_PROVIDERS or {}))
+    return providers
+
+
+def _resolve_price_provider_order():
+    env_value = str(os.getenv("MARKET_DATA_PRICE_SOURCES", "")).strip()
+    if env_value:
+        requested = [segment.strip().lower() for segment in env_value.split(",")]
+    else:
+        requested = [str(name).strip().lower() for name in DEFAULT_PRICE_SOURCE_ORDER]
+    providers = _provider_map()
+    resolved = []
+    seen = set()
+    for name in requested:
+        if not name or name in seen:
+            continue
+        fetcher = providers.get(name)
+        if fetcher is None:
+            continue
+        resolved.append((name, fetcher))
+        seen.add(name)
+    return resolved
+
+
+def _fetch_prices_from_provider(provider, symbols):
+    provider_name, fetcher = provider
+    payload = fetcher(_normalize_symbols(symbols))
+    normalized = {}
+    for symbol, value in (payload or {}).items():
+        symbol_text = str(symbol or "").strip().upper()
+        price = _coerce_price(value)
+        if not symbol_text or price is None:
+            continue
+        normalized[symbol_text] = price
+    return normalized
+
+
+def _format_provider_errors(provider_errors):
+    if not provider_errors:
+        return None
+    return "; ".join(f"{name}: {error}" for name, error in provider_errors.items())
+
+
+def fetch_prices(symbols, use_cache=True, cache_ttl=DEFAULT_PRICE_CACHE_TTL_SECONDS):
+    """批量获取价格：本地缓存优先，缓存失效后按数据源顺序自动降级。"""
+    normalized_symbols = _normalize_symbols(symbols)
+    if not normalized_symbols:
+        return {}
+
+    prices = {}
+    now_ts = float(time.time())
+    cache_frame = _load_cache() if use_cache else pd.DataFrame(columns=["symbol", "price", "timestamp", "source"])
+    cache_lookup = _cache_frame_to_dict(cache_frame)
+
+    symbols_to_fetch = []
+    for symbol in normalized_symbols:
+        cached = cache_lookup.get(symbol)
+        if cached is None:
+            symbols_to_fetch.append(symbol)
+            continue
+        cached_time = _coerce_price(cached.get("timestamp"))
+        cached_price = _coerce_price(cached.get("price"))
+        if cached_time is None or cached_price is None or (now_ts - cached_time) >= float(cache_ttl):
+            symbols_to_fetch.append(symbol)
+            continue
+        prices[symbol] = cached_price
+
+    provider_errors = {}
+    if symbols_to_fetch:
+        unresolved = set(symbols_to_fetch)
+        provider_chain = _resolve_price_provider_order()
+        for provider in provider_chain:
+            if not unresolved:
+                break
+            provider_name = provider[0]
+            provider_symbols = sorted(unresolved)
+            try:
+                provider_prices = _fetch_prices_from_provider(provider, provider_symbols)
+            except Exception as exc:
+                provider_errors[provider_name] = exc
+                continue
+
+            resolved_symbols = []
+            for symbol, price in provider_prices.items():
+                if symbol not in unresolved:
+                    continue
+                prices[symbol] = price
+                cache_lookup[symbol] = {"price": price, "timestamp": now_ts, "source": provider_name}
+                unresolved.discard(symbol)
+                resolved_symbols.append(symbol)
+
+            if resolved_symbols:
+                md.record_price_source(
+                    resolved_symbols,
+                    provider_name,
+                    error=_format_provider_errors(provider_errors),
+                    count=len(resolved_symbols),
+                )
+
+        if unresolved:
+            md.record_price_source(
+                sorted(unresolved),
+                provider_chain[0][0] if provider_chain else "none",
+                error=_format_provider_errors(provider_errors) or "price unavailable from configured sources",
+                count=0,
+            )
+
+    if use_cache:
+        cache_frame = _cache_dict_to_frame(cache_lookup)
+        _save_cache(cache_frame)
+    return {symbol: prices[symbol] for symbol in normalized_symbols if symbol in prices}
 
 def update_all_prices(data):
     symbols_to_fetch = set()

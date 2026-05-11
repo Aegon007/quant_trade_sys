@@ -14,6 +14,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable, List, Optional
 
+from quant_core.data import storage as data_storage
 from quant_core.events.analyst_consensus import should_run_nightly_consensus_update
 from jobs.nightly_alerts import run_nightly_alerts
 
@@ -21,6 +22,8 @@ from jobs.nightly_alerts import run_nightly_alerts
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_MONITOR_SECONDS = 10
 DEFAULT_NIGHTLY_POLL_SECONDS = 300
+DEFAULT_MARKET_REFRESH_POLL_SECONDS = 300
+DEFAULT_MARKET_REFRESH_INTERVAL_SECONDS = 3600
 
 
 @dataclass(frozen=True)
@@ -113,6 +116,31 @@ def maybe_run_nightly_alerts(
     return True
 
 
+def maybe_run_market_refresh(
+    *,
+    now: Optional[datetime] = None,
+    loader: Callable[[], dict] = data_storage.load_data,
+    refresher: Callable[..., tuple] = data_storage.auto_refresh_market_data,
+    saver: Callable[[dict], None] = data_storage.save_data,
+    refresh_interval_seconds: int = DEFAULT_MARKET_REFRESH_INTERVAL_SECONDS,
+    logger: Optional[logging.Logger] = None,
+) -> bool:
+    logger = logger or logging.getLogger(__name__)
+    now = now or datetime.now()
+    data = loader()
+    refreshed_data, refreshed = refresher(
+        data,
+        refresh_interval_seconds=refresh_interval_seconds,
+        now=now,
+        force=False,
+    )
+    if not refreshed:
+        return False
+    saver(refreshed_data)
+    logger.info("Market cache refresh completed.")
+    return True
+
+
 def nightly_scheduler_loop(
     stop_event: threading.Event,
     *,
@@ -132,6 +160,34 @@ def nightly_scheduler_loop(
             break
 
 
+def market_refresh_loop(
+    stop_event: threading.Event,
+    *,
+    poll_seconds: int = DEFAULT_MARKET_REFRESH_POLL_SECONDS,
+    refresh_interval_seconds: int = DEFAULT_MARKET_REFRESH_INTERVAL_SECONDS,
+    now_func: Callable[[], datetime] = datetime.now,
+    loader: Callable[[], dict] = data_storage.load_data,
+    refresher: Callable[..., tuple] = data_storage.auto_refresh_market_data,
+    saver: Callable[[dict], None] = data_storage.save_data,
+    logger: Optional[logging.Logger] = None,
+):
+    logger = logger or logging.getLogger(__name__)
+    while not stop_event.is_set():
+        try:
+            maybe_run_market_refresh(
+                now=now_func(),
+                loader=loader,
+                refresher=refresher,
+                saver=saver,
+                refresh_interval_seconds=refresh_interval_seconds,
+                logger=logger,
+            )
+        except Exception:
+            logger.exception("Market refresh tick failed.")
+        if stop_event.wait(poll_seconds):
+            break
+
+
 def _terminate_process(process, *, timeout_seconds: float = 10.0):
     if process.poll() is not None:
         return
@@ -147,8 +203,11 @@ def run_supervisor(
     with_ui: bool = True,
     with_slack: bool = True,
     with_nightly: bool = True,
+    with_market_refresh: bool = True,
     monitor_seconds: int = DEFAULT_MONITOR_SECONDS,
     nightly_poll_seconds: int = DEFAULT_NIGHTLY_POLL_SECONDS,
+    market_refresh_poll_seconds: int = DEFAULT_MARKET_REFRESH_POLL_SECONDS,
+    market_refresh_interval_seconds: int = DEFAULT_MARKET_REFRESH_INTERVAL_SECONDS,
     python_executable: Optional[str] = None,
     project_root: Optional[Path] = None,
     popen=subprocess.Popen,
@@ -175,6 +234,7 @@ def run_supervisor(
         signal.signal(signal.SIGINT, _signal_handler)
 
     scheduler_thread = None
+    market_refresh_thread = None
     reported_exits = set()
     try:
         effective_with_slack = with_slack and _has_slack_credentials()
@@ -217,7 +277,32 @@ def run_supervisor(
                 )
             )
 
-        if not with_nightly and not service_specs:
+        if with_market_refresh:
+            market_refresh_thread = threading.Thread(
+                target=market_refresh_loop,
+                args=(stop_event,),
+                kwargs={
+                    "poll_seconds": market_refresh_poll_seconds,
+                    "refresh_interval_seconds": market_refresh_interval_seconds,
+                    "now_func": now_func,
+                    "loader": data_storage.load_data,
+                    "refresher": data_storage.auto_refresh_market_data,
+                    "saver": data_storage.save_data,
+                    "logger": logger,
+                },
+                daemon=True,
+                name="market-refresh",
+            )
+            market_refresh_thread.start()
+            startup_statuses.append(
+                ServiceStartupStatus(
+                    name="market-refresh",
+                    state="started",
+                    detail=f"running in-process; poll={market_refresh_poll_seconds}s interval={market_refresh_interval_seconds}s.",
+                )
+            )
+
+        if not with_nightly and not with_market_refresh and not service_specs:
             logger.warning("No services were requested; nothing to start.")
             emit_startup_summary(startup_statuses, printer=status_printer)
             return {
@@ -252,7 +337,7 @@ def run_supervisor(
             )
 
         emit_startup_summary(startup_statuses, printer=status_printer)
-        if not launched_processes and scheduler_thread is None:
+        if not launched_processes and scheduler_thread is None and market_refresh_thread is None:
             return {
                 "services": [],
                 "launch_count": 0,
@@ -273,6 +358,8 @@ def run_supervisor(
             _terminate_process(process)
         if scheduler_thread is not None and scheduler_thread.is_alive():
             scheduler_thread.join(timeout=2.0)
+        if market_refresh_thread is not None and market_refresh_thread.is_alive():
+            market_refresh_thread.join(timeout=2.0)
         if install_signal_handlers:
             signal.signal(signal.SIGTERM, previous_sigterm)
             signal.signal(signal.SIGINT, previous_sigint)
@@ -289,8 +376,11 @@ def main(argv=None):
     parser.add_argument("--no-ui", action="store_true", help="Do not start Streamlit UI.")
     parser.add_argument("--no-slack", action="store_true", help="Do not start the Slack bot.")
     parser.add_argument("--no-nightly", action="store_true", help="Do not start the nightly scheduler.")
+    parser.add_argument("--no-market-refresh", action="store_true", help="Do not start the hourly market cache refresher.")
     parser.add_argument("--monitor-seconds", type=int, default=DEFAULT_MONITOR_SECONDS, help="How often to check child processes.")
     parser.add_argument("--nightly-poll-seconds", type=int, default=DEFAULT_NIGHTLY_POLL_SECONDS, help="How often to check whether nightly alerts are due.")
+    parser.add_argument("--market-refresh-poll-seconds", type=int, default=DEFAULT_MARKET_REFRESH_POLL_SECONDS, help="How often to check whether market cache refresh is due.")
+    parser.add_argument("--market-refresh-interval-seconds", type=int, default=DEFAULT_MARKET_REFRESH_INTERVAL_SECONDS, help="Minimum interval between market cache refreshes.")
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"), format="%(asctime)s %(levelname)s %(message)s")
@@ -298,8 +388,11 @@ def main(argv=None):
         with_ui=not args.no_ui,
         with_slack=not args.no_slack,
         with_nightly=not args.no_nightly,
+        with_market_refresh=not args.no_market_refresh,
         monitor_seconds=args.monitor_seconds,
         nightly_poll_seconds=args.nightly_poll_seconds,
+        market_refresh_poll_seconds=args.market_refresh_poll_seconds,
+        market_refresh_interval_seconds=args.market_refresh_interval_seconds,
     )
     print(f"Supervisor exited. services={result['services']} launch_count={result['launch_count']}")
     return 0
