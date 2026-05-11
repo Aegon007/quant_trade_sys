@@ -487,6 +487,9 @@ with tab1:
     def handle_sell(idx):
         st.session_state.sell_dialog_index = idx
 
+    def handle_buy(idx):
+        st.session_state.buy_dialog_index = idx
+
     def handle_delete_holding(idx):
         try:
             symbol = data["holdings"][idx]["symbol"]
@@ -511,6 +514,7 @@ with tab1:
         data,
         on_price_change=du.update_holding_price,
         on_delete=handle_delete_holding,
+        on_buy=handle_buy,
         on_sell=handle_sell,
         on_move_to_watch=handle_move_holding_to_watch,
         strategy=selected_strategy_runtime,

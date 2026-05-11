@@ -18,6 +18,7 @@ def bootstrap_app_data(session_state, data_utils_module, *, refresh_interval_sec
 
 def ensure_dialog_state_defaults(session_state):
     session_state.setdefault("sell_dialog_index", None)
+    session_state.setdefault("buy_dialog_index", None)
     session_state.setdefault("editing_holding", None)
     session_state.setdefault("move_watch_dialog_index", None)
     session_state.setdefault("move_watch_dialog_shares", 1.0)

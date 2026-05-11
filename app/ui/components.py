@@ -249,6 +249,7 @@ def render_holdings_table(
     data,
     on_price_change,
     on_delete,
+    on_buy,
     on_sell,
     on_move_to_watch,
     strategy,
@@ -316,14 +317,14 @@ def render_holdings_table(
         st.rerun()
 
     # 渲染表格头部
-    cols = st.columns([1.1, 0.95, 0.95, 0.95, 1.15, 1.15, 0.95, 1.25, 0.8, 1.15, 0.7, 0.7, 0.7, 1.1])
-    headers = ["代码", "股数", "成本价", "现价", "市值", "盈亏 ($)", "盈亏 (%)", "仓位建议", "信号", "分析师", "卖出", "编辑", "删除", "转到关注"]
+    cols = st.columns([1.1, 0.95, 0.95, 0.95, 1.15, 1.15, 0.95, 1.25, 0.8, 1.15, 0.7, 0.7, 0.7, 0.7, 1.1])
+    headers = ["代码", "股数", "成本价", "现价", "市值", "盈亏 ($)", "盈亏 (%)", "仓位建议", "信号", "分析师", "买入", "卖出", "编辑", "删除", "转到关注"]
     for col, h in zip(cols, headers):
         col.markdown(f"**{h}**")
 
     for i, row in enumerate(records):
-        c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11, c12, c13, c14 = st.columns(
-            [1.1, 0.95, 0.95, 0.95, 1.15, 1.15, 0.95, 1.25, 0.8, 1.15, 0.7, 0.7, 0.7, 1.1]
+        c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11, c12, c13, c14, c15 = st.columns(
+            [1.1, 0.95, 0.95, 0.95, 1.15, 1.15, 0.95, 1.25, 0.8, 1.15, 0.7, 0.7, 0.7, 0.7, 1.1]
         )
         signal_reason = html.escape(str(row["信号说明"]))
         advice_reason = html.escape(str(row["仓位说明"]))
@@ -363,20 +364,25 @@ def render_holdings_table(
 
         c10.markdown(f"<span title='{analyst_reason}'>{analyst_status}</span>", unsafe_allow_html=True)
 
-        if c11.button("💰", key=f"sell_{i}", help="卖出"):
+        if c11.button("🛒", key=f"buy_{i}", help="买入加仓"):
+            result = on_buy(i)
+            if result is not False:
+                st.rerun()
+
+        if c12.button("💰", key=f"sell_{i}", help="卖出"):
             result = on_sell(i)
             if result is not False:
                 st.rerun()
 
-        if c12.button("✏️", key=f"edit_{i}", help="编辑"):
+        if c13.button("✏️", key=f"edit_{i}", help="编辑"):
             st.session_state.editing_holding = i
             st.rerun()
 
-        if c13.button("🗑️", key=f"del_{i}"):
+        if c14.button("🗑️", key=f"del_{i}"):
             result = on_delete(i)
             if result is not False:
                 st.rerun()
-        if c14.button("转到关注", key=f"to_watch_{i}", help="清仓并转入关注列表"):
+        if c15.button("转到关注", key=f"to_watch_{i}", help="清仓并转入关注列表"):
             result = on_move_to_watch(i)
             if result is not False:
                 st.rerun()

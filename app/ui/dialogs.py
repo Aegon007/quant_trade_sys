@@ -30,6 +30,8 @@ def render_portfolio_dialogs(
 
     if clear_dialog_index_if_out_of_range(session_state, key="sell_dialog_index", record_count=len(data.get("holdings", []))):
         st_module.rerun()
+    if clear_dialog_index_if_out_of_range(session_state, key="buy_dialog_index", record_count=len(data.get("holdings", []))):
+        st_module.rerun()
     if clear_dialog_index_if_out_of_range(session_state, key="editing_holding", record_count=len(data.get("holdings", []))):
         st_module.rerun()
     if clear_dialog_index_if_out_of_range(session_state, key="move_watch_dialog_index", record_count=len(data.get("watchlist", []))):
@@ -71,6 +73,51 @@ def render_portfolio_dialogs(
                     st_module.error(str(e))
             if st_module.button(L("cancel")):
                 session_state.sell_dialog_index = None
+                st_module.rerun()
+
+    if session_state.buy_dialog_index is not None:
+        idx = session_state.buy_dialog_index
+        h = data["holdings"][idx]
+        default_price = float(h.get("current_price") or h.get("cost") or 0.0)
+        with st_module.expander(f"买入加仓 {h['symbol']}", expanded=True):
+            col1, col2 = st_module.columns(2)
+            with col1:
+                buy_price = st_module.number_input(
+                    "买入价格",
+                    min_value=0.0,
+                    value=default_price,
+                    step=0.01,
+                    format="%.2f",
+                    key=f"buy_price_input_{idx}",
+                )
+            with col2:
+                buy_shares = st_module.number_input(
+                    "买入股数",
+                    min_value=0.001,
+                    value=1.0,
+                    step=0.001,
+                    format="%.3f",
+                    key=f"buy_shares_input_{idx}",
+                )
+            if st_module.button("确认买入", key=f"confirm_buy_{idx}") and buy_shares > 0:
+                try:
+                    normalized_shares = validate_share_quantity(buy_shares, field_name="shares")
+                    result = pactions.buy_symbol(
+                        h["symbol"],
+                        normalized_shares,
+                        price=buy_price,
+                        sector=h.get("sector", ""),
+                    )
+                    session_state.app_data = du.load_data()
+                    st_module.success(
+                        f"已买入 {result['symbol']} {format_share_quantity(normalized_shares)} 股 @ ${result['price']:.2f}"
+                    )
+                    session_state.buy_dialog_index = None
+                    st_module.rerun()
+                except ValueError as e:
+                    st_module.error(str(e))
+            if st_module.button(L("cancel"), key=f"cancel_buy_{idx}"):
+                session_state.buy_dialog_index = None
                 st_module.rerun()
 
     if session_state.editing_holding is not None:
