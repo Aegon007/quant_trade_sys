@@ -210,6 +210,28 @@ class RunAllTests(unittest.TestCase):
         self.assertTrue(result)
         self.assertEqual(sent, [("hourly summary", "https://hooks.slack.com/services/test")])
 
+    def test_maybe_run_market_refresh_applies_env_webhook_overrides(self):
+        market_hours = datetime.fromisoformat("2026-05-11T10:30:00-04:00")
+        sent = []
+
+        result = self.module.maybe_run_market_refresh(
+            now=market_hours,
+            loader=lambda: {"holdings": [{"symbol": "AAPL", "shares": 1.0, "current_price": 100.0}], "watchlist": []},
+            refresher=lambda payload, **kwargs: ({**payload, "prices_last_updated": "2026-05-11T00:00:00"}, True),
+            saver=lambda payload: None,
+            refresh_interval_seconds=3600,
+            config_loader=lambda: {
+                "slack": {"enabled": False, "webhook_url": ""},
+                "alert_settings": {"send_hourly_market_summary": True},
+            },
+            environ={"SLACK_WEBHOOK_URL": "https://hooks.slack.com/services/from-env"},
+            summary_builder=lambda **kwargs: "hourly summary",
+            slack_sender=lambda text, url: (sent.append((text, url)) or True, "ok"),
+        )
+
+        self.assertTrue(result)
+        self.assertEqual(sent, [("hourly summary", "https://hooks.slack.com/services/from-env")])
+
 
 if __name__ == "__main__":
     unittest.main()

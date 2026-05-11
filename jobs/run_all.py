@@ -136,6 +136,7 @@ def maybe_run_market_refresh(
     config_loader: Callable[[], dict] = ncfg.load_notification_config,
     summary_builder: Callable[..., str] = nr.build_market_refresh_report,
     slack_sender: Callable[..., tuple] = nch.send_slack_message,
+    environ=None,
     logger: Optional[logging.Logger] = None,
 ) -> bool:
     logger = logger or logging.getLogger(__name__)
@@ -151,7 +152,7 @@ def maybe_run_market_refresh(
     if not refreshed:
         return False
     saver(refreshed_data)
-    config = config_loader()
+    config = ncfg.apply_environment_overrides(config_loader(), environ=environ)
     alert_settings = config.get("alert_settings", {}) if isinstance(config, dict) else {}
     slack_config = config.get("slack", {}) if isinstance(config, dict) else {}
     if (
@@ -209,6 +210,8 @@ def maybe_run_market_refresh(
                 logger.warning("Hourly market refresh summary failed: %s", message)
         except Exception:
             logger.exception("Hourly market refresh summary failed.")
+    else:
+        logger.info("Hourly market summary skipped because Slack webhook notifications are not enabled.")
     logger.info("Market cache refresh completed.")
     return True
 

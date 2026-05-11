@@ -63,6 +63,35 @@ class NightlyAlertsTests(unittest.TestCase):
             self.assertTrue(Path(result["report_files"]["markdown_path"]).exists())
             self.assertTrue(Path(result["report_files"]["json_path"]).exists())
 
+    def test_run_nightly_alerts_applies_env_webhook_overrides_for_report_delivery(self):
+        self.module.du.load_data = lambda: {"account": {}, "holdings": [], "watchlist": []}
+        self.module.md.get_market_data_status_snapshot = lambda: {"history": {"last_source": "stooq"}, "prices": {}}
+        self.module.ac.should_run_nightly_consensus_update = lambda now=None: False
+        self.module.ac.load_analyst_consensus_cache = lambda: {}
+        self.module.ae.collect_alerts = lambda **kwargs: []
+        self.module.ae.alerts_to_dicts = lambda alerts: []
+        self.module.ae.send_new_alerts = lambda *args, **kwargs: []
+        self.module.ncfg.load_notification_config = lambda _path: {
+            "slack": {"enabled": False, "webhook_url": ""},
+            "email": {"enabled": False},
+            "alert_settings": {"send_daily_summary": True},
+        }
+        self.module.tx.load_transactions = lambda: []
+        self.module.tx.normalize_transactions = lambda rows: rows
+        sent_reports = []
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            result = self.module.run_nightly_alerts(
+                now=datetime(2026, 5, 10, 23, 30, 0),
+                dry_run=False,
+                report_output_dir=temp_dir,
+                environ={"SLACK_WEBHOOK_URL": "https://hooks.slack.com/services/from-env"},
+                slack_sender=lambda text, url: (sent_reports.append((text, url)) or True, "ok"),
+            )
+
+            self.assertFalse(result["dry_run"])
+            self.assertEqual(sent_reports, [(self.module.nr.build_nightly_report(result["snapshot"]), "https://hooks.slack.com/services/from-env")])
+
 
 if __name__ == "__main__":
     unittest.main()

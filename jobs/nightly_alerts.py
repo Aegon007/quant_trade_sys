@@ -67,6 +67,7 @@ def run_nightly_alerts(
     slack_sender=None,
     report_builder=None,
     report_writer=None,
+    environ=None,
 ):
     now = now or datetime.now()
     slack_sender = slack_sender or nch.send_slack_message
@@ -144,7 +145,10 @@ def run_nightly_alerts(
         signal_attribution=signal_attribution,
         generated_at=now,
     )
-    config = ncfg.load_notification_config(notification_config_path)
+    config = ncfg.apply_environment_overrides(
+        ncfg.load_notification_config(notification_config_path),
+        environ=environ,
+    )
 
     if dry_run:
         return {
@@ -177,6 +181,8 @@ def run_nightly_alerts(
             report_results.append({"channel": "slack", "ok": ok, "message": message})
         except Exception as exc:
             report_results.append({"channel": "slack", "ok": False, "message": f"nightly report failed: {exc}"})
+    else:
+        report_results.append({"channel": "slack", "ok": False, "message": "nightly report skipped: Slack webhook notifications are not enabled"})
     return {
         "alerts": alert_dicts,
         "sent_results": sent_results,
