@@ -6,7 +6,7 @@
 
 ## 功能概览
 
-- 持仓管理：支持添加、编辑、删除和部分卖出持仓，最小交易单位为 `0.001` share，适合 Robinhood 等支持 fractional shares 的账户。
+- 持仓管理：支持添加、编辑、删除、加仓买入、部分卖出，以及“转到关注/转到持仓”等仓位迁移操作；最小交易单位为 `0.001` share，适合 Robinhood 等支持 fractional shares 的账户。
 - 观察列表：维护关注股票、备注，并显示模型估算的上涨预期价区间。
 - 实时行情：通过 Yahoo Finance 获取持仓和观察列表价格，并使用本地缓存减少重复请求；应用运行时会自动刷新过期价格。
 - 单股策略信号：为持仓或关注股票显示买入、持有、卖出信号和原因。
@@ -123,7 +123,7 @@ PYTHONPYCACHEPREFIX=/tmp/pycache ~/venv/bin/python -m unittest discover -s tests
 - `storage/state/notification_config.json`：本地通知连接配置，保存 Slack webhook 和 SMTP 参数，不提交到 Git。
 - `storage/state/market_events.json`：手工维护事件输入文件（可选）。
 - `config/event_sources.json`：事件源配置，定义本地 mock 与自动抓取源（如 yfinance 新闻）。
-- `storage/state/transactions.json`：卖出操作产生的交易记录。
+- `storage/state/transactions.json`：买入/卖出交易记录与组合动作事件记录（如转到关注、转到持仓等）。
 - `config/strategies.json`：策略配置文件，控制 UI 展示、回测策略类和信号函数。
 
 ## 策略与回测
@@ -261,15 +261,15 @@ pip install "transformers>=4.40.0"
 
 ## 通知配置
 
-应用内提供“通知配置”页，可配置并测试。当前通知能力分两类：
+应用内提供“通知配置”页，可配置并测试。当前通知能力：
 
 - 已支持：Slack 单向告警（Incoming Webhook）、Email 单向告警（SMTP）。
-- 规划中：Slack -> 系统 的双向消息控制，用于从 Slack 直接更新本地持仓和关注列表。
+- 已支持：Slack -> 系统 的双向命令控制（`/quant` + Socket Mode bot），用于从 Slack 更新本地持仓和关注列表。
 
 注意：
 
 - 当前系统不会连接券商，也不会自动实盘下单。
-- Slack / Email 目前只负责发送通知；未来如果开启 Slack 双向控制，也只是更新本地 JSON 持仓状态，不会触发真实交易。
+- Slack / Email 发送通知；Slack 双向命令只会更新本地 JSON 持仓状态，不会触发真实交易。
 
 ### 当前已支持：Slack 单向告警
 

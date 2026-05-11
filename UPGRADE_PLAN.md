@@ -216,7 +216,7 @@ jobs/
   - Tests:
     - gate override and reason consistency (`tests/test_signal_approval.py`).
 
-- [ ] Code organization migration: Wave 2 (main orchestration split).
+- [x] Code organization migration: Wave 2 (main orchestration split).
   - Split `main.py` into orchestration + UI modules.
   - Reduce `main.py` to bootstrap only.
   - Remove temporary root wrappers when all imports are migrated.
