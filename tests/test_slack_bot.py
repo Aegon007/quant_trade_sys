@@ -1,6 +1,8 @@
 import sys
 import types
+import subprocess
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -99,3 +101,17 @@ class SlackBotTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SlackBotEntryPointTests(unittest.TestCase):
+    def test_jobs_slack_bot_help_routes_to_real_entrypoint(self):
+        project_root = Path(__file__).resolve().parents[1]
+        proc = subprocess.run(
+            [sys.executable, "-m", "jobs.slack_bot", "--help"],
+            cwd=str(project_root),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(proc.returncode, 0)
+        self.assertIn("Run the Slack /quant bot in Socket Mode.", proc.stdout)
