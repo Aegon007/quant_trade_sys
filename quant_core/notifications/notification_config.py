@@ -30,6 +30,8 @@ DEFAULT_NOTIFICATION_CONFIG = {
     "alert_settings": {
         "cooldown_hours": 6,
         "send_daily_summary": True,
+        "send_hourly_market_summary": True,
+        "send_hourly_market_summary_market_hours_only": True,
     },
 }
 
@@ -82,6 +84,12 @@ def normalize_notification_config(config):
         except (TypeError, ValueError):
             normalized["alert_settings"]["cooldown_hours"] = 6
         normalized["alert_settings"]["send_daily_summary"] = bool(alert_settings.get("send_daily_summary", True))
+        normalized["alert_settings"]["send_hourly_market_summary"] = bool(
+            alert_settings.get("send_hourly_market_summary", True)
+        )
+        normalized["alert_settings"]["send_hourly_market_summary_market_hours_only"] = bool(
+            alert_settings.get("send_hourly_market_summary_market_hours_only", True)
+        )
 
     return normalized
 

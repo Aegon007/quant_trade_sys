@@ -73,6 +73,8 @@ class SystemSnapshotTests(unittest.TestCase):
             risk_gate={"regime": "CAUTION", "risk_score": 3},
             alerts=[{"title": "AAPL 强烈买入"}],
             data_sources={"history": {"last_source": "stooq"}},
+            daily_recap={"trade_count": 2, "realized_pl": 10.0},
+            signal_attribution={"effective_count": 1, "ineffective_count": 0, "pending_count": 1},
             generated_at=now,
         )
 
@@ -83,8 +85,12 @@ class SystemSnapshotTests(unittest.TestCase):
         self.assertIn("risk", snapshot)
         self.assertIn("alerts", snapshot)
         self.assertIn("data_sources", snapshot)
+        self.assertIn("daily_recap", snapshot)
+        self.assertIn("signal_attribution", snapshot)
         self.assertEqual(snapshot["risk"]["regime"], "CAUTION")
         self.assertEqual(snapshot["data_sources"]["history"]["last_source"], "stooq")
+        self.assertEqual(snapshot["daily_recap"]["trade_count"], 2)
+        self.assertEqual(snapshot["signal_attribution"]["effective_count"], 1)
         self.assertEqual(snapshot["holdings"]["count"], 1)
         self.assertEqual(snapshot["watchlist"]["count"], 1)
         self.assertEqual(snapshot["holdings"]["records"][0]["代码"], "AAPL")

@@ -182,6 +182,44 @@ def move_watch_to_holding(symbol: str, shares: float = 1.0):
     }
 
 
+def add_watch_symbol(symbol: str, notes: str = ""):
+    symbol = _normalize_symbol(symbol)
+    data = du.load_data()
+    if _find_index(data.get("holdings", []), symbol) is not None:
+        raise ValueError(f"{symbol} already exists in holdings")
+    if _find_index(data.get("watchlist", []), symbol) is not None:
+        raise ValueError(f"{symbol} already exists in watchlist")
+
+    data["watchlist"].append(
+        {
+            "symbol": symbol,
+            "notes": str(notes or ""),
+            "last_price": None,
+        }
+    )
+    du.invalidate_market_data_timestamp(data)
+    du.save_data(data)
+    return {"action": "ADD_WATCH", "symbol": symbol, "notes": str(notes or "")}
+
+
+def remove_watch_symbol(symbol: str):
+    symbol = _normalize_symbol(symbol)
+    data = du.load_data()
+    watch_index = _find_index(data.get("watchlist", []), symbol)
+    if watch_index is None:
+        raise ValueError(f"watchlist {symbol} not found")
+
+    removed = data["watchlist"].pop(watch_index)
+    du.invalidate_market_data_timestamp(data)
+    du.save_data(data)
+    return {
+        "action": "REMOVE_WATCH",
+        "symbol": symbol,
+        "notes": str(removed.get("notes", "") or ""),
+        "price": removed.get("last_price"),
+    }
+
+
 def update_holding_record(
     symbol: str,
     *,

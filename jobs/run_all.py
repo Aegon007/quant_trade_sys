@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import logging
 import os
 import signal
@@ -14,9 +15,18 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable, List, Optional
 
+from quant_core.analytics import quant_analysis as qa
+from quant_core.data import market_data as md
 from quant_core.data import storage as data_storage
 from quant_core.events.analyst_consensus import should_run_nightly_consensus_update
-from jobs.nightly_alerts import run_nightly_alerts
+from quant_core.ledger import transactions as tx
+from quant_core.notifications import notification_channels as nch
+from quant_core.notifications import notification_config as ncfg
+from quant_core.notifications import reporting as nr
+from quant_core.portfolio.control_loop import evaluate_allocation_regime
+from quant_core.snapshots import system_snapshot as ss
+from jobs.nightly_alerts import evaluate_current_market_risk, run_nightly_alerts
+from signal_scoreboard import build_signal_scoreboard
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -123,11 +133,15 @@ def maybe_run_market_refresh(
     refresher: Callable[..., tuple] = data_storage.auto_refresh_market_data,
     saver: Callable[[dict], None] = data_storage.save_data,
     refresh_interval_seconds: int = DEFAULT_MARKET_REFRESH_INTERVAL_SECONDS,
+    config_loader: Callable[[], dict] = ncfg.load_notification_config,
+    summary_builder: Callable[..., str] = nr.build_market_refresh_report,
+    slack_sender: Callable[..., tuple] = nch.send_slack_message,
     logger: Optional[logging.Logger] = None,
 ) -> bool:
     logger = logger or logging.getLogger(__name__)
     now = now or datetime.now()
     data = loader()
+    before_data = copy.deepcopy(data)
     refreshed_data, refreshed = refresher(
         data,
         refresh_interval_seconds=refresh_interval_seconds,
@@ -137,6 +151,64 @@ def maybe_run_market_refresh(
     if not refreshed:
         return False
     saver(refreshed_data)
+    config = config_loader()
+    alert_settings = config.get("alert_settings", {}) if isinstance(config, dict) else {}
+    slack_config = config.get("slack", {}) if isinstance(config, dict) else {}
+    if (
+        slack_config.get("enabled")
+        and slack_config.get("webhook_url")
+        and bool(alert_settings.get("send_hourly_market_summary", True))
+    ):
+        market_hours_only = bool(alert_settings.get("send_hourly_market_summary_market_hours_only", True))
+        if market_hours_only and not nr.is_us_market_session(now):
+            logger.info("Skipping hourly market summary outside regular US market hours.")
+            logger.info("Market cache refresh completed.")
+            return True
+        try:
+            try:
+                account_snapshot = ss.build_account_snapshot(refreshed_data)
+            except Exception:
+                account_snapshot = {}
+            try:
+                risk_decision = evaluate_current_market_risk(refreshed_data, history_period="2y") if refreshed_data.get("holdings") else None
+            except Exception:
+                risk_decision = None
+            try:
+                transaction_rows = tx.normalize_transactions(tx.load_transactions())
+            except Exception:
+                transaction_rows = []
+            try:
+                benchmark_history = qa.get_historical_data("SPY", period="2y")
+            except Exception:
+                benchmark_history = None
+            try:
+                live_scoreboard = build_signal_scoreboard(transaction_rows, benchmark_history=benchmark_history)
+            except Exception:
+                live_scoreboard = None
+            try:
+                allocation_regime = evaluate_allocation_regime(
+                    live_scoreboard,
+                    risk_gate=risk_decision,
+                    account_snapshot=account_snapshot,
+                )
+            except Exception:
+                allocation_regime = None
+            summary_text = summary_builder(
+                before_data=before_data,
+                after_data=refreshed_data,
+                account_snapshot=account_snapshot,
+                risk_gate=risk_decision.to_dict() if hasattr(risk_decision, "to_dict") else risk_decision,
+                allocation_regime=allocation_regime.to_dict() if hasattr(allocation_regime, "to_dict") else allocation_regime,
+                data_sources=md.get_market_data_status_snapshot(),
+                now=now,
+            )
+            ok, message = slack_sender(summary_text, slack_config.get("webhook_url"))
+            if ok:
+                logger.info("Hourly market refresh summary sent to Slack.")
+            else:
+                logger.warning("Hourly market refresh summary failed: %s", message)
+        except Exception:
+            logger.exception("Hourly market refresh summary failed.")
     logger.info("Market cache refresh completed.")
     return True
 

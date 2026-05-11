@@ -4,8 +4,10 @@ from datetime import datetime
 from quant_core.data import storage as du
 from quant_core.data import market_data as md
 from quant_core.notifications import alert_engine as ae
+from quant_core.notifications import notification_channels as nch
 from quant_core.events import analyst_consensus as ac
 from quant_core.notifications import notification_config as ncfg
+from quant_core.notifications import reporting as nr
 from quant_core.portfolio import risk as pa
 from quant_core.portfolio.control_loop import evaluate_allocation_regime
 from quant_core.analytics import quant_analysis as qa
@@ -61,8 +63,15 @@ def run_nightly_alerts(
     notification_config_path=ncfg.NOTIFICATION_CONFIG_FILE,
     alert_state_path=ae.ALERT_STATE_FILE,
     snapshot_journal_path=ss.DEFAULT_NIGHTLY_JOURNAL_FILE,
+    report_output_dir=nr.DEFAULT_REPORTS_DIR,
+    slack_sender=None,
+    report_builder=None,
+    report_writer=None,
 ):
     now = now or datetime.now()
+    slack_sender = slack_sender or nch.send_slack_message
+    report_builder = report_builder or nr.build_nightly_report
+    report_writer = report_writer or nr.save_nightly_report_files
     md.reset_market_data_status()
     data = du.load_data()
     symbols = _tracked_symbols(data)
@@ -81,6 +90,8 @@ def run_nightly_alerts(
     alert_dicts = ae.alerts_to_dicts(alerts)
     benchmark_history = qa.get_historical_data("SPY", period=history_period)
     transaction_rows = tx.normalize_transactions(tx.load_transactions())
+    daily_recap = tx.summarize_daily_activity(transaction_rows, day=now)
+    signal_attribution = nr.build_signal_attribution(transaction_rows, day=now)
     live_scoreboard = build_signal_scoreboard(
         transaction_rows,
         benchmark_history=benchmark_history,
@@ -129,6 +140,8 @@ def run_nightly_alerts(
             "strategy_comparison": strategy_comparison_rows,
         },
         allocation_regime=allocation_regime.to_dict(),
+        daily_recap=daily_recap,
+        signal_attribution=signal_attribution,
         generated_at=now,
     )
     config = ncfg.load_notification_config(notification_config_path)
@@ -137,6 +150,8 @@ def run_nightly_alerts(
         return {
             "alerts": alert_dicts,
             "sent_results": [],
+            "report_results": [],
+            "report_files": {},
             "dry_run": True,
             "snapshot": snapshot,
         }
@@ -148,9 +163,25 @@ def run_nightly_alerts(
         now=now,
     )
     journal_path = ss.append_snapshot_journal(snapshot, journal_path=snapshot_journal_path)
+    report_text = report_builder(snapshot)
+    report_files = report_writer(snapshot, report_text=report_text, reports_dir=report_output_dir)
+    report_results = []
+    alert_settings = config.get("alert_settings", {}) if isinstance(config, dict) else {}
+    if (
+        config.get("slack", {}).get("enabled")
+        and config.get("slack", {}).get("webhook_url")
+        and bool(alert_settings.get("send_daily_summary", True))
+    ):
+        try:
+            ok, message = slack_sender(report_text, config["slack"].get("webhook_url"))
+            report_results.append({"channel": "slack", "ok": ok, "message": message})
+        except Exception as exc:
+            report_results.append({"channel": "slack", "ok": False, "message": f"nightly report failed: {exc}"})
     return {
         "alerts": alert_dicts,
         "sent_results": sent_results,
+        "report_results": report_results,
+        "report_files": report_files,
         "dry_run": False,
         "snapshot": snapshot,
         "snapshot_journal_path": journal_path,

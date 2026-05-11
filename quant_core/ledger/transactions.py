@@ -72,6 +72,81 @@ def filter_transactions(records, *, event_type=None, side=None, symbol=None):
         filtered.append(record)
     return filtered
 
+
+def _parse_record_datetime(value):
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        return datetime.fromisoformat(text)
+    except ValueError:
+        try:
+            return datetime.strptime(text, "%Y-%m-%d %H:%M")
+        except ValueError:
+            return None
+
+
+def summarize_daily_activity(records, *, day=None):
+    normalized = normalize_transactions(records)
+    if day is None:
+        target_day = datetime.now().date()
+    elif isinstance(day, datetime):
+        target_day = day.date()
+    else:
+        parsed = _parse_record_datetime(day)
+        if parsed is None:
+            parsed = datetime.fromisoformat(f"{str(day).strip()}T00:00:00")
+        target_day = parsed.date()
+
+    todays = []
+    for record in normalized:
+        record_dt = _parse_record_datetime(record.get("date"))
+        if record_dt is None or record_dt.date() != target_day:
+            continue
+        todays.append(record)
+
+    trade_rows = [record for record in todays if str(record.get("record_type", "")).upper() == "TRADE"]
+    buy_rows = [record for record in trade_rows if str(record.get("side", "")).upper() == "BUY"]
+    sell_rows = [record for record in trade_rows if str(record.get("side", "")).upper() == "SELL"]
+    event_rows = [record for record in todays if str(record.get("record_type", "")).upper() == "PORTFOLIO_EVENT"]
+
+    realized_pl = 0.0
+    winning_trades = []
+    losing_trades = []
+    symbols = []
+    for record in todays:
+        symbol = str(record.get("symbol", "")).strip().upper()
+        if symbol and symbol not in symbols:
+            symbols.append(symbol)
+    for record in sell_rows:
+        try:
+            pl_value = float(record.get("pl")) if record.get("pl") is not None else 0.0
+        except (TypeError, ValueError):
+            pl_value = 0.0
+        realized_pl += pl_value
+        summary = {
+            "symbol": str(record.get("symbol", "")).strip().upper(),
+            "pl": pl_value,
+            "shares": record.get("shares"),
+        }
+        if pl_value > 0:
+            winning_trades.append(summary)
+        elif pl_value < 0:
+            losing_trades.append(summary)
+
+    return {
+        "day": target_day.isoformat(),
+        "transaction_count": len(todays),
+        "trade_count": len(trade_rows),
+        "buy_count": len(buy_rows),
+        "sell_count": len(sell_rows),
+        "portfolio_event_count": len(event_rows),
+        "realized_pl": round(realized_pl, 4),
+        "symbols": symbols,
+        "largest_win": max(winning_trades, key=lambda item: float(item.get("pl") or 0.0), default=None),
+        "largest_loss": min(losing_trades, key=lambda item: float(item.get("pl") or 0.0), default=None),
+    }
+
 def _append_record(record):
     trans = load_transactions()
     trans.append(record)

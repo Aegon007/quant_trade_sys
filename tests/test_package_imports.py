@@ -27,6 +27,7 @@ class PackageImportTests(unittest.TestCase):
             "quant_core.notifications.notification_config",
             "quant_core.notifications.notification_channels",
             "quant_core.notifications.alert_engine",
+            "quant_core.notifications.reporting",
             "quant_core.snapshots.system_snapshot",
             "integrations.slack.command_parser",
             "integrations.slack.command_service",
@@ -55,6 +56,7 @@ class PackageImportTests(unittest.TestCase):
         notification_config = reload_module("quant_core.notifications.notification_config")
         notification_channels = reload_module("quant_core.notifications.notification_channels")
         alert_engine = reload_module("quant_core.notifications.alert_engine")
+        reporting = reload_module("quant_core.notifications.reporting")
         system_snapshot = reload_module("quant_core.snapshots.system_snapshot")
         parser = reload_module("integrations.slack.command_parser")
         service = reload_module("integrations.slack.command_service")
@@ -81,6 +83,7 @@ class PackageImportTests(unittest.TestCase):
         self.assertTrue(hasattr(notification_config, "load_notification_config"))
         self.assertTrue(hasattr(notification_channels, "send_slack_message"))
         self.assertTrue(hasattr(alert_engine, "collect_alerts"))
+        self.assertTrue(hasattr(reporting, "build_nightly_report"))
         self.assertTrue(hasattr(system_snapshot, "build_system_snapshot"))
         self.assertTrue(hasattr(parser, "parse_slack_command"))
         self.assertTrue(hasattr(service, "execute_slack_command"))

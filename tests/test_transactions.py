@@ -39,6 +39,60 @@ class TransactionsSchemaTests(unittest.TestCase):
         self.assertEqual(len(filtered), 1)
         self.assertEqual(filtered[0]["event_type"], "MOVE_TO_HOLDING")
 
+    def test_summarize_daily_activity_aggregates_realized_pl_and_symbols(self):
+        from quant_core.ledger.transactions import summarize_daily_activity
+
+        rows = [
+            {
+                "record_type": "TRADE",
+                "event_type": "BUY",
+                "side": "BUY",
+                "date": "2026-05-10 09:30",
+                "symbol": "AAPL",
+                "shares": 1.0,
+                "price": 100.0,
+            },
+            {
+                "record_type": "TRADE",
+                "event_type": "SELL",
+                "side": "SELL",
+                "date": "2026-05-10 15:45",
+                "symbol": "AAPL",
+                "shares": 1.0,
+                "price": 110.0,
+                "pl": 10.0,
+            },
+            {
+                "record_type": "PORTFOLIO_EVENT",
+                "event_type": "MOVE_TO_WATCH",
+                "side": "SELL",
+                "date": "2026-05-10 15:46",
+                "symbol": "MSFT",
+                "shares": 2.0,
+            },
+            {
+                "record_type": "TRADE",
+                "event_type": "SELL",
+                "side": "SELL",
+                "date": "2026-05-09 15:45",
+                "symbol": "NVDA",
+                "shares": 1.0,
+                "price": 90.0,
+                "pl": -5.0,
+            },
+        ]
+
+        recap = summarize_daily_activity(rows, day="2026-05-10")
+
+        self.assertEqual(recap["day"], "2026-05-10")
+        self.assertEqual(recap["trade_count"], 2)
+        self.assertEqual(recap["buy_count"], 1)
+        self.assertEqual(recap["sell_count"], 1)
+        self.assertEqual(recap["portfolio_event_count"], 1)
+        self.assertEqual(recap["realized_pl"], 10.0)
+        self.assertEqual(recap["symbols"], ["AAPL", "MSFT"])
+        self.assertEqual(recap["largest_win"]["symbol"], "AAPL")
+
 
 if __name__ == "__main__":
     unittest.main()

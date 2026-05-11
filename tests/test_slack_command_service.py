@@ -49,6 +49,8 @@ class SlackCommandServiceTests(unittest.TestCase):
         self.assertTrue(result.ok)
         self.assertIn("买入 <代码> <股数>", result.message)
         self.assertIn("全部卖出 <代码>", result.message)
+        self.assertIn("关注 <代码>", result.message)
+        self.assertIn("取消关注 <代码>", result.message)
 
     def test_current_holdings_command_formats_positions_and_cash(self):
         self.data_utils.save_data(
@@ -146,6 +148,49 @@ class SlackCommandServiceTests(unittest.TestCase):
         self.assertIn("NVDA 当前在关注列表中", result.message)
         self.assertIn("pullback", result.message)
         self.assertIn("$820.00", result.message)
+
+    def test_add_watch_command_appends_symbol_to_watchlist(self):
+        self.data_utils.save_data(
+            {
+                "account": {
+                    "cash_available": 2000.0,
+                },
+                "holdings": [],
+                "watchlist": [],
+            }
+        )
+
+        result = self.service.execute_slack_command("关注 QQQ")
+        data = self.data_utils.load_data()
+
+        self.assertTrue(result.ok)
+        self.assertIn("已关注 QQQ", result.message)
+        self.assertEqual(len(data["watchlist"]), 1)
+        self.assertEqual(data["watchlist"][0]["symbol"], "QQQ")
+        audit_rows = [json.loads(line) for line in self.audit_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+        self.assertEqual(audit_rows[-1]["command_name"], "ADD_WATCH")
+
+    def test_remove_watch_command_deletes_symbol_from_watchlist(self):
+        self.data_utils.save_data(
+            {
+                "account": {
+                    "cash_available": 2000.0,
+                },
+                "holdings": [],
+                "watchlist": [
+                    {"symbol": "TSLA", "notes": "watch", "last_price": 180.0}
+                ],
+            }
+        )
+
+        result = self.service.execute_slack_command("取消关注 TSLA")
+        data = self.data_utils.load_data()
+
+        self.assertTrue(result.ok)
+        self.assertIn("已取消关注 TSLA", result.message)
+        self.assertEqual(data["watchlist"], [])
+        audit_rows = [json.loads(line) for line in self.audit_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+        self.assertEqual(audit_rows[-1]["command_name"], "REMOVE_WATCH")
 
     def test_invalid_fractional_share_returns_error(self):
         result = self.service.execute_slack_command("买入 AAPL 0.0005")

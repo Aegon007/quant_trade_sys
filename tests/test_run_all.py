@@ -1,4 +1,5 @@
 import unittest
+from datetime import datetime
 from pathlib import Path
 
 from tests.support import clear_modules, install_fake_yfinance, reload_module
@@ -135,6 +136,79 @@ class RunAllTests(unittest.TestCase):
         self.assertFalse(result)
         self.assertEqual(calls, [("refresher", {"refresh_interval_seconds": 3600, "now": sentinel_now, "force": False})])
         self.assertEqual(saved, [])
+
+    def test_maybe_run_market_refresh_sends_slack_summary_when_enabled(self):
+        sentinel_now = datetime.fromisoformat("2026-05-11T10:30:00-04:00")
+        saved = []
+        sent = []
+        data_before = {"holdings": [{"symbol": "AAPL", "current_price": 100.0}], "watchlist": []}
+        data_after = {"holdings": [{"symbol": "AAPL", "current_price": 102.0}], "watchlist": [], "prices_last_updated": "2026-05-11T00:00:00"}
+
+        result = self.module.maybe_run_market_refresh(
+            now=sentinel_now,
+            loader=lambda: data_before,
+            refresher=lambda payload, **kwargs: (data_after, True),
+            saver=lambda payload: saved.append(payload),
+            refresh_interval_seconds=3600,
+            config_loader=lambda: {
+                "slack": {"enabled": True, "webhook_url": "https://hooks.slack.com/services/test"},
+                "alert_settings": {"send_hourly_market_summary": True},
+            },
+            summary_builder=lambda **kwargs: "hourly summary",
+            slack_sender=lambda text, url: (sent.append((text, url)) or True, "ok"),
+        )
+
+        self.assertTrue(result)
+        self.assertEqual(len(saved), 1)
+        self.assertEqual(sent, [("hourly summary", "https://hooks.slack.com/services/test")])
+
+    def test_maybe_run_market_refresh_skips_slack_summary_outside_market_hours_by_default(self):
+        after_hours = datetime.fromisoformat("2026-05-11T18:30:00-04:00")
+        sent = []
+
+        result = self.module.maybe_run_market_refresh(
+            now=after_hours,
+            loader=lambda: {"holdings": [{"symbol": "AAPL", "current_price": 100.0}], "watchlist": []},
+            refresher=lambda payload, **kwargs: ({**payload, "prices_last_updated": "2026-05-11T00:00:00"}, True),
+            saver=lambda payload: None,
+            refresh_interval_seconds=3600,
+            config_loader=lambda: {
+                "slack": {"enabled": True, "webhook_url": "https://hooks.slack.com/services/test"},
+                "alert_settings": {
+                    "send_hourly_market_summary": True,
+                    "send_hourly_market_summary_market_hours_only": True,
+                },
+            },
+            summary_builder=lambda **kwargs: "hourly summary",
+            slack_sender=lambda text, url: (sent.append((text, url)) or True, "ok"),
+        )
+
+        self.assertTrue(result)
+        self.assertEqual(sent, [])
+
+    def test_maybe_run_market_refresh_can_send_after_hours_when_switch_disabled(self):
+        after_hours = datetime.fromisoformat("2026-05-11T18:30:00-04:00")
+        sent = []
+
+        result = self.module.maybe_run_market_refresh(
+            now=after_hours,
+            loader=lambda: {"holdings": [{"symbol": "AAPL", "current_price": 100.0}], "watchlist": []},
+            refresher=lambda payload, **kwargs: ({**payload, "prices_last_updated": "2026-05-11T00:00:00"}, True),
+            saver=lambda payload: None,
+            refresh_interval_seconds=3600,
+            config_loader=lambda: {
+                "slack": {"enabled": True, "webhook_url": "https://hooks.slack.com/services/test"},
+                "alert_settings": {
+                    "send_hourly_market_summary": True,
+                    "send_hourly_market_summary_market_hours_only": False,
+                },
+            },
+            summary_builder=lambda **kwargs: "hourly summary",
+            slack_sender=lambda text, url: (sent.append((text, url)) or True, "ok"),
+        )
+
+        self.assertTrue(result)
+        self.assertEqual(sent, [("hourly summary", "https://hooks.slack.com/services/test")])
 
 
 if __name__ == "__main__":

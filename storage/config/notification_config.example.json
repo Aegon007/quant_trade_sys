@@ -17,6 +17,8 @@
   },
   "alert_settings": {
     "cooldown_hours": 6,
-    "send_daily_summary": true
+    "send_daily_summary": true,
+    "send_hourly_market_summary": true,
+    "send_hourly_market_summary_market_hours_only": true
   }
 }

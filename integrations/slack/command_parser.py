@@ -48,6 +48,8 @@ def parse_slack_command(text) -> ParsedSlackCommand:
 
     patterns = [
         ("SELL_ALL", rf"^(?:全部卖出|sell\s+all)\s*{SYMBOL_PATTERN}$"),
+        ("REMOVE_WATCH", rf"^(?:取消关注|unwatch|remove\s+watch(?:list)?)\s+{SYMBOL_PATTERN}$"),
+        ("ADD_WATCH", rf"^(?:关注|watch|add\s+watch(?:list)?)\s+{SYMBOL_PATTERN}$"),
         ("MOVE_TO_WATCH", rf"^(?:转到关注|move\s+to\s+watch(?:list)?)\s*{SYMBOL_PATTERN}$"),
         ("MOVE_TO_HOLDING", rf"^(?:转到持仓|move\s+to\s+holding)\s*{SYMBOL_PATTERN}(?:\s+{NUMBER_PATTERN})?\s*(?:股|share|shares)?$"),
         ("STATUS", rf"^(?:状态|status)\s+{SYMBOL_PATTERN}$"),

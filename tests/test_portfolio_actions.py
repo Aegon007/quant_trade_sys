@@ -219,6 +219,44 @@ class PortfolioActionsTests(unittest.TestCase):
         self.assertEqual(len(transactions), 2)
         self.assertTrue(all(row["event_type"] == "REMOVE_HOLDING" for row in transactions))
 
+    def test_add_watch_symbol_appends_new_watch_without_cash_change(self):
+        self.data_utils.save_data(
+            {
+                "account": {
+                    "cash_available": 3500.0,
+                },
+                "holdings": [],
+                "watchlist": [],
+            }
+        )
+
+        result = self.actions.add_watch_symbol("QQQ", notes="index ETF")
+        data = self.data_utils.load_data()
+
+        self.assertEqual(result["symbol"], "QQQ")
+        self.assertEqual(len(data["watchlist"]), 1)
+        self.assertEqual(data["watchlist"][0]["symbol"], "QQQ")
+        self.assertEqual(data["watchlist"][0]["notes"], "index ETF")
+        self.assertEqual(data["account"]["cash_available"], 3500.0)
+
+    def test_remove_watch_symbol_deletes_existing_watch(self):
+        self.data_utils.save_data(
+            {
+                "account": {
+                    "cash_available": 3500.0,
+                },
+                "holdings": [],
+                "watchlist": [{"symbol": "TSLA", "notes": "volatile", "last_price": 180.0}],
+            }
+        )
+
+        result = self.actions.remove_watch_symbol("TSLA")
+        data = self.data_utils.load_data()
+
+        self.assertEqual(result["symbol"], "TSLA")
+        self.assertEqual(data["watchlist"], [])
+        self.assertEqual(data["account"]["cash_available"], 3500.0)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -45,6 +45,22 @@ class SlackCommandParserTests(unittest.TestCase):
         self.assertEqual(command.name, "STATUS")
         self.assertEqual(command.symbol, "NVDA")
 
+    def test_parse_add_watch_command_in_chinese(self):
+        from integrations.slack.command_parser import parse_slack_command
+
+        command = parse_slack_command("关注 qqq")
+
+        self.assertEqual(command.name, "ADD_WATCH")
+        self.assertEqual(command.symbol, "QQQ")
+
+    def test_parse_remove_watch_command_in_chinese(self):
+        from integrations.slack.command_parser import parse_slack_command
+
+        command = parse_slack_command("取消关注 tsla")
+
+        self.assertEqual(command.name, "REMOVE_WATCH")
+        self.assertEqual(command.symbol, "TSLA")
+
     def test_parse_unknown_command(self):
         from integrations.slack.command_parser import parse_slack_command
 

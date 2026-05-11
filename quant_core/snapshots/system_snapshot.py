@@ -51,6 +51,8 @@ def build_system_snapshot(
     data_sources: Optional[Mapping] = None,
     performance: Optional[Mapping] = None,
     allocation_regime: Optional[Mapping] = None,
+    daily_recap: Optional[Mapping] = None,
+    signal_attribution: Optional[Mapping] = None,
     generated_at: Optional[datetime] = None,
 ) -> dict:
     generated_at = generated_at or datetime.now()
@@ -84,6 +86,8 @@ def build_system_snapshot(
         "data_sources": dict(data_sources or {}),
         "performance": dict(performance or {}),
         "allocation_regime": dict(allocation_regime or {}),
+        "daily_recap": dict(daily_recap or {}),
+        "signal_attribution": dict(signal_attribution or {}),
     }
 
 

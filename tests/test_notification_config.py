@@ -20,6 +20,8 @@ class NotificationConfigTests(unittest.TestCase):
         self.assertEqual(config["email"]["smtp_port"], 587)
         self.assertTrue(config["email"]["use_starttls"])
         self.assertFalse(config["slack"]["enabled"])
+        self.assertTrue(config["alert_settings"]["send_hourly_market_summary"])
+        self.assertTrue(config["alert_settings"]["send_hourly_market_summary_market_hours_only"])
 
     def test_save_and_load_normalizes_recipients(self):
         self.module.save_notification_config(

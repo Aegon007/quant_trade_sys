@@ -36,6 +36,8 @@ def supported_commands_text() -> str:
             "- 买入 <代码> <股数>",
             "- 卖出 <代码> <股数>",
             "- 全部卖出 <代码>",
+            "- 关注 <代码>",
+            "- 取消关注 <代码>",
             "- 转到关注 <代码>",
             "- 转到持仓 <代码> [股数]",
             "- 刷新 全部",
@@ -213,6 +215,24 @@ def execute_slack_command(text) -> CommandExecutionResult:
             data = pactions.refresh_all_market_data()
             updated_at = data.get("prices_last_updated") or "—"
             return _result(True, command, f"已刷新行情数据。更新时间: {updated_at}", data=data)
+
+        if command.name == "ADD_WATCH":
+            action = pactions.add_watch_symbol(command.symbol)
+            updated_data = du.load_data()
+            account_line = _account_summary_line(_load_snapshot(data=updated_data))
+            message = f"已关注 {action['symbol']}。"
+            if account_line:
+                message = f"{message}\n{account_line}"
+            return _result(True, command, message, action_payload=action, data=updated_data)
+
+        if command.name == "REMOVE_WATCH":
+            action = pactions.remove_watch_symbol(command.symbol)
+            updated_data = du.load_data()
+            account_line = _account_summary_line(_load_snapshot(data=updated_data))
+            message = f"已取消关注 {action['symbol']}。"
+            if account_line:
+                message = f"{message}\n{account_line}"
+            return _result(True, command, message, action_payload=action, data=updated_data)
 
         if command.name in {"BUY", "SELL"}:
             validate_share_quantity(command.shares, field_name="shares")
