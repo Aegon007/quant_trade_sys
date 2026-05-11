@@ -5,7 +5,7 @@ import pandas as pd
 
 class BacktestGuidanceTests(unittest.TestCase):
     def test_summarize_backtest_guidance_pairs_round_trips(self):
-        from position_advisor import summarize_backtest_guidance
+        from quant_core.portfolio.position import summarize_backtest_guidance
 
         trade_log = [
             {"date": pd.Timestamp("2024-01-01"), "action": "BUY", "price": 100.0, "shares": 1.0},
@@ -24,7 +24,7 @@ class BacktestGuidanceTests(unittest.TestCase):
 
 class PositionRecommendationTests(unittest.TestCase):
     def test_recommend_position_action_trims_overweight_holdings(self):
-        from position_advisor import recommend_position_action
+        from quant_core.portfolio.position import recommend_position_action
 
         advice = recommend_position_action(
             holding={"symbol": "AAPL", "shares": 4.0, "current_price": 100.0},
@@ -39,7 +39,7 @@ class PositionRecommendationTests(unittest.TestCase):
         self.assertAlmostEqual(advice.delta_shares, -2.0)
 
     def test_recommend_position_action_exits_on_sell_signal(self):
-        from position_advisor import recommend_position_action
+        from quant_core.portfolio.position import recommend_position_action
 
         advice = recommend_position_action(
             holding={"symbol": "AAPL", "shares": 1.25, "current_price": 100.0},
@@ -53,7 +53,7 @@ class PositionRecommendationTests(unittest.TestCase):
         self.assertAlmostEqual(advice.delta_shares, -1.25)
 
     def test_recommend_position_action_adds_when_buy_signal_has_positive_guidance(self):
-        from position_advisor import BacktestGuidance, recommend_position_action
+        from quant_core.portfolio.position import BacktestGuidance, recommend_position_action
 
         advice = recommend_position_action(
             holding={"symbol": "AAPL", "shares": 0.5, "current_price": 100.0},
@@ -75,8 +75,8 @@ class PositionRecommendationTests(unittest.TestCase):
         self.assertAlmostEqual(advice.suggested_exit_price, 112.0)
 
     def test_recommend_position_action_blocks_buy_when_risk_gate_is_off(self):
-        from position_advisor import recommend_position_action
-        from risk_gate import MarketRiskGateDecision
+        from quant_core.portfolio.position import recommend_position_action
+        from quant_core.risk.risk_gate import MarketRiskGateDecision
 
         advice = recommend_position_action(
             holding={"symbol": "AAPL", "shares": 0.5, "current_price": 100.0},

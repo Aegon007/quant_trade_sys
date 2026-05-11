@@ -6,9 +6,51 @@ from types import SimpleNamespace
 import pandas as pd
 
 
+_COMPAT_ALIAS_MODULES = {
+    "data_utils": "quant_core.data.storage",
+    "portfolio_actions": "quant_core.portfolio.actions",
+    "transactions": "quant_core.ledger.transactions",
+    "slack_command_parser": "integrations.slack.command_parser",
+    "slack_command_service": "integrations.slack.command_service",
+    "quant_analysis": "quant_core.analytics.quant_analysis",
+    "monte_carlo": "quant_core.analytics.monte_carlo",
+    "portfolio_metrics": "quant_core.portfolio.metrics",
+    "portfolio_advisor": "quant_core.portfolio.risk",
+    "risk_gate": "quant_core.risk.risk_gate",
+    "capital_allocator": "quant_core.portfolio.allocation",
+    "position_advisor": "quant_core.portfolio.position",
+    "event_news": "quant_core.events.event_news",
+    "event_fetcher": "quant_core.events.event_fetcher",
+    "news_summary": "quant_core.events.news_summary",
+    "analyst_consensus": "quant_core.events.analyst_consensus",
+    "finbert_sentiment": "quant_core.events.finbert_sentiment",
+    "notification_config": "quant_core.notifications.notification_config",
+    "notification_channels": "quant_core.notifications.notification_channels",
+    "alert_engine": "quant_core.notifications.alert_engine",
+    "system_snapshot": "quant_core.snapshots.system_snapshot",
+}
+
+
 def clear_modules(*module_names):
-    for module_name in module_names:
+    names = set(module_names)
+    for module_name in list(module_names):
+        alias_name = _COMPAT_ALIAS_MODULES.get(module_name)
+        if alias_name:
+            names.add(alias_name)
+    parent_attrs = []
+    for module_name in names:
+        if "." in module_name:
+            parent_name, attr_name = module_name.rsplit(".", 1)
+            parent_attrs.append((parent_name, attr_name))
+    for module_name in names:
         sys.modules.pop(module_name, None)
+    for parent_name, attr_name in parent_attrs:
+        parent_module = sys.modules.get(parent_name)
+        if parent_module is not None and hasattr(parent_module, attr_name):
+            try:
+                delattr(parent_module, attr_name)
+            except Exception:
+                pass
 
 
 def reload_module(module_name):

@@ -7,8 +7,8 @@ from tests.support import clear_modules, reload_module
 
 class NotificationConfigTests(unittest.TestCase):
     def setUp(self):
-        clear_modules("notification_config")
-        self.module = reload_module("notification_config")
+        clear_modules("quant_core.notifications.notification_config")
+        self.module = reload_module("quant_core.notifications.notification_config")
         self.temp_dir = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp_dir.cleanup)
         self.config_path = str(Path(self.temp_dir.name) / "notification_config.json")

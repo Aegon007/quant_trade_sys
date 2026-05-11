@@ -18,8 +18,8 @@ class PortfolioBetaTests(unittest.TestCase):
             "SPY": make_history([300, 303, 302, 306, 309]),
         }
         install_fake_yfinance(histories)
-        clear_modules("quant_analysis")
-        self.quant_analysis = reload_module("quant_analysis")
+        clear_modules("quant_core.analytics.quant_analysis")
+        self.quant_analysis = reload_module("quant_core.analytics.quant_analysis")
 
     def test_calculate_portfolio_beta_aggregates_duplicate_symbols(self):
         holdings = [

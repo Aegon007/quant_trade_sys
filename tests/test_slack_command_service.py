@@ -11,16 +11,16 @@ class SlackCommandServiceTests(unittest.TestCase):
         install_fake_yfinance()
         clear_modules(
             "share_utils",
-            "data_utils",
-            "transactions",
-            "portfolio_actions",
-            "slack_command_parser",
-            "slack_command_service",
+            "quant_core.data.storage",
+            "quant_core.ledger.transactions",
+            "quant_core.portfolio.actions",
+            "integrations.slack.command_parser",
+            "integrations.slack.command_service",
         )
-        self.data_utils = reload_module("data_utils")
-        self.transactions = reload_module("transactions")
-        self.actions = reload_module("portfolio_actions")
-        self.service = reload_module("slack_command_service")
+        self.data_utils = reload_module("quant_core.data.storage")
+        self.transactions = reload_module("quant_core.ledger.transactions")
+        self.actions = reload_module("quant_core.portfolio.actions")
+        self.service = reload_module("integrations.slack.command_service")
         self.temp_dir = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp_dir.cleanup)
         root = Path(self.temp_dir.name)
@@ -87,7 +87,7 @@ class SlackCommandServiceTests(unittest.TestCase):
                 },
                 "holdings": [],
                 "watchlist": [
-                    {"symbol": "MSFT", "notes": "watch", "target_buy": 300.0, "last_price": 310.0}
+                    {"symbol": "MSFT", "notes": "watch", "last_price": 310.0}
                 ],
             }
         )
@@ -135,7 +135,7 @@ class SlackCommandServiceTests(unittest.TestCase):
                 "account": {},
                 "holdings": [],
                 "watchlist": [
-                    {"symbol": "NVDA", "notes": "pullback", "target_buy": 800.0, "last_price": 820.0}
+                    {"symbol": "NVDA", "notes": "pullback", "last_price": 820.0}
                 ],
             }
         )

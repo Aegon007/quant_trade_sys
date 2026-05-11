@@ -9,7 +9,7 @@ from tests.support import clear_modules
 
 class EventFetcherTests(unittest.TestCase):
     def test_fetch_events_from_local_source_config(self):
-        from event_fetcher import fetch_events_from_sources
+        from quant_core.events.event_fetcher import fetch_events_from_sources
 
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -61,7 +61,7 @@ class EventFetcherTests(unittest.TestCase):
         self.assertEqual(reports[0]["fetched"], 1)
 
     def test_should_refresh_events_cache_on_first_fetch(self):
-        from event_fetcher import should_refresh_events_cache
+        from quant_core.events.event_fetcher import should_refresh_events_cache
 
         self.assertTrue(
             should_refresh_events_cache(
@@ -74,7 +74,7 @@ class EventFetcherTests(unittest.TestCase):
         )
 
     def test_should_refresh_events_cache_when_symbols_change(self):
-        from event_fetcher import should_refresh_events_cache
+        from quant_core.events.event_fetcher import should_refresh_events_cache
 
         now = datetime(2026, 5, 8, 12, 0, 0)
         self.assertTrue(
@@ -88,7 +88,7 @@ class EventFetcherTests(unittest.TestCase):
         )
 
     def test_should_refresh_events_cache_when_interval_elapsed(self):
-        from event_fetcher import should_refresh_events_cache
+        from quant_core.events.event_fetcher import should_refresh_events_cache
 
         now = datetime(2026, 5, 8, 12, 10, 1)
         self.assertTrue(
@@ -102,7 +102,7 @@ class EventFetcherTests(unittest.TestCase):
         )
 
     def test_should_not_refresh_events_cache_when_recent_and_same_symbols(self):
-        from event_fetcher import should_refresh_events_cache
+        from quant_core.events.event_fetcher import should_refresh_events_cache
 
         now = datetime(2026, 5, 8, 12, 5, 0)
         self.assertFalse(
@@ -120,7 +120,7 @@ class EventFetcherTests(unittest.TestCase):
         import types
 
         now = datetime(2026, 5, 8, 12, 0, 0)
-        clear_modules("event_fetcher")
+        clear_modules("quant_core.events.event_fetcher")
 
         class FakeTicker:
             def __init__(self, symbol):
@@ -143,7 +143,7 @@ class EventFetcherTests(unittest.TestCase):
         fake_yf.Ticker = FakeTicker
         sys.modules["yfinance"] = fake_yf
 
-        from event_fetcher import fetch_events_from_sources
+        from quant_core.events.event_fetcher import fetch_events_from_sources
 
         def sentiment_fn(text):
             return {

@@ -37,9 +37,14 @@ class ProjectFilesTests(unittest.TestCase):
         self.assertGreaterEqual(len(config["sources"]), 1)
 
     def test_notification_example_config_exists_without_real_secrets(self):
-        config_path = ROOT / "notification_config.example.json"
-        self.assertTrue(config_path.exists())
-        config = json.loads(config_path.read_text(encoding="utf-8"))
+        notification_example = ROOT / "storage" / "config" / "notification_config.example.json"
+        market_events_example = ROOT / "storage" / "config" / "market_events.example.json"
+        portfolio_input_example = ROOT / "storage" / "config" / "portfolio_input.example.json"
+        self.assertTrue(notification_example.exists())
+        self.assertTrue(market_events_example.exists())
+        self.assertTrue(portfolio_input_example.exists())
+
+        config = json.loads(notification_example.read_text(encoding="utf-8"))
         self.assertIn("slack", config)
         self.assertIn("email", config)
         self.assertIn("alert_settings", config)
@@ -56,12 +61,12 @@ class ProjectFilesTests(unittest.TestCase):
             ".venv/",
             "trained_models/",
             "catboost_info/",
-            "price_cache.json",
-            "analyst_consensus_cache.json",
-            "alert_state.json",
-            "notification_config.json",
-            "market_events.json",
-            "command_audit.jsonl",
+            "storage/state/price_cache.json",
+            "storage/state/analyst_consensus_cache.json",
+            "storage/state/alert_state.json",
+            "storage/state/notification_config.json",
+            "storage/state/market_events.json",
+            "storage/state/command_audit.jsonl",
         ]:
             self.assertIn(entry, gitignore)
 

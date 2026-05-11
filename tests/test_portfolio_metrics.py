@@ -3,7 +3,7 @@ import unittest
 
 class PortfolioSummaryTests(unittest.TestCase):
     def test_summarize_holdings_tracks_missing_prices_without_distorting_pl(self):
-        from portfolio_metrics import summarize_holdings
+        from quant_core.portfolio.metrics import summarize_holdings
 
         summary = summarize_holdings(
             [
@@ -22,4 +22,3 @@ class PortfolioSummaryTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

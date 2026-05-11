@@ -12,8 +12,8 @@ class StrategyUITests(unittest.TestCase):
         import types
 
         sys.modules["streamlit"] = types.ModuleType("streamlit")
-        clear_modules("strategy_ui")
-        self.strategy_ui = reload_module("strategy_ui")
+        clear_modules("strategies.ui")
+        self.strategy_ui = reload_module("strategies.ui")
         self.temp_dir = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp_dir.cleanup)
         self.config_path = Path(self.temp_dir.name) / "strategies.json"

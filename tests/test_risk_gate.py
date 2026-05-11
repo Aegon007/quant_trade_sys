@@ -4,7 +4,7 @@ import pandas as pd
 
 class RiskGateTests(unittest.TestCase):
     def test_evaluate_market_risk_gate_detects_risk_off(self):
-        from risk_gate import MarketRiskSnapshot, evaluate_market_risk_gate
+        from quant_core.risk.risk_gate import MarketRiskSnapshot, evaluate_market_risk_gate
 
         decision = evaluate_market_risk_gate(
             MarketRiskSnapshot(
@@ -21,7 +21,7 @@ class RiskGateTests(unittest.TestCase):
         self.assertLessEqual(decision.max_position_weight, 0.08)
 
     def test_evaluate_market_risk_gate_detects_caution(self):
-        from risk_gate import MarketRiskSnapshot, evaluate_market_risk_gate
+        from quant_core.risk.risk_gate import MarketRiskSnapshot, evaluate_market_risk_gate
 
         decision = evaluate_market_risk_gate(
             MarketRiskSnapshot(
@@ -36,7 +36,7 @@ class RiskGateTests(unittest.TestCase):
         self.assertAlmostEqual(decision.max_position_weight, 0.12)
 
     def test_evaluate_market_risk_gate_detects_normal(self):
-        from risk_gate import MarketRiskSnapshot, evaluate_market_risk_gate
+        from quant_core.risk.risk_gate import MarketRiskSnapshot, evaluate_market_risk_gate
 
         decision = evaluate_market_risk_gate(
             MarketRiskSnapshot(vix=16.0, benchmark_drawdown=-0.03, benchmark_volatility=0.18)
@@ -47,7 +47,7 @@ class RiskGateTests(unittest.TestCase):
         self.assertAlmostEqual(decision.max_position_weight, 0.20)
 
     def test_build_market_risk_snapshot_from_histories_extracts_metrics(self):
-        from risk_gate import build_market_risk_snapshot_from_histories
+        from quant_core.risk.risk_gate import build_market_risk_snapshot_from_histories
 
         benchmark_history = pd.DataFrame(
             {"Close": [100.0, 110.0, 105.0, 108.0]},
@@ -72,7 +72,7 @@ class RiskGateTests(unittest.TestCase):
         self.assertEqual(snapshot.correlation_alert_count, 2)
 
     def test_build_market_risk_snapshot_from_histories_handles_missing_data(self):
-        from risk_gate import build_market_risk_snapshot_from_histories
+        from quant_core.risk.risk_gate import build_market_risk_snapshot_from_histories
 
         snapshot = build_market_risk_snapshot_from_histories(
             benchmark_history=pd.DataFrame(),
@@ -86,7 +86,7 @@ class RiskGateTests(unittest.TestCase):
         self.assertIsNone(snapshot.benchmark_volatility)
 
     def test_merge_risk_gate_decisions_takes_stricter_controls(self):
-        from risk_gate import MarketRiskGateDecision, merge_risk_gate_decisions
+        from quant_core.risk.risk_gate import MarketRiskGateDecision, merge_risk_gate_decisions
 
         base = MarketRiskGateDecision(
             regime="CAUTION",

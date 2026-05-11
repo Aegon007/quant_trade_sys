@@ -5,7 +5,7 @@ import pandas as pd
 
 class PortfolioAdvisorTests(unittest.TestCase):
     def test_analyze_portfolio_flags_sector_concentration(self):
-        from portfolio_advisor import analyze_portfolio_risk
+        from quant_core.portfolio.risk import analyze_portfolio_risk
 
         advice = analyze_portfolio_risk(
             holdings=[
@@ -23,7 +23,7 @@ class PortfolioAdvisorTests(unittest.TestCase):
         self.assertIn("Technology", advice.recommendations[0])
 
     def test_analyze_portfolio_flags_high_correlation_pairs(self):
-        from portfolio_advisor import analyze_portfolio_risk
+        from quant_core.portfolio.risk import analyze_portfolio_risk
 
         correlation = pd.DataFrame(
             {
@@ -49,7 +49,7 @@ class PortfolioAdvisorTests(unittest.TestCase):
         self.assertAlmostEqual(advice.correlation_alerts[0].combined_weight_pct, 60.0)
 
     def test_analyze_portfolio_handles_missing_prices(self):
-        from portfolio_advisor import analyze_portfolio_risk
+        from quant_core.portfolio.risk import analyze_portfolio_risk
 
         advice = analyze_portfolio_risk(
             holdings=[

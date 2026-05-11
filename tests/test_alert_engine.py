@@ -8,8 +8,8 @@ from tests.support import clear_modules, reload_module
 
 class AlertEngineTests(unittest.TestCase):
     def setUp(self):
-        clear_modules("alert_engine")
-        self.module = reload_module("alert_engine")
+        clear_modules("quant_core.notifications.alert_engine")
+        self.module = reload_module("quant_core.notifications.alert_engine")
         self.temp_dir = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp_dir.cleanup)
         self.state_path = str(Path(self.temp_dir.name) / "alert_state.json")
@@ -63,7 +63,7 @@ class AlertEngineTests(unittest.TestCase):
         self.assertIn("3/10 成分股", alerts[0].body)
 
     def test_build_risk_alert_emits_risk_off_only(self):
-        from risk_gate import MarketRiskGateDecision
+        from quant_core.risk.risk_gate import MarketRiskGateDecision
 
         decision = MarketRiskGateDecision(
             regime="RISK_OFF",
@@ -103,7 +103,7 @@ class AlertEngineTests(unittest.TestCase):
         self.assertEqual(third, [changed])
 
     def test_risk_alert_repeats_after_cooldown(self):
-        from risk_gate import MarketRiskGateDecision
+        from quant_core.risk.risk_gate import MarketRiskGateDecision
 
         now = datetime(2026, 5, 9, 9, 0, 0)
         decision = MarketRiskGateDecision(

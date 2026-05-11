@@ -24,9 +24,9 @@ class StrategyRegistryTests(unittest.TestCase):
             "strategies.ensemble_strategy",
             "strategies.deep_learning_strategy",
             "deep_learning_strategy",
-            "strategy_registry",
+            "strategies.registry",
         )
-        self.strategy_registry = reload_module("strategy_registry")
+        self.strategy_registry = reload_module("strategies.registry")
 
     def test_create_strategy_builds_expected_rule_strategy(self):
         strategy = self.strategy_registry.create_strategy(
@@ -72,8 +72,8 @@ class StrategyRegistryTests(unittest.TestCase):
         import types
 
         sys.modules["streamlit"] = types.ModuleType("streamlit")
-        clear_modules("strategy_ui")
-        strategy_ui = reload_module("strategy_ui")
+        clear_modules("strategies.ui")
+        strategy_ui = reload_module("strategies.ui")
 
         signal, reason = strategy_ui.get_signal(
             {

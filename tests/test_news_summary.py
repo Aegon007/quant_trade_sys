@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 
 class NewsSummaryTests(unittest.TestCase):
     def test_summarize_news_events_handles_empty_input(self):
-        from news_summary import summarize_news_events
+        from quant_core.events.news_summary import summarize_news_events
 
         summary = summarize_news_events([], lang="zh")
 
@@ -13,8 +13,8 @@ class NewsSummaryTests(unittest.TestCase):
         self.assertIn("暂无", summary.overview)
 
     def test_summarize_news_events_detects_negative_tone(self):
-        from event_news import MarketEvent
-        from news_summary import summarize_news_events
+        from quant_core.events.event_news import MarketEvent
+        from quant_core.events.news_summary import summarize_news_events
 
         now = datetime(2026, 5, 9, 10, 0, 0)
         events = [
@@ -52,8 +52,8 @@ class NewsSummaryTests(unittest.TestCase):
         self.assertIn("negative", summary.overview.lower())
 
     def test_summarize_news_events_prioritizes_high_severity_and_confidence(self):
-        from event_news import MarketEvent
-        from news_summary import summarize_news_events
+        from quant_core.events.event_news import MarketEvent
+        from quant_core.events.news_summary import summarize_news_events
 
         now = datetime(2026, 5, 9, 10, 0, 0)
         events = [

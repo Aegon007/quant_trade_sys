@@ -5,7 +5,7 @@ from tests.support import clear_modules
 
 class FinBertSentimentTests(unittest.TestCase):
     def test_keyword_fallback_classifies_positive_and_negative(self):
-        from finbert_sentiment import analyze_financial_sentiment
+        from quant_core.events.finbert_sentiment import analyze_financial_sentiment
 
         positive = analyze_financial_sentiment("Company beats earnings and raises guidance.", use_finbert=False)
         negative = analyze_financial_sentiment("Company misses earnings and cuts outlook.", use_finbert=False)
@@ -19,7 +19,7 @@ class FinBertSentimentTests(unittest.TestCase):
         import sys
         import types
 
-        clear_modules("finbert_sentiment")
+        clear_modules("quant_core.events.finbert_sentiment")
         fake_transformers = types.ModuleType("transformers")
 
         def fake_pipeline(_task, model=None, tokenizer=None):
@@ -30,7 +30,7 @@ class FinBertSentimentTests(unittest.TestCase):
         fake_transformers.pipeline = fake_pipeline
         sys.modules["transformers"] = fake_transformers
 
-        from finbert_sentiment import analyze_financial_sentiment
+        from quant_core.events.finbert_sentiment import analyze_financial_sentiment
 
         result = analyze_financial_sentiment("Mock headline", use_finbert=True)
         self.assertEqual(result["label"], "positive")

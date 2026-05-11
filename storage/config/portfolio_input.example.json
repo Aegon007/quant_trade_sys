@@ -1,0 +1,26 @@
+{
+  "holdings": [
+    {
+      "symbol": "AAPL",
+      "shares": 0.125,
+      "cost": 180.5,
+      "sector": "Technology"
+    },
+    {
+      "symbol": "IAU",
+      "shares": 1.0,
+      "cost": 90.4,
+      "sector": "Gold"
+    }
+  ],
+  "watchlist": [
+    {
+      "symbol": "MSFT",
+      "notes": "Wait for pullback"
+    },
+    {
+      "symbol": "TSM",
+      "notes": "AI chip manufacturing"
+    }
+  ]
+}

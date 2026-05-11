@@ -7,7 +7,7 @@
       "description": "**📈 双均线交叉策略 (仅做多)**\n- **逻辑**：短期均线（20日）上穿长期均线（50日）是上涨趋势开始的信号，称为“金叉”；下穿则是趋势转弱信号。\n- **交易规则**：\n    - **买入信号**：20日均线由下向上穿过50日均线（金叉） → 买入或加仓。\n    - **卖出信号**：20日均线由上向下穿过50日均线（死叉） → 卖出持仓，转为空仓等待。",
       "function": "backtest_ma_crossover",
       "strategy_class": "strategies.classic_strategies.MACrossoverStrategy",
-      "signal_function": "quant_analysis.get_signal_ma_crossover",
+      "signal_function": "quant_core.analytics.quant_analysis.get_signal_ma_crossover",
       "params": {
         "short_window": 20,
         "long_window": 50
@@ -20,7 +20,7 @@
       "description": "**📊 布林带反转策略 (仅做多)**\n- **逻辑**：股价在布林带下轨附近时被视为超卖，有反弹需求；回到中轨或上轨时则可能遇阻。\n- **交易规则**：\n    - **买入信号**：股价触及或跌破布林带下轨后回升 → 可分批买入。\n    - **卖出信号**：持仓后，当股价回升至布林带中轨（20日均线）或上轨时 → 考虑止盈卖出。",
       "function": "backtest_bollinger_reversal",
       "strategy_class": "strategies.classic_strategies.BollingerStrategy",
-      "signal_function": "quant_analysis.get_signal_bollinger",
+      "signal_function": "quant_core.analytics.quant_analysis.get_signal_bollinger",
       "params": {
         "window": 20,
         "num_std": 2
@@ -33,7 +33,7 @@
       "description": "**📉 MACD 金叉死叉策略 (仅做多)**\n- **逻辑**：MACD线（快线）上穿信号线（慢线）为金叉，表示动能转强；下穿为死叉，表示动能转弱。\n- **交易规则**：\n    - **买入信号**：MACD线由下向上穿过信号线（金叉） → 买入。\n    - **卖出信号**：MACD线由上向下穿过信号线（死叉） → 卖出平仓。",
       "function": "backtest_macd_crossover",
       "strategy_class": "strategies.classic_strategies.MACDStrategy",
-      "signal_function": "quant_analysis.get_signal_macd",
+      "signal_function": "quant_core.analytics.quant_analysis.get_signal_macd",
       "params": {
         "fast": 12,
         "slow": 26,
@@ -47,7 +47,7 @@
       "description": "**📌 RSI 超买超卖策略 (仅做多)**\n- **逻辑**：RSI低于30表示超卖，股价可能反弹；高于70表示超买，股价可能回调。\n- **交易规则**：\n    - **买入信号**：RSI从超卖区（<30）向上回升 → 可考虑买入。\n    - **卖出信号**：持仓后，RSI进入超买区（>70）并开始回落 → 可考虑卖出止盈。",
       "function": "backtest_rsi_oversold",
       "strategy_class": "strategies.classic_strategies.RSIStrategy",
-      "signal_function": "quant_analysis.get_signal_rsi",
+      "signal_function": "quant_core.analytics.quant_analysis.get_signal_rsi",
       "params": {
         "period": 14,
         "oversold": 30,

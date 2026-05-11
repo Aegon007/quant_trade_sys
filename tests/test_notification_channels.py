@@ -43,8 +43,8 @@ class FakeSMTP:
 
 class NotificationChannelsTests(unittest.TestCase):
     def setUp(self):
-        clear_modules("notification_channels")
-        self.module = reload_module("notification_channels")
+        clear_modules("quant_core.notifications.notification_channels")
+        self.module = reload_module("quant_core.notifications.notification_channels")
         FakeSMTP.instances = []
 
     def test_send_slack_message_posts_json_payload(self):

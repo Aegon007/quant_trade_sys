@@ -7,7 +7,7 @@
 ## 功能概览
 
 - 持仓管理：支持添加、编辑、删除和部分卖出持仓，最小交易单位为 `0.001` share，适合 Robinhood 等支持 fractional shares 的账户。
-- 观察列表：维护关注股票、备注和目标买入价，并可刷新最新价格。
+- 观察列表：维护关注股票、备注，并显示模型估算的上涨预期价区间。
 - 实时行情：通过 Yahoo Finance 获取持仓和观察列表价格，并使用本地缓存减少重复请求；应用运行时会自动刷新过期价格。
 - 单股策略信号：为持仓或关注股票显示买入、持有、卖出信号和原因。
 - 分析师共识增强：夜间抓取分析师买卖共识；当看多或看空比例超过 `90%` 且样本充足时，增强关注列表提示为“强烈买入”或“强烈卖出”。
@@ -17,7 +17,7 @@
 - 策略回测：支持 Backtrader 和 PyBroker 两个回测引擎，输出收益、夏普比率、最大回撤、胜率和资金曲线。
 - 策略插件化：新增策略时优先通过 `config/strategies.json` 配置类路径和信号函数路径，减少修改注册代码。
 - 深度学习模型：内置 TCN 深度学习策略，当前为默认策略，可自动适配 CUDA、Apple Silicon MPS 或纯 CPU 环境。
-- 新闻/事件系统：支持本地 `market_events.json` 事件输入，并可通过事件源适配层自动抓取外部新闻事件。
+- 新闻/事件系统：支持本地 `storage/state/market_events.json` 事件输入，并可通过事件源适配层自动抓取外部新闻事件。
 - 事件风控急刹车：可基于 FOMC/宏观事件和 VIX 高波动阈值触发临时风险收缩（限制仓位或暂停新增仓位）。
 - FinBERT 情绪分析：事件/新闻可选用 FinBERT 进行情绪打分；未安装时自动回退为关键词情绪规则。
 - Monte Carlo 预期收益分布：可基于历史波动生成收益分布、VaR/CVaR 和区间预期，辅助决定仓位与止盈止损。
@@ -29,12 +29,24 @@
 ### 1. 创建环境
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate
+python -m venv ~/venv
+source ~/venv/bin/activate
 pip install -r requirements.txt
 ```
 
 ### 2. 启动应用
+
+```bash
+~/venv/bin/python -m jobs.run_all
+```
+
+这个命令会尽量一次性启动：
+
+- Streamlit UI
+- Slack bot
+- nightly scheduler
+
+如果你只想单独看页面，也可以继续直接运行：
 
 ```bash
 streamlit run main.py
@@ -45,7 +57,7 @@ streamlit run main.py
 ### 3. 运行测试
 
 ```bash
-PYTHONPYCACHEPREFIX=/tmp/pycache .venv/bin/python -m unittest discover -s tests -v
+PYTHONPYCACHEPREFIX=/tmp/pycache ~/venv/bin/python -m unittest discover -s tests -v
 ```
 
 当前测试覆盖 fractional shares、数据文件同步、策略注册、组合建议、仓位建议、回测引擎适配和 RSI 参数修复等关键路径。
@@ -63,9 +75,9 @@ PYTHONPYCACHEPREFIX=/tmp/pycache .venv/bin/python -m unittest discover -s tests 
 
 ## 手工维护持仓与观察列表
 
-除了通过 UI 添加和编辑，也可以直接维护 `portfolio_input.json`。系统会在启动或页面重跑时检测这个文件：当它比运行时文件 `portfolio_data.json` 更新时，会自动导入。侧边栏也提供“从文件重新加载持仓/关注”按钮，可以强制同步。
+除了通过 UI 添加和编辑，也可以直接维护 `storage/state/portfolio_input.json`。系统会在启动或页面重跑时检测这个文件：当它比运行时文件 `storage/state/portfolio_data.json` 更新时，会自动导入。侧边栏也提供“从文件重新加载持仓/关注”按钮，可以强制同步。
 
-`portfolio_input.json` 是个人数据文件，已经加入 `.gitignore`。仓库中提供了 [portfolio_input.example.json](portfolio_input.example.json) 作为格式参考。
+`storage/state/portfolio_input.json` 是个人数据文件，已经加入 `.gitignore`。仓库中提供了 [storage/config/portfolio_input.example.json](storage/config/portfolio_input.example.json) 作为格式参考。
 
 ```json
 {
@@ -86,8 +98,7 @@ PYTHONPYCACHEPREFIX=/tmp/pycache .venv/bin/python -m unittest discover -s tests 
   "watchlist": [
     {
       "symbol": "MSFT",
-      "notes": "Wait for pullback",
-      "target_buy": 390.0
+      "notes": "Wait for pullback"
     }
   ]
 }
@@ -104,15 +115,15 @@ PYTHONPYCACHEPREFIX=/tmp/pycache .venv/bin/python -m unittest discover -s tests 
 
 ## 数据文件说明
 
-- `portfolio_input.json`：手工维护入口，适合批量修改持仓和观察列表，不提交到 Git。
-- `portfolio_data.json`：应用运行时数据，保存当前持仓、观察列表、最新价格和更新时间。
-- `price_cache.json`：行情缓存文件，减少短时间内重复请求。
-- `analyst_consensus_cache.json`：夜间生成的分析师共识缓存文件，用于增强关注列表买入提示，也会保存 ETF 的持仓加权代理意见。
-- `alert_state.json`：告警去重状态文件，记录已发送过的强信号和风险告警。
-- `notification_config.json`：本地通知连接配置，保存 Slack webhook 和 SMTP 参数，不提交到 Git。
-- `market_events.json`：手工维护事件输入文件（可选）。
+- `storage/state/portfolio_input.json`：手工维护入口，适合批量修改持仓和观察列表，不提交到 Git。
+- `storage/state/portfolio_data.json`：应用运行时数据，保存当前持仓、观察列表、最新价格和更新时间。
+- `storage/state/price_cache.json`：行情缓存文件，减少短时间内重复请求。
+- `storage/state/analyst_consensus_cache.json`：夜间生成的分析师共识缓存文件，用于增强关注列表买入提示，也会保存 ETF 的持仓加权代理意见。
+- `storage/state/alert_state.json`：告警去重状态文件，记录已发送过的强信号和风险告警。
+- `storage/state/notification_config.json`：本地通知连接配置，保存 Slack webhook 和 SMTP 参数，不提交到 Git。
+- `storage/state/market_events.json`：手工维护事件输入文件（可选）。
 - `config/event_sources.json`：事件源配置，定义本地 mock 与自动抓取源（如 yfinance 新闻）。
-- `transactions.json`：卖出操作产生的交易记录。
+- `storage/state/transactions.json`：卖出操作产生的交易记录。
 - `config/strategies.json`：策略配置文件，控制 UI 展示、回测策略类和信号函数。
 
 ## 策略与回测
@@ -140,7 +151,7 @@ PYTHONPYCACHEPREFIX=/tmp/pycache .venv/bin/python -m unittest discover -s tests 
 
 ## 新增策略
 
-新增策略时，优先使用配置式扩展，不需要修改 `strategy_registry.py` 或 `strategy_ui.py`。
+新增策略时，优先使用配置式扩展，不需要修改 `strategies/registry.py` 或 `strategies/ui.py`。
 
 ### 1. 实现策略类
 
@@ -246,7 +257,7 @@ pip install "transformers>=4.40.0"
 - 相关性拥挤：如果两个持仓历史收益相关性过高，且合计仓位较大，会提示避免同时继续加仓。
 - 缺失价格：如果持仓没有现价，组合建议会提示这些标的暂未纳入组合级计算。
 
-为了让行业集中度分析更准确，建议在 `portfolio_input.json` 或 UI 编辑持仓时维护 `sector`。
+为了让行业集中度分析更准确，建议在 `storage/state/portfolio_input.json` 或 UI 编辑持仓时维护 `sector`。
 
 ## 通知配置
 
@@ -264,7 +275,7 @@ pip install "transformers>=4.40.0"
 
 - Slack Incoming Webhook：适合实时告警，系统通过 webhook URL 发送消息到指定频道。
 - Email / SMTP：适合每日摘要或留档；可以用一个 Outlook 账号作为发件人，把消息发到 Gmail。
-- 告警去重：`alert_state.json` 会记录已发送告警，避免同一个强烈买入/卖出每天重复发送；风险告警默认 6 小时冷却。
+- 告警去重：`storage/state/alert_state.json` 会记录已发送告警，避免同一个强烈买入/卖出每天重复发送；风险告警默认 6 小时冷却。
 
 Slack 单向告警推荐配置步骤：
 
@@ -325,13 +336,13 @@ export ALERT_EMAIL_TO="your_gmail@gmail.com"
 独立夜间告警入口：
 
 ```bash
-.venv/bin/python -m jobs.nightly_alerts --force
+~/venv/bin/python -m jobs.nightly_alerts --force
 ```
 
 查看将生成哪些告警但不发送：
 
 ```bash
-.venv/bin/python -m jobs.nightly_alerts --dry-run --force
+~/venv/bin/python -m jobs.nightly_alerts --dry-run --force
 ```
 
 说明：
@@ -350,20 +361,26 @@ export SMTP_PORT="587"
 export SMTP_USER="your_account@outlook.com"
 export SMTP_PASSWORD="your_password_or_app_password"
 export ALERT_EMAIL_TO="your_gmail@gmail.com"
-.venv/bin/python -m jobs.nightly_alerts --force
+~/venv/bin/python -m jobs.nightly_alerts --force
 ```
 
 ### Slack 双向消息控制
 
-Slack 的双向控制已经按 `slack_bolt + Socket Mode` 的方式接上了。现在 `/quant` 不是“配置完就自动工作”，它需要一个常驻 bot 进程在服务器上运行，去接收 Slack 的 slash command 并调用本系统内部的命令执行层。
-
-最重要的一点是：**token 不要写进代码里**。请把它们放在运行 bot 的那台服务器环境变量里。
+Slack 的双向控制已经按 `slack_bolt + Socket Mode` 的方式接上了。现在 `/quant` 不是“配置完就自动工作”，它需要一个常驻 bot 进程在服务器上运行，去接收 Slack 的 slash command 并调用本系统内部的命令执行层。最省事的方式是直接运行统一入口：
 
 ```bash
 export SLACK_BOT_TOKEN="xoxb-..."
 export SLACK_APP_TOKEN="xapp-..."
-.venv/bin/python -m jobs.slack_bot
+~/venv/bin/python -m jobs.run_all
 ```
+
+如果你不想同时启动页面，可以加 `--no-ui`。如果只想单独起 bot，也可以继续运行：
+
+```bash
+~/venv/bin/python -m jobs.slack_bot
+```
+
+最重要的一点是：**token 不要写进代码里**。请把它们放在运行 bot 的那台服务器环境变量里。
 
 如果你在 Slack 里输入 `/quant` 看到 “the app did not respond”，通常表示：
 
@@ -433,23 +450,22 @@ export SLACK_APP_TOKEN="xapp-..."
 
 ```text
 .
-├── main.py                         # Streamlit 应用入口
-├── data_utils.py                   # 数据加载、保存、行情刷新和手工文件同步
-├── quant_analysis.py               # 技术指标、信号和风险分析
-├── portfolio_advisor.py            # 组合行业集中度和相关性建议
-├── position_advisor.py             # 仓位管理建议
-├── strategy_registry.py            # 配置驱动的策略实例化
-├── strategy_ui.py                  # 策略配置加载和当前信号计算
-├── engine/                         # Backtrader / PyBroker 回测适配器
-├── strategies/                     # 内置策略实现
-├── config/strategies.json          # 策略配置
-├── portfolio_input.example.json    # 手工持仓文件示例
-└── tests/                          # 单元测试
+├── main.py                                # Streamlit 应用入口（编排）
+├── app/                                   # UI 渲染与运行编排
+├── quant_core/                            # 核心业务（数据/风控/组合/通知/快照）
+├── integrations/                          # 外部集成（Slack 命令与 Bot）
+├── strategies/                            # 策略配置加载与策略类
+├── engine/                                # Backtrader / PyBroker 回测适配器
+├── jobs/                                  # run_all / nightly_alerts / slack_bot
+├── config/strategies.json                 # 策略配置
+├── storage/config/*.example.json          # 示例配置
+├── storage/state/*.json                   # 本地运行态数据（不提交）
+└── tests/                                 # 单元测试
 ```
 
 ## 开发约定
 
 - 优先使用 TDD：先补测试，再修改实现。
 - 新增功能后运行完整测试：`python -m unittest discover -s tests -v`。
-- 不要把个人运行数据提交到 Git，例如 `portfolio_input.json`、`portfolio_data.json`、`price_cache.json`、`transactions.json`。
+- 不要把个人运行数据提交到 Git，例如 `storage/state/portfolio_input.json`、`storage/state/portfolio_data.json`、`storage/state/price_cache.json`、`storage/state/transactions.json`。
 - 新增策略优先走 `config/strategies.json`，只有通用接口无法表达时再修改注册逻辑。

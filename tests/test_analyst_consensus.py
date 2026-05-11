@@ -8,8 +8,8 @@ from tests.support import clear_modules, reload_module
 
 class AnalystConsensusTests(unittest.TestCase):
     def setUp(self):
-        clear_modules("analyst_consensus")
-        self.module = reload_module("analyst_consensus")
+        clear_modules("quant_core.events.analyst_consensus")
+        self.module = reload_module("quant_core.events.analyst_consensus")
         self.temp_dir = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp_dir.cleanup)
         self.cache_path = str(Path(self.temp_dir.name) / "analyst_consensus_cache.json")

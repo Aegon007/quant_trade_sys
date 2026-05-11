@@ -6,7 +6,7 @@ import pandas as pd
 
 class MonteCarloTests(unittest.TestCase):
     def test_simulate_price_paths_returns_distribution_metrics(self):
-        from monte_carlo import simulate_return_distribution
+        from quant_core.analytics.monte_carlo import simulate_return_distribution
 
         index = pd.date_range("2025-01-01", periods=260, freq="D")
         close = 100 + np.linspace(0, 15, 260) + np.sin(np.arange(260) / 8)
@@ -34,7 +34,7 @@ class MonteCarloTests(unittest.TestCase):
         )
 
     def test_simulate_price_paths_returns_none_when_insufficient_data(self):
-        from monte_carlo import simulate_return_distribution
+        from quant_core.analytics.monte_carlo import simulate_return_distribution
 
         history = pd.DataFrame({"Close": [100.0, 101.0, 102.0]})
         self.assertIsNone(simulate_return_distribution(history, horizon_days=20, simulations=500))

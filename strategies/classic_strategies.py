@@ -5,7 +5,7 @@
 import pandas as pd
 import numpy as np
 from engine.base import BaseStrategy
-import quant_analysis as qa
+from quant_core.analytics import quant_analysis as qa
 
 class MACrossoverStrategy(BaseStrategy):
     """双均线交叉策略"""

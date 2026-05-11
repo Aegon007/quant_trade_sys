@@ -2,33 +2,41 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime
 import os
-import data_utils as du
-import ui_components as ui
-import transactions as tx
-import quant_analysis as qa
-import strategy_ui as su
+from app.orchestration import runtime as rt
+from app.ui import dialogs as ud
+from app.ui import pages as pg
+from app.ui import panels as up
+from app.ui import notification_page as unp
+from app.ui import components as ui
+from quant_core.data import storage as du
+from quant_core.ledger import transactions as tx
+from quant_core.analytics import quant_analysis as qa
+from strategies import ui as su
 import ml_strategy as ml_utils
 import deep_learning_strategy as dl_utils
-import event_news as en
-import event_fetcher as ef
-import news_summary as ns
-import analyst_consensus as ac
-import notification_config as ncfg
-import notification_channels as nch
-import portfolio_actions as pactions
-import system_snapshot as ss
+from quant_core.events import event_news as en
+from quant_core.events import event_fetcher as ef
+from quant_core.events import analyst_consensus as ac
+from quant_core.notifications import notification_config as ncfg
+from quant_core.notifications import notification_channels as nch
+from quant_core.portfolio import actions as pactions
+from quant_core.snapshots import system_snapshot as ss
 import locales as loc
-from strategy_registry import create_strategy
+from strategies.registry import create_strategy
 from share_utils import format_share_quantity, validate_share_quantity
-from portfolio_metrics import summarize_holdings
-from position_advisor import recommend_position_action, summarize_backtest_guidance
-from portfolio_advisor import analyze_portfolio_risk
-from risk_gate import (
+from quant_core.portfolio.metrics import summarize_holdings
+from quant_core.portfolio.position import recommend_position_action, summarize_backtest_guidance
+from quant_core.portfolio.risk import analyze_portfolio_risk
+from quant_core.portfolio.control_loop import evaluate_allocation_regime
+from signal_approval import approve_signal
+from signal_scoreboard import build_signal_scoreboard
+from quant_core.analytics.strategy_compare import compare_strategies_for_symbol
+from quant_core.risk.risk_gate import (
     build_market_risk_snapshot_from_histories,
     evaluate_market_risk_gate,
     merge_risk_gate_decisions,
 )
-from monte_carlo import simulate_return_distribution
+from quant_core.analytics.monte_carlo import simulate_return_distribution
 
 # 引擎
 from engine import BacktraderEngine, PyBrokerEngine
@@ -38,6 +46,17 @@ st.set_page_config(page_title="Portfolio Tracker", layout="wide")
 AUTO_REFRESH_INTERVAL_SECONDS = 300
 NEWS_AUTO_REFRESH_INTERVAL_SECONDS = 600
 
+
+@st.cache_data(ttl=AUTO_REFRESH_INTERVAL_SECONDS, show_spinner=False)
+def load_historical_data_cached(symbol, period):
+    return qa.get_historical_data(symbol, period=period)
+
+
+@st.cache_data(ttl=AUTO_REFRESH_INTERVAL_SECONDS, show_spinner=False)
+def load_correlation_matrix_cached(symbols, period="6mo"):
+    return qa.calculate_correlation_matrix(list(symbols), period=period)
+
+
 # ---------- 语言设置 ----------
 if "lang" not in st.session_state:
     st.session_state.lang = "zh"
@@ -46,24 +65,44 @@ if "lang" not in st.session_state:
 def ui_text(zh_text, en_text):
     return zh_text if st.session_state.get("lang", "zh") == "zh" else en_text
 
+
+def _scoreboard_to_dict(scoreboard):
+    if scoreboard is None:
+        return {}
+    return {
+        "completed_trades": int(getattr(scoreboard, "completed_trades", 0) or 0),
+        "win_rate": getattr(scoreboard, "win_rate", None),
+        "avg_return_pct": getattr(scoreboard, "avg_return_pct", None),
+        "avg_win_return_pct": getattr(scoreboard, "avg_win_return_pct", None),
+        "avg_loss_return_pct": getattr(scoreboard, "avg_loss_return_pct", None),
+        "payoff_ratio": getattr(scoreboard, "payoff_ratio", None),
+        "expectancy_return_pct": getattr(scoreboard, "expectancy_return_pct", None),
+        "profit_factor": getattr(scoreboard, "profit_factor", None),
+        "median_holding_days": getattr(scoreboard, "median_holding_days", None),
+        "cumulative_return_pct": getattr(scoreboard, "cumulative_return_pct", None),
+        "max_drawdown_pct": getattr(scoreboard, "max_drawdown_pct", None),
+        "regime_breakdown": [
+            {
+                "regime": item.regime,
+                "trades": item.trades,
+                "win_rate": item.win_rate,
+                "avg_return_pct": item.avg_return_pct,
+            }
+            for item in list(getattr(scoreboard, "regime_breakdown", []) or [])
+        ],
+    }
+
 # ---------- 数据状态 ----------
 try:
-    if "app_data" not in st.session_state or du.has_newer_editable_data():
-        st.session_state.app_data = du.load_data()
-    refreshed_data, auto_refreshed = du.auto_refresh_market_data(
-        st.session_state.app_data,
+    rt.bootstrap_app_data(
+        st.session_state,
+        du,
         refresh_interval_seconds=AUTO_REFRESH_INTERVAL_SECONDS,
     )
-    if auto_refreshed:
-        st.session_state.app_data = refreshed_data
-        du.save_data(refreshed_data)
 except ValueError as e:
     st.error(f"数据文件加载失败: {e}")
     st.stop()
-if "sell_dialog_index" not in st.session_state:
-    st.session_state.sell_dialog_index = None
-if "editing_holding" not in st.session_state:
-    st.session_state.editing_holding = None
+rt.ensure_dialog_state_defaults(st.session_state)
 
 data = st.session_state.app_data
 market_events_bootstrapped = en.ensure_market_events_file()
@@ -96,13 +135,7 @@ if st.session_state.selected_strategy_id not in valid_strategy_ids:
 
 strategy_map = {s["id"]: s for s in strategies}
 strategy_names = [s["name"] for s in strategies]
-tracked_symbols = sorted(
-    {
-        str(item.get("symbol", "")).strip().upper()
-        for item in (st.session_state.app_data.get("holdings", []) + st.session_state.app_data.get("watchlist", []))
-        if item.get("symbol")
-    }
-)
+tracked_symbols = rt.collect_tracked_symbols(st.session_state.app_data)
 
 if deep_tcn_strategy:
     deep_tcn_params = dict(deep_tcn_strategy.get("params", {}))
@@ -155,16 +188,7 @@ with st.sidebar:
             refreshed_data = du.refresh_market_data(st.session_state.app_data)
             st.session_state.app_data = refreshed_data
             du.save_data(refreshed_data)
-            symbols_for_retrain = sorted(
-                {
-                    str(item.get("symbol", "")).strip().upper()
-                    for item in (
-                        st.session_state.app_data.get("holdings", [])
-                        + st.session_state.app_data.get("watchlist", [])
-                    )
-                    if item.get("symbol")
-                }
-            )
+            symbols_for_retrain = rt.collect_tracked_symbols(st.session_state.app_data)
             manual_params = dict(deep_tcn_strategy.get("params", {}))
             manual_params["period"] = st.session_state.history_period
             ok, retrain_message = dl_utils.run_nightly_retraining_for_symbols(
@@ -182,27 +206,13 @@ with st.sidebar:
     st.divider()
     st.header(ui_text("账户资金", "Account & Capital"))
     account_config = dict(data.get("account", {}) or {})
-    if "account_track_cash_available" not in st.session_state:
-        st.session_state.account_track_cash_available = account_config.get("cash_available") is not None
-    track_cash_available = st.checkbox(
-        ui_text("跟踪可用现金", "Track available cash"),
-        key="account_track_cash_available",
-    )
     with st.form("account_config_form"):
-        total_capital = st.number_input(
-            ui_text("总资金 (USD)", "Total capital (USD)"),
-            min_value=0.0,
-            value=float(account_config.get("total_capital") or 0.0),
-            step=100.0,
-            format="%.2f",
-        )
         cash_available = st.number_input(
             ui_text("可用现金 (USD)", "Cash available (USD)"),
             min_value=0.0,
             value=float(account_config.get("cash_available") or 0.0),
             step=100.0,
             format="%.2f",
-            disabled=not track_cash_available,
         )
         account_col1, account_col2 = st.columns(2)
         min_cash_buffer_pct = account_col1.number_input(
@@ -231,8 +241,8 @@ with st.sidebar:
         )
         if st.form_submit_button(ui_text("保存资金参数", "Save capital settings")):
             data["account"] = {
-                "total_capital": float(total_capital),
-                "cash_available": float(cash_available) if track_cash_available else None,
+                "total_capital": None,
+                "cash_available": float(cash_available),
                 "min_cash_buffer_pct": float(min_cash_buffer_pct) / 100.0,
                 "max_single_position_pct": float(max_single_position_pct) / 100.0,
                 "max_total_exposure_pct": float(max_total_exposure_pct) / 100.0,
@@ -243,8 +253,8 @@ with st.sidebar:
             st.rerun()
     st.caption(
         ui_text(
-            "账户资金用于计算建议投入金额、建议股数和可用现金约束。",
-            "These settings drive recommended dollars, share sizing, and cash constraints.",
+            "系统会自动按“可用现金 + 持仓市值”计算总资金；这里仅需维护可用现金和风控参数。",
+            "Total capital is auto-derived as cash available plus holdings market value; maintain cash and risk limits here.",
         )
     )
 
@@ -257,7 +267,7 @@ with st.sidebar:
         if st.form_submit_button(L("submit_add_holding")):
             if sym and shares > 0 and cost > 0:
                 try:
-                    du.add_holding(sym, shares, cost, sector)
+                    pactions.buy_symbol(sym, shares, price=cost, sector=sector)
                     st.session_state.app_data = du.load_data()
                     st.success(f"{sym.upper()} {L('submit_add_holding')} 成功")
                     st.rerun()
@@ -271,10 +281,10 @@ with st.sidebar:
     with st.form("add_watch"):
         w_sym = st.text_input(L("stock_code"), key="watch_sym", placeholder="NVDA, MSFT...")
         notes = st.text_input(L("notes"), placeholder="等待回调")
-        target = st.number_input(L("target_buy_price"), min_value=0.0, step=0.01, format="%.2f")
+        st.caption(L("upside_price_hint"))
         if st.form_submit_button(L("submit_add_watch")):
             if w_sym:
-                du.add_watch(w_sym, notes, target if target > 0 else None)
+                du.add_watch(w_sym, notes)
                 st.session_state.app_data = du.load_data()
                 st.success(f"{w_sym.upper()} {L('submit_add_watch')} 成功")
                 st.rerun()
@@ -313,16 +323,7 @@ with st.sidebar:
         st.caption(L("news_last_fetched_at", ts=str(cached_event_bundle.get("fetched_at"))))
     if st.button(L("refresh_news")):
         with st.spinner(L("refresh_news_running")):
-            symbols_for_news = sorted(
-                {
-                    str(item.get("symbol", "")).strip().upper()
-                    for item in (
-                        st.session_state.app_data.get("holdings", [])
-                        + st.session_state.app_data.get("watchlist", [])
-                    )
-                    if item.get("symbol")
-                }
-            )
+            symbols_for_news = rt.collect_tracked_symbols(st.session_state.app_data)
             events, reports = ef.fetch_events_from_sources(
                 symbols=symbols_for_news,
                 now=datetime.now(),
@@ -353,7 +354,7 @@ with st.sidebar:
     c1, c2 = st.columns(2)
     with c1:
         if st.button(L("clear_holdings")):
-            du.clear_holdings()
+            pactions.clear_all_holdings(notes="ui clear holdings")
             st.session_state.app_data = du.load_data()
             st.warning(L("clear_holdings") + " 完成")
             st.rerun()
@@ -369,471 +370,22 @@ with st.sidebar:
     st.markdown(f"- {L('export_md')}")
     st.markdown(f"- {L('export_pdf')}")
 
-# ---------- 辅助函数 ----------
-def apply_runtime_strategy_params(strategy):
-    runtime_strategy = dict(strategy)
-    runtime_params = dict(strategy.get("params", {}))
-    runtime_params["period"] = st.session_state.get("history_period", runtime_params.get("period", "2y"))
-    runtime_strategy["params"] = runtime_params
-    return runtime_strategy
+rt.enable_auto_news_rerun(
+    session_state=st.session_state,
+    interval_seconds=NEWS_AUTO_REFRESH_INTERVAL_SECONDS,
+    st_module=st,
+)
 
-
-def render_account_snapshot_panel(account_snapshot):
-    total_capital = account_snapshot.get("total_capital")
-    cash_available = account_snapshot.get("cash_available")
-    deployable_cash = float(account_snapshot.get("deployable_cash") or 0.0)
-    exposure_pct = float(account_snapshot.get("exposure_pct") or 0.0)
-
-    st.subheader(ui_text("账户资金概览", "Account Overview"))
-    if total_capital is None:
-        st.info(
-            ui_text(
-                "尚未配置总资金，系统还无法给出完整的资金分配建议。",
-                "Total capital is not configured yet, so full allocation guidance is not available.",
-            )
-        )
-        return
-
-    cols = st.columns(4)
-    cols[0].metric(ui_text("总资金", "Total Capital"), f"${float(total_capital):,.2f}")
-    cols[1].metric(
-        ui_text("可用现金", "Cash Available"),
-        "—" if cash_available is None else f"${float(cash_available):,.2f}",
-    )
-    cols[2].metric(ui_text("可部署现金", "Deployable Cash"), f"${deployable_cash:,.2f}")
-    cols[3].metric(ui_text("当前暴露", "Current Exposure"), f"{exposure_pct:.1f}%")
-    st.caption(
-        ui_text(
-            "现金缓冲 "
-            f"${float(account_snapshot.get('cash_buffer_dollars') or 0.0):,.2f} | "
-            f"单票上限 {float(account_snapshot.get('max_single_position_pct') or 0.0):.1f}% | "
-            f"总暴露上限 {float(account_snapshot.get('max_total_exposure_pct') or 0.0):.1f}%",
-            "Cash buffer "
-            f"${float(account_snapshot.get('cash_buffer_dollars') or 0.0):,.2f} | "
-            f"Single-position cap {float(account_snapshot.get('max_single_position_pct') or 0.0):.1f}% | "
-            f"Total exposure cap {float(account_snapshot.get('max_total_exposure_pct') or 0.0):.1f}%",
-        )
-    )
-
-
-def _normalize_symbols(symbols):
-    return sorted(
-        {
-            str(symbol).strip().upper()
-            for symbol in (symbols or [])
-            if symbol and str(symbol).strip()
-        }
-    )
-
-
-def fetch_news_events_with_cache(symbols, force=False, now=None):
-    now = now or datetime.now()
-    normalized_symbols = _normalize_symbols(symbols)
-    cached_bundle = st.session_state.get("event_fetch_bundle")
-    previous_symbols = cached_bundle.get("symbols", []) if isinstance(cached_bundle, dict) else []
-    last_fetched_at = cached_bundle.get("fetched_at") if isinstance(cached_bundle, dict) else None
-    should_refresh = ef.should_refresh_events_cache(
-        last_fetched_at=last_fetched_at,
-        previous_symbols=previous_symbols,
-        current_symbols=normalized_symbols,
-        interval_seconds=NEWS_AUTO_REFRESH_INTERVAL_SECONDS,
-        now=now,
-        force=force,
-    )
-    if should_refresh:
-        events, source_reports = ef.fetch_events_from_sources(
-            symbols=normalized_symbols,
-            now=now,
-        )
-        cached_bundle = {
-            "events": events,
-            "source_reports": source_reports,
-            "symbols": normalized_symbols,
-            "fetched_at": now.isoformat(),
-        }
-        st.session_state.event_fetch_bundle = cached_bundle
-        return events, source_reports, True
-
-    if not isinstance(cached_bundle, dict):
-        return [], [], False
-    return (
-        list(cached_bundle.get("events", []) or []),
-        list(cached_bundle.get("source_reports", []) or []),
-        False,
-    )
-
-
-def enable_auto_news_rerun(interval_seconds=NEWS_AUTO_REFRESH_INTERVAL_SECONDS):
-    fragment_decorator = getattr(st, "fragment", None) or getattr(st, "experimental_fragment", None)
-    rerun_fn = getattr(st, "rerun", None) or getattr(st, "experimental_rerun", None)
-    if fragment_decorator is None or rerun_fn is None:
-        return False
-
-    if "_news_auto_rerun_last" not in st.session_state:
-        st.session_state["_news_auto_rerun_last"] = datetime.now().timestamp()
-
-    @fragment_decorator(run_every=int(interval_seconds))
-    def _news_refresh_heartbeat():
-        now_ts = datetime.now().timestamp()
-        last_ts = float(st.session_state.get("_news_auto_rerun_last", now_ts))
-        # Avoid immediate rerun on first render; rerun only on interval ticks.
-        if now_ts - last_ts < max(2.0, float(interval_seconds) * 0.8):
-            return
-        st.session_state["_news_auto_rerun_last"] = now_ts
-        rerun_fn()
-
-    _news_refresh_heartbeat()
-    return True
-
-
-def evaluate_market_risk_for_portfolio(
-    holdings,
-    history_period,
-    event_symbols=None,
-    now=None,
-    fetched_events=None,
-    source_reports=None,
-):
-    if not holdings:
-        return None, None, None, None, [], None, []
-
-    symbols = list(dict.fromkeys([h["symbol"] for h in holdings if h.get("current_price") is not None]))
-    correlation_matrix = None
-    if len(symbols) > 1:
-        try:
-            correlation_matrix = qa.calculate_correlation_matrix(symbols, period="6mo")
-        except Exception:
-            correlation_matrix = None
-
-    portfolio_risk = analyze_portfolio_risk(
-        holdings,
-        correlation_matrix=correlation_matrix,
-    )
-
-    benchmark_history = qa.get_historical_data("SPY", period=history_period)
-    vix_history = qa.get_historical_data("^VIX", period="6mo")
-    snapshot = build_market_risk_snapshot_from_histories(
-        benchmark_history=benchmark_history,
-        vix_history=vix_history,
-        sector_alert_count=len(portfolio_risk.sector_alerts),
-        correlation_alert_count=len(portfolio_risk.correlation_alerts),
-    )
-    base_decision = evaluate_market_risk_gate(snapshot)
-
-    if fetched_events is None or source_reports is None:
-        fetched_events, source_reports = ef.fetch_events_from_sources(
-            symbols=event_symbols or symbols,
-            now=now or datetime.now(),
-        )
-    active_events = en.select_active_events(
-        fetched_events,
-        symbols=event_symbols or symbols,
-        now=now,
-        verified_only=False,
-    )
-    event_decision = en.evaluate_event_risk_switch(
-        active_events,
-        vix=snapshot.vix,
-        verified_only=True,
-        now=now,
-    )
-    decision = merge_risk_gate_decisions(base_decision, event_decision)
-    return decision, snapshot, portfolio_risk, correlation_matrix, active_events, event_decision, source_reports
-
-
-def render_market_risk_gate_banner(decision, snapshot, L):
-    if decision is None or snapshot is None:
-        st.info(L("market_risk_gate_unavailable"))
-        return
-
-    metrics = [f"{L('risk_score')}: {decision.risk_score}", f"{L('max_position_weight')}: {decision.max_position_weight * 100:.1f}%"]
-    if snapshot.vix is not None:
-        metrics.append(f"VIX: {snapshot.vix:.1f}")
-    if snapshot.benchmark_drawdown is not None:
-        metrics.append(f"SPY DD: {snapshot.benchmark_drawdown:.1%}")
-    if snapshot.benchmark_volatility is not None:
-        metrics.append(f"SPY Vol: {snapshot.benchmark_volatility:.1%}")
-
-    risk_regime_map = {
-        "NORMAL": L("risk_regime_normal"),
-        "CAUTION": L("risk_regime_caution"),
-        "RISK_OFF": L("risk_regime_off"),
-    }
-    regime_label = risk_regime_map.get(decision.regime, decision.regime)
-    message = f"{L('market_risk_gate')}: {regime_label} | {' | '.join(metrics)}"
-    if decision.reasons:
-        message = f"{message}\n{L('risk_factors')}: {' '.join(decision.reasons)}"
-
-    if decision.regime == "RISK_OFF":
-        st.error(message)
-    elif decision.regime == "CAUTION":
-        st.warning(message)
-    else:
-        st.success(message)
-
-
-def render_active_events_panel(active_events, event_decision, source_reports, L):
-    st.subheader(L("event_risk_panel"))
-    summary = ns.summarize_news_events(
-        active_events,
-        lang="zh" if st.session_state.get("lang", "zh") == "zh" else "en",
-        max_headlines=3,
-    )
-    st.markdown(f"**{L('event_news_summary_title')}**")
-    st.info(summary.overview)
-    if summary.top_headline_details:
-        for idx, detail in enumerate(summary.top_headline_details, start=1):
-            st.caption(f"{idx}. {detail.headline}")
-            with st.expander(f"{L('event_news_expand_label')} #{idx}"):
-                metric_col = "指标" if st.session_state.get("lang", "zh") == "zh" else "Metric"
-                score_col = "分数" if st.session_state.get("lang", "zh") == "zh" else "Score"
-                score_df = pd.DataFrame(
-                    [
-                        {metric_col: L("event_news_score_total"), score_col: round(detail.total_score, 2)},
-                        {metric_col: L("event_news_score_severity"), score_col: round(detail.severity_component, 2)},
-                        {metric_col: L("event_news_score_sentiment"), score_col: round(detail.sentiment_component, 2)},
-                        {metric_col: L("event_news_score_confidence"), score_col: round(detail.confidence_component, 2)},
-                        {metric_col: L("event_news_score_verified"), score_col: round(detail.verified_component, 2)},
-                        {metric_col: L("event_news_score_type"), score_col: round(detail.event_type_component, 2)},
-                    ]
-                )
-                st.dataframe(score_df, hide_index=True, width="stretch")
-                explanation = detail.explanation_zh if st.session_state.get("lang", "zh") == "zh" else detail.explanation_en
-                st.caption(explanation)
-    elif summary.top_headlines:
-        for idx, headline in enumerate(summary.top_headlines, start=1):
-            st.caption(f"{idx}. {headline}")
-
-    if event_decision is not None:
-        regime_map = {
-            "NORMAL": L("risk_regime_normal"),
-            "CAUTION": L("risk_regime_caution"),
-            "RISK_OFF": L("risk_regime_off"),
-        }
-        regime_label = regime_map.get(event_decision.regime, event_decision.regime)
-        st.caption(
-            f"{L('event_risk_summary')}: {regime_label} | "
-            f"{L('risk_score')}: {event_decision.risk_score} | "
-            f"{L('event_count')}: {event_decision.active_event_count}"
-        )
-    if source_reports:
-        report_lines = []
-        for report in source_reports:
-            status = "OK" if report.get("ok") else "ERR"
-            fetched = int(report.get("fetched", 0))
-            error = str(report.get("error") or "").strip()
-            if error:
-                report_lines.append(f"[{status}] {report.get('source_id')} {L('event_fetch_count')}: {fetched}, {L('event_fetch_error')}: {error}")
-            else:
-                report_lines.append(f"[{status}] {report.get('source_id')} {L('event_fetch_count')}: {fetched}")
-        st.caption(" | ".join(report_lines))
-    if not active_events:
-        st.info(L("event_risk_none"))
-        return
-
-    rows = []
-    for event in active_events:
-        window_text = "—"
-        if event.starts_at is not None or event.ends_at is not None:
-            start_text = event.starts_at.isoformat(timespec="minutes") if event.starts_at else "?"
-            end_text = event.ends_at.isoformat(timespec="minutes") if event.ends_at else "?"
-            window_text = f"{start_text} ~ {end_text}"
-        rows.append(
-            {
-                L("event_title"): event.title,
-                L("event_type"): event.event_type,
-                L("event_severity"): event.severity,
-                L("event_verified"): "Yes" if event.verified else "No",
-                L("event_confidence"): f"{event.confidence_level} ({(event.confidence_score or 0.0):.2f})",
-                L("event_sentiment"): (
-                    f"{event.sentiment}"
-                    + (
-                        f" ({event.sentiment_score:.2f}, {event.sentiment_model or 'n/a'})"
-                        if event.sentiment_score is not None
-                        else ""
-                    )
-                ),
-                L("event_symbols"): ", ".join(event.symbols) if event.symbols else "ALL",
-                L("event_window"): window_text,
-                L("event_source"): event.source or "—",
-            }
-        )
-    st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
-
-
-def render_notification_config_page():
-    config = ncfg.load_notification_config()
-    st.header("通知配置")
-    st.caption("配置保存在本地 `notification_config.json`，该文件已加入 `.gitignore`。")
-
-    with st.expander("Slack", expanded=True):
-        slack = config["slack"]
-        with st.form("slack_notification_config_form"):
-            slack_enabled = st.checkbox("启用 Slack 通知", value=bool(slack.get("enabled")))
-            slack_webhook_url = st.text_input(
-                "Incoming Webhook URL",
-                value=slack.get("webhook_url", ""),
-                type="password",
-                placeholder="https://hooks.slack.com/services/...",
-            )
-            c1, c2 = st.columns(2)
-            save_slack = c1.form_submit_button("保存 Slack 配置")
-            test_slack = c2.form_submit_button("发送 Slack 测试")
-
-        if save_slack or test_slack:
-            config["slack"] = {
-                "enabled": slack_enabled,
-                "webhook_url": slack_webhook_url.strip(),
-            }
-            config = ncfg.save_notification_config(config)
-            st.success("Slack 配置已保存")
-            if test_slack:
-                ok, message = nch.send_slack_message(
-                    nch.build_test_notification_message("Slack"),
-                    config["slack"]["webhook_url"],
-                )
-                if ok:
-                    st.success(message)
-                else:
-                    st.error(message)
-
-    with st.expander("Email / SMTP", expanded=True):
-        st.caption("Outlook 账号可以作为发件人，Gmail 可以作为收件人；实际是否可用取决于该 Outlook 账号是否允许 SMTP 登录。")
-        if st.button("使用 Outlook SMTP 预设"):
-            config = ncfg.apply_outlook_smtp_preset(config)
-            config = ncfg.save_notification_config(config)
-            st.success("已应用 Outlook SMTP 预设")
-            st.rerun()
-
-        email_cfg = config["email"]
-        with st.form("email_notification_config_form"):
-            email_enabled = st.checkbox("启用 Email 通知", value=bool(email_cfg.get("enabled")))
-            ec1, ec2, ec3 = st.columns([2, 1, 1])
-            smtp_host = ec1.text_input("SMTP Host", value=email_cfg.get("smtp_host", "smtp-mail.outlook.com"))
-            smtp_port = ec2.number_input("SMTP Port", min_value=1, max_value=65535, value=int(email_cfg.get("smtp_port", 587)))
-            use_starttls = ec3.checkbox("STARTTLS", value=bool(email_cfg.get("use_starttls", True)))
-            username = st.text_input("SMTP 用户名", value=email_cfg.get("username", ""), placeholder="your_account@outlook.com")
-            password = st.text_input("SMTP 密码 / App Password", value=email_cfg.get("password", ""), type="password")
-            from_email = st.text_input(
-                "发件人",
-                value=email_cfg.get("from_email") or email_cfg.get("username", ""),
-                placeholder="your_account@outlook.com",
-            )
-            to_emails = st.text_input(
-                "收件人",
-                value=", ".join(email_cfg.get("to_emails", [])),
-                placeholder="your_gmail@gmail.com",
-            )
-            c1, c2 = st.columns(2)
-            save_email = c1.form_submit_button("保存 Email 配置")
-            test_email = c2.form_submit_button("发送 Email 测试")
-
-        if save_email or test_email:
-            config["email"] = {
-                "enabled": email_enabled,
-                "smtp_host": smtp_host.strip(),
-                "smtp_port": int(smtp_port),
-                "use_starttls": bool(use_starttls),
-                "username": username.strip(),
-                "password": password,
-                "from_email": from_email.strip(),
-                "to_emails": to_emails,
-            }
-            config = ncfg.save_notification_config(config)
-            st.success("Email 配置已保存")
-            if test_email:
-                ok, message = nch.send_email_message(
-                    "Quant Trade System Email 测试",
-                    nch.build_test_notification_message("Email"),
-                    config["email"],
-                )
-                if ok:
-                    st.success(message)
-                else:
-                    st.error(message)
-
-    st.subheader("当前状态")
-    slack_status = "已启用" if config["slack"].get("enabled") else "未启用"
-    email_status = "已启用" if config["email"].get("enabled") else "未启用"
-    st.write(f"Slack: {slack_status}")
-    st.write(
-        "Email: "
-        f"{email_status} | {config['email'].get('smtp_host')}:{config['email'].get('smtp_port')} "
-        f"| 收件人 {len(config['email'].get('to_emails', []))} 个"
-    )
-
-
-def render_dialogs():
-    if st.session_state.sell_dialog_index is not None:
-        idx = st.session_state.sell_dialog_index
-        if idx < len(data["holdings"]):
-            h = data["holdings"][idx]
-            with st.expander(f"{L('sell_dialog_title')} {h['symbol']}", expanded=True):
-                col1, col2 = st.columns(2)
-                with col1:
-                    sell_price = st.number_input(L("sell_price"), min_value=0.0,
-                                                value=h.get("current_price") or 0.0, step=0.01, format="%.2f")
-                with col2:
-                    max_s = h["shares"]
-                    sell_shares = st.number_input(L("sell_shares"), min_value=0.0,
-                                                 max_value=float(max_s), value=float(max_s), step=0.001, format="%.3f")
-                if st.button(L("confirm_sell")):
-                    if sell_shares > 0:
-                        try:
-                            result = pactions.sell_symbol(h["symbol"], sell_shares, price=sell_price)
-                            st.session_state.app_data = du.load_data()
-                            st.success(
-                                f"已卖出 {result['symbol']} {format_share_quantity(sell_shares)} 股 @ ${result['price']:.2f}"
-                            )
-                            st.session_state.sell_dialog_index = None
-                            st.rerun()
-                        except ValueError as e:
-                            st.error(str(e))
-                if st.button(L("cancel")):
-                    st.session_state.sell_dialog_index = None
-                    st.rerun()
-        else:
-            st.session_state.sell_dialog_index = None
-            st.rerun()
-
-    if st.session_state.editing_holding is not None:
-        idx = st.session_state.editing_holding
-        if idx < len(data["holdings"]):
-            h = data["holdings"][idx]
-            with st.expander(f"{L('edit_dialog_title')} {h['symbol']}", expanded=True):
-                with st.form("edit_holding_form"):
-                    new_shares = st.number_input(L("shares"), min_value=0.0, value=float(h["shares"]), step=0.001, format="%.3f")
-                    new_cost = st.number_input(L("cost_price"), min_value=0.0, value=float(h["cost"]), step=0.01, format="%.2f")
-                    new_sector = st.text_input(L("sector"), value=h.get("sector", ""))
-                    c1, c2 = st.columns(2)
-                    with c1:
-                        if st.form_submit_button(L("save")):
-                            if new_shares > 0:
-                                try:
-                                    data["holdings"][idx]["shares"] = validate_share_quantity(new_shares, field_name="shares")
-                                    data["holdings"][idx]["cost"] = new_cost
-                                    data["holdings"][idx]["sector"] = new_sector.strip()
-                                    du.save_data(data)
-                                    st.session_state.app_data = du.load_data()
-                                    st.success(L("save") + " 成功")
-                                    st.session_state.editing_holding = None
-                                    st.rerun()
-                                except ValueError as e:
-                                    st.error(str(e))
-                            else:
-                                st.error(L("shares") + " 必须大于0")
-                    with c2:
-                        if st.form_submit_button(L("cancel")):
-                            st.session_state.editing_holding = None
-                            st.rerun()
-        else:
-            st.session_state.editing_holding = None
-            st.rerun()
-
-
-enable_auto_news_rerun(interval_seconds=NEWS_AUTO_REFRESH_INTERVAL_SECONDS)
-
-render_dialogs()
+ud.render_portfolio_dialogs(
+    session_state=st.session_state,
+    data=data,
+    L=L,
+    st_module=st,
+    data_utils_module=du,
+    portfolio_actions_module=pactions,
+    format_share_quantity_fn=format_share_quantity,
+    validate_share_quantity_fn=validate_share_quantity,
+)
 
 market_risk_gate_decision = None
 market_risk_snapshot = None
@@ -844,14 +396,12 @@ event_risk_decision = None
 event_source_reports = []
 if data["holdings"]:
     try:
-        event_symbols = list(
-            dict.fromkeys(
-                [h["symbol"] for h in data["holdings"] if h.get("symbol")]
-                + [w["symbol"] for w in data.get("watchlist", []) if w.get("symbol")]
-            )
-        )
-        fetched_events, fetched_reports, _ = fetch_news_events_with_cache(
-            event_symbols,
+        event_symbols = rt.collect_tracked_symbols(data)
+        fetched_events, fetched_reports, _ = rt.fetch_news_events_with_cache(
+            session_state=st.session_state,
+            fetcher_module=ef,
+            symbols=event_symbols,
+            interval_seconds=NEWS_AUTO_REFRESH_INTERVAL_SECONDS,
             now=datetime.now(),
         )
         (
@@ -862,9 +412,18 @@ if data["holdings"]:
             active_market_events,
             event_risk_decision,
             event_source_reports,
-        ) = evaluate_market_risk_for_portfolio(
-            data["holdings"],
+        ) = rt.evaluate_market_risk_for_portfolio(
+            holdings=data["holdings"],
             history_period=st.session_state.history_period,
+            load_historical_data_fn=load_historical_data_cached,
+            load_correlation_matrix_fn=load_correlation_matrix_cached,
+            analyze_portfolio_risk_fn=analyze_portfolio_risk,
+            build_market_risk_snapshot_fn=build_market_risk_snapshot_from_histories,
+            evaluate_market_risk_gate_fn=evaluate_market_risk_gate,
+            select_active_events_fn=en.select_active_events,
+            evaluate_event_risk_switch_fn=en.evaluate_event_risk_switch,
+            merge_risk_gate_decisions_fn=merge_risk_gate_decisions,
+            fetch_events_from_sources_fn=ef.fetch_events_from_sources,
             event_symbols=event_symbols,
             now=datetime.now(),
             fetched_events=fetched_events,
@@ -878,6 +437,23 @@ if data["holdings"]:
         active_market_events = []
         event_risk_decision = None
         event_source_reports = []
+
+transaction_rows = tx.normalize_transactions(tx.load_transactions())
+scoreboard_benchmark_history = None
+try:
+    scoreboard_benchmark_history = load_historical_data_cached("SPY", period=st.session_state.get("history_period", "2y"))
+except Exception:
+    scoreboard_benchmark_history = None
+live_scoreboard = build_signal_scoreboard(
+    transaction_rows,
+    benchmark_history=scoreboard_benchmark_history,
+)
+account_snapshot = ss.build_account_snapshot(data)
+allocation_regime_decision = evaluate_allocation_regime(
+    live_scoreboard,
+    risk_gate=market_risk_gate_decision,
+    account_snapshot=account_snapshot,
+)
 
 # ---------- 主区域 ----------
 st.title(L("app_title"))
@@ -900,7 +476,10 @@ with tab1:
         index=selected_index
     )
     selected_strategy = next((s for s in strategies if s["name"] == selected_strategy_name), strategies[0])
-    selected_strategy_runtime = apply_runtime_strategy_params(selected_strategy)
+    selected_strategy_runtime = rt.apply_runtime_strategy_params(
+        selected_strategy,
+        history_period=st.session_state.get("history_period", "2y"),
+    )
     st.session_state.selected_strategy_id = selected_strategy["id"]
     with st.expander(L("strategy_desc")):
         st.markdown(selected_strategy.get("description", "无说明"))
@@ -909,20 +488,25 @@ with tab1:
         st.session_state.sell_dialog_index = idx
 
     def handle_delete_holding(idx):
-        du.delete_holding(idx)
-        st.session_state.app_data = du.load_data()
+        try:
+            symbol = data["holdings"][idx]["symbol"]
+            pactions.remove_holding_record(symbol, notes="ui delete holding")
+            st.session_state.app_data = du.load_data()
+        except ValueError as e:
+            st.error(str(e))
+            return False
 
     def handle_move_holding_to_watch(idx):
         try:
             symbol = data["holdings"][idx]["symbol"]
-            pactions.sell_all_symbol(symbol)
+            pactions.move_holding_to_watch(symbol)
             st.session_state.app_data = du.load_data()
         except ValueError as e:
             st.error(str(e))
             return False
 
     if data["holdings"]:
-        render_market_risk_gate_banner(market_risk_gate_decision, market_risk_snapshot, L)
+        up.render_market_risk_gate_banner(market_risk_gate_decision, market_risk_snapshot, L)
     summary, holding_records = ui.render_holdings_table(
         data,
         on_price_change=du.update_holding_price,
@@ -932,8 +516,11 @@ with tab1:
         strategy=selected_strategy_runtime,
         risk_gate=market_risk_gate_decision,
         analyst_consensus_cache=analyst_consensus_cache,
+        allocation_regime=allocation_regime_decision,
     )
-    render_account_snapshot_panel(ss.build_account_snapshot(data))
+    up.render_account_snapshot_panel(account_snapshot, ui_text=ui_text)
+    up.render_allocation_regime_panel(allocation_regime_decision, ui_text=ui_text)
+    up.render_signal_scoreboard_panel(live_scoreboard, ui_text=ui_text)
     if data["holdings"]:
         c1, c2, c3, c4 = st.columns(4)
         c1.metric(L("total_cost"), f"${summary.total_cost:,.2f}")
@@ -942,49 +529,35 @@ with tab1:
         c4.metric(L("holdings_count"), f"{len(data['holdings'])}")
 
         if st.button(L("gen_md")):
-            lines = ["| 代码 | 股数 | 成本价 | 现价 | 市值 | 盈亏 ($) | 盈亏 (%) | 信号 | 分析师意见 |"]
-            lines.append("|------|------|--------|------|------|----------|----------|------|------------|")
-            for row in holding_records:
-                price_text = f"${row['现价']:,.2f}" if row["现价"] is not None else "—"
-                value_text = f"${row['市值']:,.2f}" if row["市值"] is not None else "—"
-                pl_text = f"${row['盈亏 ($)']:+,.2f}" if row["盈亏 ($)"] is not None else "—"
-                pl_pct_text = f"{row['盈亏 (%)']:+.2f}%" if row["盈亏 (%)"] is not None else "—"
-                lines.append(
-                    f"| {row['代码']} | {format_share_quantity(row['股数'])} | ${row['成本价']:,.2f} | "
-                    f"{price_text} | "
-                    f"{value_text} | "
-                    f"{pl_text} | "
-                    f"{pl_pct_text} | "
-                    f"{row['信号']} | "
-                    f"{row.get('分析师意见', '无数据')} |"
-                )
-            lines.append(
-                f"\n**{L('total_cost')}**: ${summary.total_cost:,.2f}  "
-                f"\n**{L('total_value')}**: ${summary.total_value:,.2f}  "
-                f"\n**{L('total_pl')}**: ${summary.total_pl:+,.2f} ({summary.total_pl_pct:+.2f}%)"
+            md_text = pg.build_holdings_markdown(
+                holding_records,
+                summary,
+                format_share_quantity_fn=format_share_quantity,
+                labels={
+                    "total_cost": L("total_cost"),
+                    "total_value": L("total_value"),
+                    "total_pl": L("total_pl"),
+                },
             )
-            md_text = "\n".join(lines)
             st.code(md_text, language="markdown")
             st.download_button("⬇️ 下载 Markdown", data=md_text, file_name=f"holdings_{datetime.now().strftime('%Y%m%d')}.md")
 
 # ----- Tab2 关注列表 -----
 with tab2:
     selected_strategy_for_watch = strategy_map.get(st.session_state.selected_strategy_id, strategies[0])
-    selected_strategy_for_watch_runtime = apply_runtime_strategy_params(selected_strategy_for_watch)
-    render_account_snapshot_panel(ss.build_account_snapshot(data))
+    selected_strategy_for_watch_runtime = rt.apply_runtime_strategy_params(
+        selected_strategy_for_watch,
+        history_period=st.session_state.get("history_period", "2y"),
+    )
+    up.render_account_snapshot_panel(account_snapshot, ui_text=ui_text)
+    up.render_allocation_regime_panel(allocation_regime_decision, ui_text=ui_text)
 
     def handle_delete_watch_batch(indices):
         du.delete_watch_batch(indices)
         st.session_state.app_data = du.load_data()
 
     def handle_move_watch_to_holding(idx):
-        try:
-            symbol = data["watchlist"][idx]["symbol"]
-            pactions.buy_symbol(symbol, 1.0)
-            st.session_state.app_data = du.load_data()
-        except ValueError as e:
-            st.error(str(e))
-            return False
+        st.session_state.move_watch_dialog_index = idx
 
     watchlist_records = ui.render_watchlist_table(
         data,
@@ -993,35 +566,31 @@ with tab2:
         strategy=selected_strategy_for_watch_runtime,
         analyst_consensus_cache=analyst_consensus_cache,
         risk_gate=market_risk_gate_decision,
+        allocation_regime=allocation_regime_decision,
     )
 
 # ----- Tab3 交易记录 -----
 with tab3:
-    transactions = tx.load_transactions()
-    if not transactions:
-        st.info(L("no_transactions"))
-    else:
-        df = pd.DataFrame(transactions)
-        df_display = df.copy()
-        df_display["shares"] = df_display["shares"].apply(format_share_quantity)
-        df_display["盈亏 ($)"] = df_display["pl"].apply(lambda x: f"${x:+,.2f}")
-        df_display["盈亏 (%)"] = df_display["pl_pct"].apply(lambda x: f"{x:+.2f}%")
-        df_display = df_display[["date", "symbol", "shares", "sell_price", "cost_basis", "proceeds", "盈亏 ($)", "盈亏 (%)"]]
-        df_display.columns = ["日期", "代码", "股数", "卖出价", "成本价", "收入", "盈亏 ($)", "盈亏 (%)"]
-        st.dataframe(df_display, hide_index=True, width="stretch")
-        total_proceeds = sum(t["proceeds"] for t in transactions)
-        total_pl_trans = sum(t["pl"] for t in transactions)
-        c1, c2 = st.columns(2)
-        c1.metric(L("total_income"), f"${total_proceeds:,.2f}")
-        c2.metric(L("total_pl_trans"), f"${total_pl_trans:+,.2f}")
+    pg.render_transactions_tab(
+        tx_module=tx,
+        L=L,
+        format_share_quantity_fn=format_share_quantity,
+        st_module=st,
+    )
 
 # ----- Tab4 量化分析 -----
 with tab4:
     st.header(L("quant_title"))
     st.markdown(L("quant_desc"))
     if data["holdings"]:
-        render_market_risk_gate_banner(market_risk_gate_decision, market_risk_snapshot, L)
-        render_active_events_panel(active_market_events, event_risk_decision, event_source_reports, L)
+        up.render_market_risk_gate_banner(market_risk_gate_decision, market_risk_snapshot, L)
+        up.render_active_events_panel(
+            active_market_events,
+            event_risk_decision,
+            event_source_reports,
+            L,
+            lang=st.session_state.get("lang", "zh"),
+        )
     portfolio_summary = summarize_holdings(data["holdings"])
 
     all_symbols = list(set([h["symbol"] for h in data["holdings"]] + [w["symbol"] for w in data["watchlist"]]))
@@ -1038,7 +607,12 @@ with tab4:
             default_strategy_id=st.session_state.selected_strategy_id,
         )
         selected_strategy_tab4_runtime = (
-            apply_runtime_strategy_params(selected_strategy_tab4) if selected_strategy_tab4 else None
+            rt.apply_runtime_strategy_params(
+                selected_strategy_tab4,
+                history_period=st.session_state.get("history_period", "2y"),
+            )
+            if selected_strategy_tab4
+            else None
         )
         if selected_strategy_tab4:
             su.display_strategy_description(selected_strategy_tab4)
@@ -1072,7 +646,7 @@ with tab4:
         if selected_symbol and selected_strategy_tab4_runtime:
             with st.spinner("加载历史数据..."):
                 history_period = selected_strategy_tab4_runtime.get("params", {}).get("period", "2y")
-                hist = qa.get_historical_data(selected_symbol, period=history_period)
+                hist = load_historical_data_cached(selected_symbol, period=history_period)
                 if hist.empty:
                     st.error("无历史数据")
                 else:
@@ -1121,9 +695,13 @@ with tab4:
                     current_reason = "暂无信号"
                     try:
                         current_signal, current_reason = su.get_signal(selected_strategy_tab4_runtime, selected_symbol)
-                        if current_signal == "BUY":
+                        signal_approval = approve_signal(current_signal, risk_gate=market_risk_gate_decision)
+                        current_signal = signal_approval.approved_signal
+                        if signal_approval.blocked and signal_approval.reason:
+                            current_reason = f"{current_reason} | {signal_approval.reason}"
+                        if current_signal in {"BUY", "STRONG_BUY"}:
                             st.success(f"📈 {L('current_signal')}: {L('buy')} — {current_reason}")
-                        elif current_signal == "SELL":
+                        elif current_signal in {"SELL", "STRONG_SELL"}:
                             st.error(f"📉 {L('current_signal')}: {L('sell')} — {current_reason}")
                         else:
                             st.info(f"⏸️ {L('current_signal')}: {L('hold')} — {current_reason}")
@@ -1176,6 +754,49 @@ with tab4:
                                     if result.equity_curve:
                                         st.line_chart(pd.Series(result.equity_curve))
 
+                                    scoreboard = build_signal_scoreboard(
+                                        result.trade_log,
+                                        equity_curve=result.equity_curve,
+                                        benchmark_history=hist,
+                                    )
+                                    st.subheader(ui_text("信号评分看板", "Signal Scoreboard"))
+                                    s1, s2, s3, s4, s5, s6 = st.columns(6)
+                                    s1.metric(ui_text("完成交易", "Closed Trades"), f"{scoreboard.completed_trades}")
+                                    s2.metric(
+                                        ui_text("信号胜率", "Signal Win Rate"),
+                                        f"{scoreboard.win_rate:.2%}" if scoreboard.win_rate is not None else "—",
+                                    )
+                                    s3.metric(
+                                        ui_text("期望收益/笔", "Expectancy/Trade"),
+                                        f"{scoreboard.expectancy_return_pct:.2%}" if scoreboard.expectancy_return_pct is not None else "—",
+                                    )
+                                    s4.metric(
+                                        ui_text("盈亏比", "Payoff Ratio"),
+                                        f"{scoreboard.payoff_ratio:.2f}" if scoreboard.payoff_ratio is not None else "—",
+                                    )
+                                    s5.metric(
+                                        ui_text("利润因子", "Profit Factor"),
+                                        f"{scoreboard.profit_factor:.2f}" if scoreboard.profit_factor is not None else "—",
+                                    )
+                                    s6.metric(
+                                        ui_text("看板最大回撤", "Scoreboard Max DD"),
+                                        f"{scoreboard.max_drawdown_pct:.2%}" if scoreboard.max_drawdown_pct is not None else "—",
+                                    )
+
+                                    if scoreboard.regime_breakdown:
+                                        regime_df = pd.DataFrame(
+                                            [
+                                                {
+                                                    ui_text("波动状态", "Volatility Regime"): item.regime,
+                                                    ui_text("交易数", "Trades"): item.trades,
+                                                    ui_text("胜率", "Win Rate"): f"{item.win_rate:.2%}" if item.win_rate is not None else "—",
+                                                    ui_text("平均收益", "Avg Return"): f"{item.avg_return_pct:.2%}" if item.avg_return_pct is not None else "—",
+                                                }
+                                                for item in scoreboard.regime_breakdown
+                                            ]
+                                        )
+                                        st.dataframe(regime_df, hide_index=True, width="stretch")
+
                                     st.subheader("仓位与退出参考")
                                     if guidance.completed_trades:
                                         g1, g2, g3, g4 = st.columns(4)
@@ -1195,6 +816,7 @@ with tab4:
                                             signal_reason=current_reason,
                                             guidance=guidance,
                                             risk_gate=market_risk_gate_decision,
+                                            allocation_regime=allocation_regime_decision,
                                         )
                                         delta_text = (
                                             format_share_quantity(abs(advice.delta_shares))
@@ -1218,6 +840,72 @@ with tab4:
                             except Exception as e:
                                 st.error(f"回测失败: {e}")
 
+                    st.subheader(ui_text("策略比较（同标的）", "Strategy Comparison (Same Symbol)"))
+                    compare_bundle = st.session_state.get("latest_strategy_comparison", {})
+                    if st.button(ui_text("运行策略比较", "Run Strategy Comparison"), key="run_strategy_compare"):
+                        with st.spinner(ui_text("策略比较中...", "Comparing strategies...")):
+                            try:
+                                comparison_rows = compare_strategies_for_symbol(
+                                    symbol=selected_symbol,
+                                    strategies=strategies,
+                                    load_historical_data_fn=load_historical_data_cached,
+                                    create_strategy_fn=create_strategy,
+                                    engine_factory_fn=(
+                                        (lambda: BacktraderEngine(initial_cash=100000))
+                                        if use_backtrader
+                                        else (lambda: PyBrokerEngine(initial_cash=100000))
+                                    ),
+                                    history_period=history_period,
+                                    runtime_param_fn=lambda strategy: rt.apply_runtime_strategy_params(
+                                        strategy,
+                                        history_period=st.session_state.get("history_period", "2y"),
+                                    ),
+                                )
+                                compare_bundle = {
+                                    "symbol": selected_symbol,
+                                    "history_period": history_period,
+                                    "engine": "backtrader" if use_backtrader else "pybroker",
+                                    "rows": comparison_rows,
+                                    "generated_at": datetime.now().isoformat(),
+                                }
+                                st.session_state.latest_strategy_comparison = compare_bundle
+                            except Exception as e:
+                                st.error(f"策略比较失败: {e}")
+
+                    compare_rows = list(compare_bundle.get("rows", []) or [])
+                    if compare_bundle.get("symbol") == selected_symbol and compare_rows:
+                        comparison_df = pd.DataFrame(
+                            [
+                                {
+                                    "策略": row.get("strategy_name", row.get("strategy_id")),
+                                    "综合分": f"{float(row.get('composite_score', 0.0)):.2f}",
+                                    "收益率": f"{float(row.get('total_return', 0.0)):.2%}" if row.get("total_return") is not None else "—",
+                                    "夏普": f"{float(row.get('sharpe_ratio', 0.0)):.2f}" if row.get("sharpe_ratio") is not None else "—",
+                                    "胜率": f"{float(row.get('win_rate', 0.0)):.2%}" if row.get("win_rate") is not None else "—",
+                                    "期望收益/笔": (
+                                        f"{float(row.get('expectancy_return_pct')):.2%}"
+                                        if row.get("expectancy_return_pct") is not None
+                                        else "—"
+                                    ),
+                                    "利润因子": (
+                                        f"{float(row.get('profit_factor')):.2f}"
+                                        if row.get("profit_factor") is not None
+                                        else "—"
+                                    ),
+                                }
+                                for row in compare_rows
+                            ]
+                        )
+                        st.dataframe(comparison_df, hide_index=True, width="stretch")
+                        st.caption(
+                            ui_text(
+                                f"最后比较时间: {compare_bundle.get('generated_at', '—')}",
+                                f"Last comparison at: {compare_bundle.get('generated_at', '—')}",
+                            )
+                        )
+                    elif compare_bundle.get("symbol") == selected_symbol:
+                        st.info(ui_text("策略比较暂无可用结果。", "No strategy comparison result yet."))
+
                     # MACD 图表
                     macd, signal_line, hist_macd = qa.calculate_macd(hist)
                     macd_df = pd.DataFrame({"MACD": macd, "Signal": signal_line, "Histogram": hist_macd}).tail(100)
@@ -1238,7 +926,7 @@ with tab4:
                         symbols = list(dict.fromkeys([h["symbol"] for h in data["holdings"] if h.get("current_price")]))
                         corr = None
                         if len(symbols) > 1:
-                            corr = qa.calculate_correlation_matrix(symbols)
+                            corr = load_correlation_matrix_cached(tuple(sorted(symbols)))
                             st.write(L("corr_matrix"))
                             st.dataframe(corr.style.format("{:.2f}"))
 
@@ -1268,25 +956,24 @@ with tab4:
         else:
             st.info("无持仓数据")
 
-snapshot_alerts = [
-    {
-        "title": event.title,
-        "symbols": list(event.symbols or []),
-        "severity": event.severity,
-        "sentiment": event.sentiment,
-        "source": event.source,
-        "verified": bool(event.verified),
-    }
-    for event in active_market_events
-]
+snapshot_alerts = pg.build_snapshot_alerts(active_market_events)
+latest_strategy_comparison = st.session_state.get("latest_strategy_comparison", {})
 st.session_state.latest_system_snapshot = ss.build_system_snapshot(
     data=st.session_state.app_data,
     holding_records=holding_records,
     watchlist_records=watchlist_records,
     risk_gate=market_risk_gate_decision,
     alerts=snapshot_alerts,
+    performance={
+        "live_scoreboard": _scoreboard_to_dict(live_scoreboard),
+        "strategy_comparison": dict(latest_strategy_comparison or {}),
+    },
+    allocation_regime=allocation_regime_decision.to_dict() if allocation_regime_decision is not None else {},
 )
 
 # ----- Tab5 通知配置 -----
 with tab5:
-    render_notification_config_page()
+    unp.render_notification_config_page(
+        ncfg_module=ncfg,
+        nch_module=nch,
+    )

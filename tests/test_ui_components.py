@@ -3,14 +3,20 @@ import types
 import unittest
 from types import SimpleNamespace
 
-from tests.support import clear_modules, reload_module
+from tests.support import clear_modules, install_fake_yfinance, reload_module
 
 
 class UIComponentsTests(unittest.TestCase):
     def setUp(self):
+        install_fake_yfinance()
         sys.modules["streamlit"] = types.ModuleType("streamlit")
-        clear_modules("ui_components", "strategy_ui", "deep_learning_strategy", "capital_allocator")
-        self.ui = reload_module("ui_components")
+        clear_modules(
+            "app.ui.components",
+            "strategies.ui",
+            "deep_learning_strategy",
+            "quant_core.portfolio.allocation",
+        )
+        self.ui = reload_module("app.ui.components")
 
     def test_build_watchlist_records_includes_allocation_guidance_for_deep_tcn_buy(self):
         self.ui.su.get_signal = lambda strategy, symbol: ("BUY", f"{symbol} buy")
@@ -19,10 +25,12 @@ class UIComponentsTests(unittest.TestCase):
             reason=f"{symbol} profile",
             probability=0.60,
             expected_return_pct=0.03,
+            confidence=0.60,
+            take_profit_price=103.0,
         )
 
         records = self.ui.build_watchlist_records(
-            watchlist=[{"symbol": "MSFT", "notes": "watch", "target_buy": 300.0, "last_price": 100.0}],
+            watchlist=[{"symbol": "MSFT", "notes": "watch", "last_price": 100.0}],
             strategy={"id": "deep_tcn", "params": {"period": "2y"}},
             account={
                 "total_capital": 10000.0,
@@ -35,8 +43,9 @@ class UIComponentsTests(unittest.TestCase):
 
         self.assertEqual(len(records), 1)
         self.assertEqual(records[0]["建议动作"], "买入")
-        self.assertEqual(records[0]["建议投入"], "$1,600.00")
-        self.assertEqual(records[0]["建议股数"], "16.000")
+        self.assertEqual(records[0]["建议投入"], "$800.00")
+        self.assertEqual(records[0]["建议股数"], "8.000")
+        self.assertEqual(records[0]["上涨预期价"], "$101.00 ~ $105.68")
         self.assertIn("上涨概率", records[0]["资金说明"])
 
 

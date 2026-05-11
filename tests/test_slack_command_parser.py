@@ -3,7 +3,7 @@ import unittest
 
 class SlackCommandParserTests(unittest.TestCase):
     def test_parse_help_command_in_chinese(self):
-        from slack_command_parser import parse_slack_command
+        from integrations.slack.command_parser import parse_slack_command
 
         command = parse_slack_command("可用命令")
 
@@ -12,7 +12,7 @@ class SlackCommandParserTests(unittest.TestCase):
         self.assertIsNone(command.shares)
 
     def test_parse_buy_command_supports_fractional_shares(self):
-        from slack_command_parser import parse_slack_command
+        from integrations.slack.command_parser import parse_slack_command
 
         command = parse_slack_command("买入AAPL 0.5股")
 
@@ -21,7 +21,7 @@ class SlackCommandParserTests(unittest.TestCase):
         self.assertEqual(command.shares, 0.5)
 
     def test_parse_sell_all_command(self):
-        from slack_command_parser import parse_slack_command
+        from integrations.slack.command_parser import parse_slack_command
 
         command = parse_slack_command("全部卖出 tsla")
 
@@ -29,7 +29,7 @@ class SlackCommandParserTests(unittest.TestCase):
         self.assertEqual(command.symbol, "TSLA")
 
     def test_parse_move_to_holding_defaults_to_no_share_override(self):
-        from slack_command_parser import parse_slack_command
+        from integrations.slack.command_parser import parse_slack_command
 
         command = parse_slack_command("转到持仓 msft")
 
@@ -38,7 +38,7 @@ class SlackCommandParserTests(unittest.TestCase):
         self.assertIsNone(command.shares)
 
     def test_parse_status_command_in_english(self):
-        from slack_command_parser import parse_slack_command
+        from integrations.slack.command_parser import parse_slack_command
 
         command = parse_slack_command("status nvda")
 
@@ -46,7 +46,7 @@ class SlackCommandParserTests(unittest.TestCase):
         self.assertEqual(command.symbol, "NVDA")
 
     def test_parse_unknown_command(self):
-        from slack_command_parser import parse_slack_command
+        from integrations.slack.command_parser import parse_slack_command
 
         command = parse_slack_command("tell me everything")
 

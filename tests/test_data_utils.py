@@ -11,8 +11,8 @@ from tests.support import clear_modules, install_fake_yfinance, reload_module
 class DataUtilsFractionalShareTests(unittest.TestCase):
     def setUp(self):
         install_fake_yfinance()
-        clear_modules("share_utils", "data_utils")
-        self.data_utils = reload_module("data_utils")
+        clear_modules("share_utils", "quant_core.data.storage")
+        self.data_utils = reload_module("quant_core.data.storage")
         self.temp_dir = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp_dir.cleanup)
         root = Path(self.temp_dir.name)
@@ -73,8 +73,8 @@ class DataUtilsFractionalShareTests(unittest.TestCase):
         self.assertIsNone(data["holdings"][0]["current_price"])
         self.assertEqual(data["watchlist"][0]["symbol"], "MSFT")
         self.assertEqual(data["watchlist"][0]["notes"], "wait for pullback")
-        self.assertEqual(data["watchlist"][0]["target_buy"], 390.0)
         self.assertIsNone(data["watchlist"][0]["last_price"])
+        self.assertNotIn("target_buy", data["watchlist"][0])
 
     def test_editable_portfolio_import_preserves_runtime_prices(self):
         self.data_utils.save_data({
@@ -82,7 +82,7 @@ class DataUtilsFractionalShareTests(unittest.TestCase):
                 {"symbol": "AAPL", "shares": 1, "cost": 150, "current_price": 222.22}
             ],
             "watchlist": [
-                {"symbol": "MSFT", "notes": "old", "target_buy": 350, "last_price": 410.5}
+                {"symbol": "MSFT", "notes": "old", "last_price": 410.5}
             ]
         })
         editable_path = Path(self.data_utils.EDITABLE_DATA_FILE)
@@ -91,7 +91,7 @@ class DataUtilsFractionalShareTests(unittest.TestCase):
                 {"symbol": "AAPL", "shares": 0.5, "cost": 180, "sector": "Technology"}
             ],
             "watchlist": [
-                {"symbol": "MSFT", "notes": "new", "target_buy": 390}
+                {"symbol": "MSFT", "notes": "new"}
             ]
         }), encoding="utf-8")
         os.utime(editable_path, (Path(self.data_utils.DATA_FILE).stat().st_mtime + 10,) * 2)
@@ -156,13 +156,13 @@ class DataUtilsFractionalShareTests(unittest.TestCase):
                 {"symbol": "NVDA", "shares": 1.25, "cost": 190, "current_price": 205}
             ],
             "watchlist": [
-                {"symbol": "MSFT", "notes": "old", "target_buy": 350, "last_price": 410.5}
+                {"symbol": "MSFT", "notes": "old", "last_price": 410.5}
             ]
         })
         editable_path = Path(self.data_utils.EDITABLE_DATA_FILE)
         editable_path.write_text(json.dumps({
             "watchlist": [
-                {"symbol": "AAPL", "notes": "new", "target_buy": 180}
+                {"symbol": "AAPL", "notes": "new"}
             ]
         }), encoding="utf-8")
         os.utime(editable_path, (Path(self.data_utils.DATA_FILE).stat().st_mtime + 10,) * 2)
@@ -178,7 +178,7 @@ class DataUtilsFractionalShareTests(unittest.TestCase):
         now = datetime(2026, 5, 8, 12, 0, 0)
         data = {
             "holdings": [{"symbol": "AAPL", "shares": 1, "cost": 100, "current_price": None}],
-            "watchlist": [{"symbol": "MSFT", "notes": "", "target_buy": 300, "last_price": None}],
+            "watchlist": [{"symbol": "MSFT", "notes": "", "last_price": None}],
             "last_updated": None,
         }
         self.data_utils.fetch_prices = lambda symbols: {"AAPL": 210.5, "MSFT": 405.25}
@@ -237,7 +237,7 @@ class DataUtilsFractionalShareTests(unittest.TestCase):
         self.assertEqual(refreshed_data["holdings"][0]["current_price"], 215.0)
         self.assertEqual(refreshed_data["prices_last_updated"], now.isoformat())
 
-    def test_move_holding_to_watchlist_moves_position_and_uses_latest_price_as_target(self):
+    def test_move_holding_to_watchlist_moves_position_and_uses_latest_price(self):
         self.data_utils.save_data({
             "holdings": [
                 {"symbol": "AAPL", "shares": 1.5, "cost": 180.0, "current_price": 205.0, "sector": "Tech"}
@@ -252,8 +252,8 @@ class DataUtilsFractionalShareTests(unittest.TestCase):
         self.assertEqual(data["holdings"], [])
         self.assertEqual(len(data["watchlist"]), 1)
         self.assertEqual(data["watchlist"][0]["symbol"], "AAPL")
-        self.assertEqual(data["watchlist"][0]["target_buy"], 205.0)
         self.assertEqual(data["watchlist"][0]["last_price"], 205.0)
+        self.assertNotIn("target_buy", data["watchlist"][0])
 
     def test_move_holding_to_watchlist_does_not_duplicate_existing_watch_symbol(self):
         self.data_utils.save_data({
@@ -261,7 +261,7 @@ class DataUtilsFractionalShareTests(unittest.TestCase):
                 {"symbol": "AAPL", "shares": 1.0, "cost": 180.0, "current_price": 210.0, "sector": ""}
             ],
             "watchlist": [
-                {"symbol": "AAPL", "notes": "existing", "target_buy": 195.0, "last_price": None}
+                {"symbol": "AAPL", "notes": "existing", "last_price": None}
             ]
         })
 
@@ -270,14 +270,14 @@ class DataUtilsFractionalShareTests(unittest.TestCase):
 
         self.assertEqual(data["holdings"], [])
         self.assertEqual(len(data["watchlist"]), 1)
-        self.assertEqual(data["watchlist"][0]["target_buy"], 195.0)
         self.assertEqual(data["watchlist"][0]["last_price"], 210.0)
+        self.assertNotIn("target_buy", data["watchlist"][0])
 
     def test_move_watch_to_holding_buys_default_one_share(self):
         self.data_utils.save_data({
             "holdings": [],
             "watchlist": [
-                {"symbol": "MSFT", "notes": "watch", "target_buy": 300.0, "last_price": 310.0}
+                {"symbol": "MSFT", "notes": "watch", "last_price": 310.0}
             ]
         })
 
@@ -300,7 +300,7 @@ class DataUtilsFractionalShareTests(unittest.TestCase):
                 {"symbol": "NVDA", "shares": 2.0, "cost": 100.0, "current_price": 105.0, "sector": ""}
             ],
             "watchlist": [
-                {"symbol": "NVDA", "notes": "re-enter", "target_buy": 95.0, "last_price": 110.0}
+                {"symbol": "NVDA", "notes": "re-enter", "last_price": 110.0}
             ]
         })
 

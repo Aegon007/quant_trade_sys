@@ -4,7 +4,7 @@
       "id": "local_mock",
       "type": "local_file",
       "enabled": true,
-      "path": "market_events.json"
+      "path": "storage/state/market_events.json"
     },
     {
       "id": "yfinance_news",

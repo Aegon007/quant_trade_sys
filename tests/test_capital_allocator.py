@@ -3,8 +3,32 @@ from types import SimpleNamespace
 
 
 class CapitalAllocatorTests(unittest.TestCase):
+    def test_recommend_buy_derives_total_capital_from_cash_plus_invested(self):
+        from quant_core.portfolio.allocation import recommend_allocation
+
+        plan = recommend_allocation(
+            symbol="AAPL",
+            current_price=100.0,
+            signal="BUY",
+            account={
+                "cash_available": 4000.0,
+                "min_cash_buffer_pct": 0.10,
+                "max_single_position_pct": 0.20,
+                "max_total_exposure_pct": 1.0,
+            },
+            current_shares=5.0,
+            current_invested_dollars=6000.0,
+            signal_profile=SimpleNamespace(probability=0.72, expected_return_pct=0.12),
+        )
+
+        self.assertEqual(plan.action, "BUY")
+        self.assertAlmostEqual(plan.target_weight_pct, 20.0)
+        self.assertAlmostEqual(plan.recommended_dollars, 1500.0)
+        self.assertAlmostEqual(plan.recommended_shares, 15.0)
+        self.assertAlmostEqual(plan.cash_buffer_dollars, 1000.0)
+
     def test_recommend_buy_uses_signal_strength_and_account_limits(self):
-        from capital_allocator import recommend_allocation
+        from quant_core.portfolio.allocation import recommend_allocation
 
         plan = recommend_allocation(
             symbol="AAPL",
@@ -29,8 +53,8 @@ class CapitalAllocatorTests(unittest.TestCase):
         self.assertIn("上涨概率", plan.reason)
 
     def test_recommend_buy_blocks_when_risk_gate_stops_new_buys(self):
-        from capital_allocator import recommend_allocation
-        from risk_gate import MarketRiskGateDecision
+        from quant_core.portfolio.allocation import recommend_allocation
+        from quant_core.risk.risk_gate import MarketRiskGateDecision
 
         plan = recommend_allocation(
             symbol="AAPL",
@@ -59,8 +83,8 @@ class CapitalAllocatorTests(unittest.TestCase):
         self.assertIn("风险闸门", plan.reason)
 
     def test_recommend_buy_scales_down_in_caution_regime(self):
-        from capital_allocator import recommend_allocation
-        from risk_gate import MarketRiskGateDecision
+        from quant_core.portfolio.allocation import recommend_allocation
+        from quant_core.risk.risk_gate import MarketRiskGateDecision
 
         plan = recommend_allocation(
             symbol="MSFT",
@@ -74,6 +98,7 @@ class CapitalAllocatorTests(unittest.TestCase):
                 "max_total_exposure_pct": 1.0,
             },
             signal_profile=SimpleNamespace(probability=0.60, expected_return_pct=0.03),
+            current_invested_dollars=5000.0,
             risk_gate=MarketRiskGateDecision(
                 regime="CAUTION",
                 risk_score=3,

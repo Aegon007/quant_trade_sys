@@ -7,7 +7,7 @@ from pathlib import Path
 
 class EventNewsTests(unittest.TestCase):
     def test_load_market_events_normalizes_and_parses(self):
-        from event_news import load_market_events
+        from quant_core.events.event_news import load_market_events
 
         now = datetime(2026, 5, 8, 12, 0, 0)
         payload = {
@@ -42,7 +42,7 @@ class EventNewsTests(unittest.TestCase):
         self.assertIsNotNone(event.ends_at)
 
     def test_active_events_filters_by_time_and_symbol(self):
-        from event_news import MarketEvent, select_active_events
+        from quant_core.events.event_news import MarketEvent, select_active_events
 
         now = datetime(2026, 5, 8, 12, 0, 0)
         events = [
@@ -77,7 +77,7 @@ class EventNewsTests(unittest.TestCase):
         self.assertEqual(filtered[0].event_id, "1")
 
     def test_evaluate_event_risk_switch_triggers_brake(self):
-        from event_news import MarketEvent, evaluate_event_risk_switch
+        from quant_core.events.event_news import MarketEvent, evaluate_event_risk_switch
 
         now = datetime(2026, 5, 8, 12, 0, 0)
         events = [
@@ -98,7 +98,7 @@ class EventNewsTests(unittest.TestCase):
         self.assertLessEqual(decision.max_position_weight, 0.08)
 
     def test_evaluate_event_risk_switch_ignores_unverified_when_requested(self):
-        from event_news import MarketEvent, evaluate_event_risk_switch
+        from quant_core.events.event_news import MarketEvent, evaluate_event_risk_switch
 
         now = datetime(2026, 5, 8, 12, 0, 0)
         events = [
@@ -117,14 +117,14 @@ class EventNewsTests(unittest.TestCase):
         self.assertFalse(decision.block_new_buys)
 
     def test_evaluate_event_risk_switch_uses_vix_brake(self):
-        from event_news import evaluate_event_risk_switch
+        from quant_core.events.event_news import evaluate_event_risk_switch
 
         decision = evaluate_event_risk_switch(events=[], vix=36.0)
         self.assertEqual(decision.regime, "RISK_OFF")
         self.assertTrue(decision.block_new_buys)
 
     def test_event_confidence_prefers_verified_official_sources(self):
-        from event_news import MarketEvent, compute_event_confidence_score
+        from quant_core.events.event_news import MarketEvent, compute_event_confidence_score
 
         official = MarketEvent(
             event_id="fed-1",
@@ -150,7 +150,7 @@ class EventNewsTests(unittest.TestCase):
         self.assertLessEqual(rumor_score, 0.45)
 
     def test_ensure_market_events_file_bootstraps_from_example(self):
-        from event_news import ensure_market_events_file
+        from quant_core.events.event_news import ensure_market_events_file
 
         payload = {"events": [{"id": "seed-1", "title": "Seed Event"}]}
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -169,7 +169,7 @@ class EventNewsTests(unittest.TestCase):
             self.assertEqual(json.loads(target_path.read_text(encoding="utf-8")), payload)
 
     def test_load_market_events_auto_bootstraps_missing_file_from_example(self):
-        from event_news import load_market_events
+        from quant_core.events.event_news import load_market_events
 
         now = datetime(2026, 5, 8, 12, 0, 0)
         payload = {
