@@ -1,6 +1,9 @@
 import unittest
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
+import tempfile
+import json
 
 from tests.support import clear_modules, install_fake_yfinance, reload_module
 
@@ -107,6 +110,7 @@ class RunAllTests(unittest.TestCase):
             refresher=fake_refresher,
             saver=lambda payload: saved.append(payload),
             refresh_interval_seconds=3600,
+            enable_auto_quant_analysis=False,
         )
 
         self.assertTrue(result)
@@ -131,6 +135,7 @@ class RunAllTests(unittest.TestCase):
             refresher=fake_refresher,
             saver=lambda payload: saved.append(payload),
             refresh_interval_seconds=3600,
+            enable_auto_quant_analysis=False,
         )
 
         self.assertFalse(result)
@@ -156,6 +161,7 @@ class RunAllTests(unittest.TestCase):
             },
             summary_builder=lambda **kwargs: "hourly summary",
             slack_sender=lambda text, url: (sent.append((text, url)) or True, "ok"),
+            enable_auto_quant_analysis=False,
         )
 
         self.assertTrue(result)
@@ -181,6 +187,7 @@ class RunAllTests(unittest.TestCase):
             },
             summary_builder=lambda **kwargs: "hourly summary",
             slack_sender=lambda text, url: (sent.append((text, url)) or True, "ok"),
+            enable_auto_quant_analysis=False,
         )
 
         self.assertTrue(result)
@@ -205,6 +212,7 @@ class RunAllTests(unittest.TestCase):
             },
             summary_builder=lambda **kwargs: "hourly summary",
             slack_sender=lambda text, url: (sent.append((text, url)) or True, "ok"),
+            enable_auto_quant_analysis=False,
         )
 
         self.assertTrue(result)
@@ -227,10 +235,336 @@ class RunAllTests(unittest.TestCase):
             environ={"SLACK_WEBHOOK_URL": "https://hooks.slack.com/services/from-env"},
             summary_builder=lambda **kwargs: "hourly summary",
             slack_sender=lambda text, url: (sent.append((text, url)) or True, "ok"),
+            enable_auto_quant_analysis=False,
         )
 
         self.assertTrue(result)
         self.assertEqual(sent, [("hourly summary", "https://hooks.slack.com/services/from-env")])
+
+    def test_maybe_run_market_refresh_auto_runs_quant_analysis_on_price_jump(self):
+        now = datetime.fromisoformat("2026-05-11T10:30:00-04:00")
+        data_before = {
+            "holdings": [{"symbol": "AAPL", "shares": 1.0, "current_price": 100.0, "cost": 90.0}],
+            "watchlist": [],
+            "account": {"cash_available": 1000.0},
+        }
+        data_after = {
+            "holdings": [{"symbol": "AAPL", "shares": 1.0, "current_price": 104.5, "cost": 90.0}],
+            "watchlist": [],
+            "account": {"cash_available": 1000.0},
+            "prices_last_updated": "2026-05-11T10:30:00",
+        }
+        sent = []
+        saved_snapshots = []
+        written_reports = []
+        original_build_report = self.module.nr.build_quant_analysis_report
+        original_write_reports = self.module.nr.save_quant_analysis_report_files
+        original_load_default_strategy = self.module.qpa.load_default_runtime_strategy
+        original_build_snapshot = self.module.qpa.build_portfolio_quant_analysis_snapshot
+        original_save_snapshot = self.module.qpa.save_quant_analysis_snapshot
+        original_load_events = self.module.en.load_market_events
+        original_select_events = self.module.en.select_active_events
+        original_eval_event_risk = self.module.en.evaluate_event_risk_switch
+        original_build_account_snapshot = self.module.ss.build_account_snapshot
+        self.addCleanup(setattr, self.module.nr, "build_quant_analysis_report", original_build_report)
+        self.addCleanup(setattr, self.module.nr, "save_quant_analysis_report_files", original_write_reports)
+        self.addCleanup(setattr, self.module.qpa, "load_default_runtime_strategy", original_load_default_strategy)
+        self.addCleanup(setattr, self.module.qpa, "build_portfolio_quant_analysis_snapshot", original_build_snapshot)
+        self.addCleanup(setattr, self.module.qpa, "save_quant_analysis_snapshot", original_save_snapshot)
+        self.addCleanup(setattr, self.module.en, "load_market_events", original_load_events)
+        self.addCleanup(setattr, self.module.en, "select_active_events", original_select_events)
+        self.addCleanup(setattr, self.module.en, "evaluate_event_risk_switch", original_eval_event_risk)
+        self.addCleanup(setattr, self.module.ss, "build_account_snapshot", original_build_account_snapshot)
+        self.module.evaluate_current_market_risk = lambda data, history_period="2y": SimpleNamespace(
+            regime="NORMAL",
+            risk_score=1,
+            block_new_buys=False,
+            max_position_weight=0.2,
+            reasons=[],
+            to_dict=lambda: {"regime": "NORMAL"},
+        )
+        self.module.tx.load_transactions = lambda: []
+        self.module.tx.normalize_transactions = lambda rows: rows
+        self.module.ss.build_account_snapshot = lambda data: {"total_capital": 1000.0, "cash_available": 1000.0, "exposure_pct": 0.0}
+        self.module.evaluate_allocation_regime = lambda *args, **kwargs: SimpleNamespace(
+            regime="NORMAL",
+            risk_multiplier=1.0,
+            to_dict=lambda: {"regime": "NORMAL"},
+        )
+        self.module.qpa.load_default_runtime_strategy = lambda history_period="2y": {"id": "deep_tcn", "name": "TCN", "params": {"period": history_period}}
+        self.module.qpa.build_portfolio_quant_analysis_snapshot = lambda *args, **kwargs: {
+            "generated_at": "2026-05-11T10:30:00",
+            "summary": {"top_buy_symbols": ["AAPL"]},
+            "symbols": [{"symbol": "AAPL", "signal": "BUY", "position_advice": {"action": "ADD"}}],
+            "risk": {"regime": "NORMAL"},
+            "event_risk": {"regime": "NORMAL"},
+        }
+        self.module.qpa.save_quant_analysis_snapshot = lambda snapshot, path=None: saved_snapshots.append((snapshot, path))
+        self.module.nr.build_quant_analysis_report = lambda snapshot: "quant report"
+        self.module.nr.save_quant_analysis_report_files = lambda snapshot, report_text=None, reports_dir=None: written_reports.append((snapshot, reports_dir)) or {"pdf_path": "x.pdf"}
+        self.module.en.load_market_events = lambda auto_bootstrap=True: []
+        self.module.en.select_active_events = lambda events, symbols=None, now=None, verified_only=False: []
+        self.module.en.evaluate_event_risk_switch = lambda events, verified_only=True, now=None, vix=None: SimpleNamespace(
+            regime="NORMAL",
+            risk_score=0,
+            block_new_buys=False,
+            max_position_weight=0.2,
+            reasons=[],
+            active_event_count=0,
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            snapshot_path = Path(temp_dir) / "quant_analysis_snapshot.json"
+            snapshot_path.write_text(
+                json.dumps(
+                    {
+                        "generated_at": "2026-05-11T06:00:00",
+                        "summary": {"top_buy_symbols": []},
+                        "symbols": [{"symbol": "AAPL", "signal": "HOLD", "position_advice": {"action": "HOLD"}}],
+                        "risk": {"regime": "NORMAL"},
+                        "event_risk": {"regime": "NORMAL"},
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            result = self.module.maybe_run_market_refresh(
+                now=now,
+                loader=lambda: data_before,
+                refresher=lambda payload, **kwargs: (data_after, True),
+                saver=lambda payload: None,
+                refresh_interval_seconds=3600,
+                config_loader=lambda: {
+                    "slack": {"enabled": True, "webhook_url": "https://hooks.slack.com/services/test"},
+                    "alert_settings": {
+                        "send_hourly_market_summary": False,
+                        "send_quant_analysis_change_summary": True,
+                    },
+                },
+                slack_sender=lambda text, url: (sent.append((text, url)) or True, "ok"),
+                quant_analysis_snapshot_path=str(snapshot_path),
+                report_output_dir=temp_dir,
+                auto_quant_analysis_price_jump_pct=0.03,
+                auto_quant_analysis_min_interval_seconds=3600,
+            )
+
+        self.assertTrue(result)
+        self.assertEqual(len(saved_snapshots), 1)
+        self.assertEqual(len(written_reports), 1)
+        self.assertEqual(sent[-1][1], "https://hooks.slack.com/services/test")
+        self.assertIn("Price jump", sent[-1][0])
+
+    def test_maybe_run_market_refresh_auto_runs_quant_analysis_on_risk_regime_change_despite_cooldown(self):
+        now = datetime.fromisoformat("2026-05-11T10:30:00-04:00")
+        data_before = {
+            "holdings": [{"symbol": "AAPL", "shares": 1.0, "current_price": 100.0, "cost": 90.0}],
+            "watchlist": [],
+            "account": {"cash_available": 1000.0},
+        }
+        data_after = {
+            "holdings": [{"symbol": "AAPL", "shares": 1.0, "current_price": 100.5, "cost": 90.0}],
+            "watchlist": [],
+            "account": {"cash_available": 1000.0},
+            "prices_last_updated": "2026-05-11T10:30:00",
+        }
+        saved_snapshots = []
+        original_build_report = self.module.nr.build_quant_analysis_report
+        original_write_reports = self.module.nr.save_quant_analysis_report_files
+        original_load_default_strategy = self.module.qpa.load_default_runtime_strategy
+        original_build_snapshot = self.module.qpa.build_portfolio_quant_analysis_snapshot
+        original_save_snapshot = self.module.qpa.save_quant_analysis_snapshot
+        original_load_events = self.module.en.load_market_events
+        original_select_events = self.module.en.select_active_events
+        original_eval_event_risk = self.module.en.evaluate_event_risk_switch
+        original_build_account_snapshot = self.module.ss.build_account_snapshot
+        self.addCleanup(setattr, self.module.nr, "build_quant_analysis_report", original_build_report)
+        self.addCleanup(setattr, self.module.nr, "save_quant_analysis_report_files", original_write_reports)
+        self.addCleanup(setattr, self.module.qpa, "load_default_runtime_strategy", original_load_default_strategy)
+        self.addCleanup(setattr, self.module.qpa, "build_portfolio_quant_analysis_snapshot", original_build_snapshot)
+        self.addCleanup(setattr, self.module.qpa, "save_quant_analysis_snapshot", original_save_snapshot)
+        self.addCleanup(setattr, self.module.en, "load_market_events", original_load_events)
+        self.addCleanup(setattr, self.module.en, "select_active_events", original_select_events)
+        self.addCleanup(setattr, self.module.en, "evaluate_event_risk_switch", original_eval_event_risk)
+        self.addCleanup(setattr, self.module.ss, "build_account_snapshot", original_build_account_snapshot)
+        self.module.evaluate_current_market_risk = lambda data, history_period="2y": SimpleNamespace(
+            regime="CAUTION",
+            risk_score=3,
+            block_new_buys=False,
+            max_position_weight=0.12,
+            reasons=["vol up"],
+            to_dict=lambda: {"regime": "CAUTION"},
+        )
+        self.module.tx.load_transactions = lambda: []
+        self.module.tx.normalize_transactions = lambda rows: rows
+        self.module.ss.build_account_snapshot = lambda data: {"total_capital": 1000.0, "cash_available": 1000.0, "exposure_pct": 0.0}
+        self.module.evaluate_allocation_regime = lambda *args, **kwargs: SimpleNamespace(
+            regime="LIGHT",
+            risk_multiplier=0.8,
+            to_dict=lambda: {"regime": "LIGHT"},
+        )
+        self.module.qpa.load_default_runtime_strategy = lambda history_period="2y": {"id": "deep_tcn", "name": "TCN", "params": {"period": history_period}}
+        self.module.qpa.build_portfolio_quant_analysis_snapshot = lambda *args, **kwargs: {
+            "generated_at": "2026-05-11T10:30:00",
+            "summary": {"top_buy_symbols": []},
+            "symbols": [{"symbol": "AAPL", "signal": "HOLD", "position_advice": {"action": "HOLD"}}],
+            "risk": {"regime": "CAUTION"},
+            "event_risk": {"regime": "NORMAL"},
+        }
+        self.module.qpa.save_quant_analysis_snapshot = lambda snapshot, path=None: saved_snapshots.append((snapshot, path))
+        self.module.nr.build_quant_analysis_report = lambda snapshot: "quant report"
+        self.module.nr.save_quant_analysis_report_files = lambda snapshot, report_text=None, reports_dir=None: {"pdf_path": "x.pdf"}
+        self.module.en.load_market_events = lambda auto_bootstrap=True: []
+        self.module.en.select_active_events = lambda events, symbols=None, now=None, verified_only=False: []
+        self.module.en.evaluate_event_risk_switch = lambda events, verified_only=True, now=None, vix=None: SimpleNamespace(
+            regime="NORMAL",
+            risk_score=0,
+            block_new_buys=False,
+            max_position_weight=0.2,
+            reasons=[],
+            active_event_count=0,
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            snapshot_path = Path(temp_dir) / "quant_analysis_snapshot.json"
+            snapshot_path.write_text(
+                json.dumps(
+                    {
+                        "generated_at": "2026-05-11T10:10:00",
+                        "summary": {"top_buy_symbols": []},
+                        "symbols": [{"symbol": "AAPL", "signal": "HOLD", "position_advice": {"action": "HOLD"}}],
+                        "risk": {"regime": "NORMAL"},
+                        "event_risk": {"regime": "NORMAL"},
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            self.module.maybe_run_market_refresh(
+                now=now,
+                loader=lambda: data_before,
+                refresher=lambda payload, **kwargs: (data_after, True),
+                saver=lambda payload: None,
+                refresh_interval_seconds=3600,
+                config_loader=lambda: {
+                    "slack": {"enabled": False, "webhook_url": ""},
+                    "alert_settings": {
+                        "send_hourly_market_summary": False,
+                        "send_quant_analysis_change_summary": False,
+                    },
+                },
+                quant_analysis_snapshot_path=str(snapshot_path),
+                report_output_dir=temp_dir,
+                auto_quant_analysis_price_jump_pct=0.05,
+                auto_quant_analysis_min_interval_seconds=3600,
+            )
+
+        self.assertEqual(len(saved_snapshots), 1)
+
+    def test_maybe_run_market_refresh_auto_runs_quant_analysis_on_active_high_impact_event(self):
+        now = datetime.fromisoformat("2026-05-11T10:30:00-04:00")
+        data_before = {
+            "holdings": [{"symbol": "AAPL", "shares": 1.0, "current_price": 100.0, "cost": 90.0}],
+            "watchlist": [],
+            "account": {"cash_available": 1000.0},
+        }
+        data_after = {
+            "holdings": [{"symbol": "AAPL", "shares": 1.0, "current_price": 100.2, "cost": 90.0}],
+            "watchlist": [],
+            "account": {"cash_available": 1000.0},
+            "prices_last_updated": "2026-05-11T10:30:00",
+        }
+        saved_snapshots = []
+        original_build_report = self.module.nr.build_quant_analysis_report
+        original_write_reports = self.module.nr.save_quant_analysis_report_files
+        original_load_default_strategy = self.module.qpa.load_default_runtime_strategy
+        original_build_snapshot = self.module.qpa.build_portfolio_quant_analysis_snapshot
+        original_save_snapshot = self.module.qpa.save_quant_analysis_snapshot
+        original_load_events = self.module.en.load_market_events
+        original_select_events = self.module.en.select_active_events
+        original_eval_event_risk = self.module.en.evaluate_event_risk_switch
+        original_build_account_snapshot = self.module.ss.build_account_snapshot
+        self.addCleanup(setattr, self.module.nr, "build_quant_analysis_report", original_build_report)
+        self.addCleanup(setattr, self.module.nr, "save_quant_analysis_report_files", original_write_reports)
+        self.addCleanup(setattr, self.module.qpa, "load_default_runtime_strategy", original_load_default_strategy)
+        self.addCleanup(setattr, self.module.qpa, "build_portfolio_quant_analysis_snapshot", original_build_snapshot)
+        self.addCleanup(setattr, self.module.qpa, "save_quant_analysis_snapshot", original_save_snapshot)
+        self.addCleanup(setattr, self.module.en, "load_market_events", original_load_events)
+        self.addCleanup(setattr, self.module.en, "select_active_events", original_select_events)
+        self.addCleanup(setattr, self.module.en, "evaluate_event_risk_switch", original_eval_event_risk)
+        self.addCleanup(setattr, self.module.ss, "build_account_snapshot", original_build_account_snapshot)
+        self.module.evaluate_current_market_risk = lambda data, history_period="2y": SimpleNamespace(
+            regime="NORMAL",
+            risk_score=1,
+            block_new_buys=False,
+            max_position_weight=0.2,
+            reasons=[],
+            to_dict=lambda: {"regime": "NORMAL"},
+        )
+        self.module.tx.load_transactions = lambda: []
+        self.module.tx.normalize_transactions = lambda rows: rows
+        self.module.ss.build_account_snapshot = lambda data: {"total_capital": 1000.0, "cash_available": 1000.0, "exposure_pct": 0.0}
+        self.module.evaluate_allocation_regime = lambda *args, **kwargs: SimpleNamespace(
+            regime="NORMAL",
+            risk_multiplier=1.0,
+            to_dict=lambda: {"regime": "NORMAL"},
+        )
+        self.module.qpa.load_default_runtime_strategy = lambda history_period="2y": {"id": "deep_tcn", "name": "TCN", "params": {"period": history_period}}
+        self.module.qpa.build_portfolio_quant_analysis_snapshot = lambda *args, **kwargs: {
+            "generated_at": "2026-05-11T10:30:00",
+            "summary": {"top_buy_symbols": []},
+            "symbols": [{"symbol": "AAPL", "signal": "HOLD", "position_advice": {"action": "HOLD"}}],
+            "risk": {"regime": "NORMAL"},
+            "event_risk": {"regime": "RISK_OFF"},
+        }
+        self.module.qpa.save_quant_analysis_snapshot = lambda snapshot, path=None: saved_snapshots.append((snapshot, path))
+        self.module.nr.build_quant_analysis_report = lambda snapshot: "quant report"
+        self.module.nr.save_quant_analysis_report_files = lambda snapshot, report_text=None, reports_dir=None: {"pdf_path": "x.pdf"}
+        self.module.en.load_market_events = lambda auto_bootstrap=True: [SimpleNamespace(title="FOMC", severity="high", event_type="fomc", symbols=["AAPL"])]
+        self.module.en.select_active_events = lambda events, symbols=None, now=None, verified_only=False: list(events)
+        self.module.en.evaluate_event_risk_switch = lambda events, verified_only=True, now=None, vix=None: SimpleNamespace(
+            regime="RISK_OFF",
+            risk_score=5,
+            block_new_buys=True,
+            max_position_weight=0.08,
+            reasons=["FOMC"],
+            active_event_count=1,
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            snapshot_path = Path(temp_dir) / "quant_analysis_snapshot.json"
+            snapshot_path.write_text(
+                json.dumps(
+                    {
+                        "generated_at": "2026-05-11T10:10:00",
+                        "summary": {"top_buy_symbols": []},
+                        "symbols": [{"symbol": "AAPL", "signal": "HOLD", "position_advice": {"action": "HOLD"}}],
+                        "risk": {"regime": "NORMAL"},
+                        "event_risk": {"regime": "NORMAL"},
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            self.module.maybe_run_market_refresh(
+                now=now,
+                loader=lambda: data_before,
+                refresher=lambda payload, **kwargs: (data_after, True),
+                saver=lambda payload: None,
+                refresh_interval_seconds=3600,
+                config_loader=lambda: {
+                    "slack": {"enabled": False, "webhook_url": ""},
+                    "alert_settings": {
+                        "send_hourly_market_summary": False,
+                        "send_quant_analysis_change_summary": False,
+                    },
+                },
+                quant_analysis_snapshot_path=str(snapshot_path),
+                report_output_dir=temp_dir,
+                auto_quant_analysis_price_jump_pct=0.05,
+                auto_quant_analysis_min_interval_seconds=3600,
+            )
+
+        self.assertEqual(len(saved_snapshots), 1)
 
 
 if __name__ == "__main__":

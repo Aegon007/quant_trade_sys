@@ -181,7 +181,7 @@ class DataUtilsFractionalShareTests(unittest.TestCase):
             "watchlist": [{"symbol": "MSFT", "notes": "", "last_price": None}],
             "last_updated": None,
         }
-        self.data_utils.fetch_prices = lambda symbols: {"AAPL": 210.5, "MSFT": 405.25}
+        self.data_utils.fetch_prices = lambda symbols, **kwargs: {"AAPL": 210.5, "MSFT": 405.25}
 
         refreshed_data, refreshed = self.data_utils.auto_refresh_market_data(
             data,
@@ -225,7 +225,7 @@ class DataUtilsFractionalShareTests(unittest.TestCase):
             "last_updated": None,
             "prices_last_updated": (now - timedelta(minutes=20)).isoformat(),
         }
-        self.data_utils.fetch_prices = lambda symbols: {"AAPL": 215.0}
+        self.data_utils.fetch_prices = lambda symbols, **kwargs: {"AAPL": 215.0}
 
         refreshed_data, refreshed = self.data_utils.auto_refresh_market_data(
             data,
@@ -284,6 +284,33 @@ class DataUtilsFractionalShareTests(unittest.TestCase):
 
         self.assertIn("AAPL", second)
         self.assertTrue(calls)
+
+    def test_fetch_prices_force_live_refresh_bypasses_cache_and_updates_cache(self):
+        self.data_utils.DEFAULT_PRICE_SOURCE_ORDER = ("primary_mock",)
+        live_price = {"value": 100.0}
+        self.data_utils.CUSTOM_PRICE_PROVIDERS = {
+            "primary_mock": lambda symbols: {"AAPL": live_price["value"]},
+        }
+
+        first = self.data_utils.fetch_prices(["AAPL"], use_cache=True, cache_ttl=3600)
+        self.assertEqual(first["AAPL"], 100.0)
+
+        live_price["value"] = 105.0
+        second = self.data_utils.fetch_prices(["AAPL"], use_cache=False)
+        self.assertEqual(second["AAPL"], 105.0)
+
+        original_fetcher = self.data_utils._fetch_prices_from_provider
+
+        def fail_fetch(_provider, _symbols):
+            raise AssertionError("provider should not be called when refreshed cache is still fresh")
+
+        self.data_utils._fetch_prices_from_provider = fail_fetch
+        try:
+            third = self.data_utils.fetch_prices(["AAPL"], use_cache=True, cache_ttl=3600)
+        finally:
+            self.data_utils._fetch_prices_from_provider = original_fetcher
+
+        self.assertEqual(third["AAPL"], 105.0)
 
     def test_fetch_prices_uses_source_order_and_falls_back_on_error(self):
         self.data_utils.DEFAULT_PRICE_SOURCE_ORDER = ("primary_mock", "secondary_mock")

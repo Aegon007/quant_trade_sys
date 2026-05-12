@@ -22,6 +22,9 @@ class NotificationConfigTests(unittest.TestCase):
         self.assertFalse(config["slack"]["enabled"])
         self.assertTrue(config["alert_settings"]["send_hourly_market_summary"])
         self.assertTrue(config["alert_settings"]["send_hourly_market_summary_market_hours_only"])
+        self.assertTrue(config["alert_settings"]["enable_auto_quant_analysis"])
+        self.assertEqual(config["alert_settings"]["auto_quant_analysis_min_interval_seconds"], 7200)
+        self.assertEqual(config["alert_settings"]["auto_quant_analysis_price_jump_pct"], 0.03)
 
     def test_save_and_load_normalizes_recipients(self):
         self.module.save_notification_config(
@@ -88,6 +91,24 @@ class NotificationConfigTests(unittest.TestCase):
         self.assertEqual(config["email"]["smtp_port"], 2525)
         self.assertFalse(config["email"]["use_starttls"])
         self.assertEqual(config["email"]["to_emails"], ["target@gmail.com"])
+
+    def test_save_and_load_normalizes_auto_quant_analysis_settings(self):
+        self.module.save_notification_config(
+            {
+                "alert_settings": {
+                    "enable_auto_quant_analysis": False,
+                    "auto_quant_analysis_min_interval_seconds": "5400",
+                    "auto_quant_analysis_price_jump_pct": "0.045",
+                }
+            },
+            self.config_path,
+        )
+
+        config = self.module.load_notification_config(self.config_path)
+
+        self.assertFalse(config["alert_settings"]["enable_auto_quant_analysis"])
+        self.assertEqual(config["alert_settings"]["auto_quant_analysis_min_interval_seconds"], 5400)
+        self.assertEqual(config["alert_settings"]["auto_quant_analysis_price_jump_pct"], 0.045)
 
 
 if __name__ == "__main__":

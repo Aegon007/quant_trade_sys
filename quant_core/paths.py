@@ -18,6 +18,7 @@ ANALYST_CONSENSUS_CACHE_FILE = str(STATE_DIR / "analyst_consensus_cache.json")
 ALERT_STATE_FILE = str(STATE_DIR / "alert_state.json")
 NOTIFICATION_CONFIG_FILE = str(STATE_DIR / "notification_config.json")
 COMMAND_AUDIT_FILE = str(STATE_DIR / "command_audit.jsonl")
+QUANT_ANALYSIS_SNAPSHOT_FILE = str(STATE_DIR / "quant_analysis_snapshot.json")
 
 MARKET_EVENTS_EXAMPLE_FILE = str(CONFIG_DIR / "market_events.example.json")
 NOTIFICATION_CONFIG_EXAMPLE_FILE = str(CONFIG_DIR / "notification_config.example.json")
@@ -78,4 +79,3 @@ def bootstrap_storage_paths():
     ensure_storage_layout()
     migrate_legacy_files()
     _BOOTSTRAPPED = True
-

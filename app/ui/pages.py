@@ -124,9 +124,96 @@ def build_snapshot_alerts(active_market_events):
     return alerts
 
 
-def render_transactions_tab(*, tx_module, L, format_share_quantity_fn, st_module=None):
+def format_robinhood_import_result_message(result):
+    result = dict(result or {})
+    return (
+        f"Robinhood CSV 导入完成：新增 {int(result.get('imported_count', 0) or 0)} 条，"
+        f"重复跳过 {int(result.get('duplicate_count', 0) or 0)} 条，"
+        f"不支持/缺失字段跳过 {int(result.get('skipped_count', 0) or 0)} 条。"
+    )
+
+
+def format_robinhood_reconcile_result_message(result):
+    result = dict(result or {})
+    issues = list(result.get("issues", []) or [])
+    issue_text = " | ".join(issues[:3]) if issues else "无异常。"
+    return (
+        f"Robinhood 持仓同步完成：持仓 {len(result.get('holdings', []) or [])} 个，"
+        f"可用现金 ${float(result.get('cash_available', 0.0) or 0.0):,.2f}，"
+        f"现金依据 {result.get('cash_mode', 'unknown')}。"
+        f" {issue_text}"
+    )
+
+
+def render_transactions_tab(
+    *,
+    tx_module,
+    L,
+    format_share_quantity_fn,
+    st_module=None,
+    session_state=None,
+    portfolio_actions_module=None,
+    data_utils_module=None,
+):
     if st_module is None:
         import streamlit as st_module  # lazy import to keep helper tests lightweight
+
+    if session_state is not None:
+        notice = session_state.pop("robinhood_reconcile_notice", None)
+        if isinstance(notice, dict):
+            level = str(notice.get("level", "info")).lower()
+            message = str(notice.get("message", "") or "")
+            if message:
+                if level == "success":
+                    st_module.success(message)
+                elif level == "warning":
+                    st_module.warning(message)
+                else:
+                    st_module.info(message)
+
+    st_module.subheader("Robinhood CSV 导入")
+    st_module.caption("支持导入 Robinhood Account activity report CSV；会同步股票/ETF 买卖以及可识别的现金事件，并自动按导入指纹去重。")
+    uploaded_file = st_module.file_uploader(
+        "上传 Robinhood Account activity report CSV",
+        type=["csv"],
+        key="robinhood_activity_csv_uploader",
+    )
+    if uploaded_file is not None and st_module.button("导入 Robinhood CSV", key="import_robinhood_activity_csv"):
+        result = tx_module.import_robinhood_activity_csv(
+            uploaded_file.getvalue(),
+            filename=getattr(uploaded_file, "name", "robinhood_activity.csv"),
+        )
+        message = format_robinhood_import_result_message(result)
+        if int(result.get("imported_count", 0) or 0) > 0:
+            st_module.success(message)
+        elif int(result.get("duplicate_count", 0) or 0) > 0 or int(result.get("skipped_count", 0) or 0) > 0:
+            st_module.info(message)
+        else:
+            st_module.warning("未识别到可导入的交易记录，请检查 CSV 是否为 Robinhood Account activity report。")
+
+    if portfolio_actions_module is not None and data_utils_module is not None:
+        if st_module.button("按 Robinhood 导入记录同步当前持仓/可用现金", key="reconcile_robinhood_imports"):
+            try:
+                result = portfolio_actions_module.reconcile_portfolio_from_robinhood_imports()
+            except ValueError as exc:
+                st_module.error(str(exc))
+            else:
+                if session_state is not None:
+                    session_state.app_data = data_utils_module.load_data()
+                message = format_robinhood_reconcile_result_message(result)
+                has_issues = bool(result.get("issues"))
+                if session_state is not None:
+                    session_state["robinhood_reconcile_notice"] = {
+                        "level": "warning" if has_issues else "success",
+                        "message": message,
+                    }
+                    rerun_fn = getattr(st_module, "rerun", None) or getattr(st_module, "experimental_rerun", None)
+                    if callable(rerun_fn):
+                        rerun_fn()
+                elif has_issues:
+                    st_module.warning(message)
+                else:
+                    st_module.success(message)
 
     transaction_rows = tx_module.normalize_transactions(tx_module.load_transactions())
     if not transaction_rows:

@@ -1,5 +1,6 @@
 import json
 import os
+import hashlib
 from datetime import datetime
 from share_utils import validate_share_quantity
 from quant_core import paths as qpaths
@@ -28,7 +29,10 @@ def normalize_transaction_record(record):
     if not event_type:
         event_type = "SELL" if record_type == "TRADE" else "UNKNOWN"
     if not side:
-        side = "SELL" if event_type in {"SELL", "SELL_ALL", "MOVE_TO_WATCH"} else "BUY"
+        if record_type == "CASH_EVENT":
+            side = ""
+        else:
+            side = "SELL" if event_type in {"SELL", "SELL_ALL", "MOVE_TO_WATCH"} else "BUY"
     price = record.get("price")
     if price is None:
         price = record.get("sell_price")
@@ -48,6 +52,9 @@ def normalize_transaction_record(record):
         "pl": record.get("pl"),
         "pl_pct": record.get("pl_pct"),
         "notes": notes,
+        "source": str(record.get("source", "") or ""),
+        "import_key": str(record.get("import_key", "") or ""),
+        "source_file": str(record.get("source_file", "") or ""),
     }
 
 
@@ -151,6 +158,73 @@ def _append_record(record):
     trans = load_transactions()
     trans.append(record)
     save_transactions(trans)
+
+
+def _canonical_number_text(value):
+    if value is None:
+        return ""
+    try:
+        return f"{float(value):.8f}".rstrip("0").rstrip(".")
+    except (TypeError, ValueError):
+        return ""
+
+
+def transaction_identity_key(record):
+    normalized = normalize_transaction_record(record)
+    import_key = str(normalized.get("import_key", "") or "").strip()
+    if import_key:
+        return f"import:{import_key}"
+
+    record_dt = _parse_record_datetime(normalized.get("date"))
+    date_key = record_dt.isoformat(timespec="seconds") if record_dt is not None else str(normalized.get("date", "") or "").strip()
+    payload = {
+        "record_type": str(normalized.get("record_type", "") or "").strip().upper(),
+        "event_type": str(normalized.get("event_type", "") or "").strip().upper(),
+        "side": str(normalized.get("side", "") or "").strip().upper(),
+        "date": date_key,
+        "symbol": str(normalized.get("symbol", "") or "").strip().upper(),
+        "shares": _canonical_number_text(normalized.get("shares")),
+        "price": _canonical_number_text(normalized.get("price")),
+        "proceeds": _canonical_number_text(normalized.get("proceeds")),
+        "notes": str(normalized.get("notes", "") or "").strip(),
+    }
+    return hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
+
+
+def append_imported_trade_records(records):
+    existing_rows = list(load_transactions() or [])
+    existing_keys = {transaction_identity_key(row) for row in existing_rows}
+    imported_rows = []
+    duplicate_count = 0
+
+    for record in list(records or []):
+        key = transaction_identity_key(record)
+        if key in existing_keys:
+            duplicate_count += 1
+            continue
+        existing_rows.append(record)
+        imported_rows.append(record)
+        existing_keys.add(key)
+
+    if imported_rows:
+        save_transactions(existing_rows)
+
+    return {
+        "imported_count": len(imported_rows),
+        "duplicate_count": duplicate_count,
+        "records": imported_rows,
+    }
+
+
+def import_robinhood_activity_csv(content, *, filename=""):
+    from quant_core.ledger import robinhood_csv as rhcsv
+
+    parsed = rhcsv.parse_robinhood_activity_csv(content, filename=filename)
+    appended = append_imported_trade_records(parsed.get("records", []))
+    return {
+        **parsed,
+        **appended,
+    }
 
 
 def _now_text():

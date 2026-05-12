@@ -158,6 +158,21 @@ class UIPanelsTests(unittest.TestCase):
         self.assertTrue(any("event_risk_none" in text for text in self.fake_st.state["infos"]))
         self.assertTrue(any("mock" in text for text in self.fake_st.state["captions"]))
 
+    def test_render_analysis_freshness_banner_warns_when_holdings_are_expired(self):
+        self.panels.render_analysis_freshness_banner(
+            {
+                "expired_symbols": ["AAPL"],
+                "missing_symbols": ["MSFT"],
+                "needs_warning": True,
+            },
+            ui_text=lambda zh, en: zh,
+            st_module=self.fake_st,
+        )
+
+        self.assertEqual(len(self.fake_st.state["warnings"]), 1)
+        self.assertIn("AAPL", self.fake_st.state["warnings"][0])
+        self.assertIn("MSFT", self.fake_st.state["warnings"][0])
+
 
 if __name__ == "__main__":
     unittest.main()

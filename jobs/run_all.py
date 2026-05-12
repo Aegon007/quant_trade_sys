@@ -16,9 +16,11 @@ from pathlib import Path
 from typing import Callable, List, Optional
 
 from quant_core.analytics import quant_analysis as qa
+from quant_core.analytics import portfolio_analysis as qpa
 from quant_core.data import market_data as md
 from quant_core.data import storage as data_storage
 from quant_core.events.analyst_consensus import should_run_nightly_consensus_update
+from quant_core.events import event_news as en
 from quant_core.ledger import transactions as tx
 from quant_core.notifications import notification_channels as nch
 from quant_core.notifications import notification_config as ncfg
@@ -34,6 +36,8 @@ DEFAULT_MONITOR_SECONDS = 10
 DEFAULT_NIGHTLY_POLL_SECONDS = 300
 DEFAULT_MARKET_REFRESH_POLL_SECONDS = 300
 DEFAULT_MARKET_REFRESH_INTERVAL_SECONDS = 3600
+DEFAULT_AUTO_QUANT_ANALYSIS_MIN_INTERVAL_SECONDS = ncfg.DEFAULT_AUTO_QUANT_ANALYSIS_MIN_INTERVAL_SECONDS
+DEFAULT_AUTO_QUANT_ANALYSIS_PRICE_JUMP_PCT = ncfg.DEFAULT_AUTO_QUANT_ANALYSIS_PRICE_JUMP_PCT
 
 
 @dataclass(frozen=True)
@@ -136,6 +140,11 @@ def maybe_run_market_refresh(
     config_loader: Callable[[], dict] = ncfg.load_notification_config,
     summary_builder: Callable[..., str] = nr.build_market_refresh_report,
     slack_sender: Callable[..., tuple] = nch.send_slack_message,
+    quant_analysis_snapshot_path: str = qpa.DEFAULT_QUANT_ANALYSIS_SNAPSHOT_FILE,
+    report_output_dir: str = nr.DEFAULT_REPORTS_DIR,
+    auto_quant_analysis_min_interval_seconds: Optional[int] = None,
+    auto_quant_analysis_price_jump_pct: Optional[float] = None,
+    enable_auto_quant_analysis: Optional[bool] = None,
     environ=None,
     logger: Optional[logging.Logger] = None,
 ) -> bool:
@@ -155,6 +164,138 @@ def maybe_run_market_refresh(
     config = ncfg.apply_environment_overrides(config_loader(), environ=environ)
     alert_settings = config.get("alert_settings", {}) if isinstance(config, dict) else {}
     slack_config = config.get("slack", {}) if isinstance(config, dict) else {}
+    try:
+        resolved_auto_quant_analysis_min_interval_seconds = int(
+            auto_quant_analysis_min_interval_seconds
+            if auto_quant_analysis_min_interval_seconds is not None
+            else alert_settings.get(
+                "auto_quant_analysis_min_interval_seconds",
+                DEFAULT_AUTO_QUANT_ANALYSIS_MIN_INTERVAL_SECONDS,
+            )
+        )
+    except (TypeError, ValueError):
+        resolved_auto_quant_analysis_min_interval_seconds = DEFAULT_AUTO_QUANT_ANALYSIS_MIN_INTERVAL_SECONDS
+    try:
+        resolved_auto_quant_analysis_price_jump_pct = float(
+            auto_quant_analysis_price_jump_pct
+            if auto_quant_analysis_price_jump_pct is not None
+            else alert_settings.get(
+                "auto_quant_analysis_price_jump_pct",
+                DEFAULT_AUTO_QUANT_ANALYSIS_PRICE_JUMP_PCT,
+            )
+        )
+    except (TypeError, ValueError):
+        resolved_auto_quant_analysis_price_jump_pct = DEFAULT_AUTO_QUANT_ANALYSIS_PRICE_JUMP_PCT
+    resolved_enable_auto_quant_analysis = (
+        bool(enable_auto_quant_analysis)
+        if enable_auto_quant_analysis is not None
+        else bool(alert_settings.get("enable_auto_quant_analysis", True))
+    )
+    tracked_symbols = sorted(
+        {
+            str(item.get("symbol", "")).strip().upper()
+            for item in (refreshed_data.get("holdings", []) + refreshed_data.get("watchlist", []))
+            if item.get("symbol")
+        }
+    )
+
+    try:
+        account_snapshot = ss.build_account_snapshot(refreshed_data)
+    except Exception:
+        account_snapshot = {}
+    try:
+        risk_decision = evaluate_current_market_risk(refreshed_data, history_period="2y") if refreshed_data.get("holdings") else None
+    except Exception:
+        risk_decision = None
+    try:
+        raw_events = en.load_market_events(auto_bootstrap=True)
+        active_events = en.select_active_events(raw_events, symbols=tracked_symbols, now=now, verified_only=False)
+        event_decision = en.evaluate_event_risk_switch(active_events, verified_only=True, now=now, vix=None)
+    except Exception:
+        active_events = []
+        event_decision = None
+    try:
+        transaction_rows = tx.normalize_transactions(tx.load_transactions())
+    except Exception:
+        transaction_rows = []
+    try:
+        benchmark_history = qa.get_historical_data("SPY", period="2y")
+    except Exception:
+        benchmark_history = None
+    try:
+        live_scoreboard = build_signal_scoreboard(transaction_rows, benchmark_history=benchmark_history)
+    except Exception:
+        live_scoreboard = None
+    try:
+        allocation_regime = evaluate_allocation_regime(
+            live_scoreboard,
+            risk_gate=risk_decision,
+            account_snapshot=account_snapshot,
+        )
+    except Exception:
+        allocation_regime = None
+
+    previous_snapshot = None
+    auto_trigger = {"should_run": False, "message": "Auto quant analysis disabled."}
+    if resolved_enable_auto_quant_analysis:
+        try:
+            previous_snapshot = qpa.load_quant_analysis_snapshot(path=quant_analysis_snapshot_path)
+            auto_trigger = qpa.evaluate_auto_refresh_trigger(
+                before_data=before_data,
+                after_data=refreshed_data,
+                previous_snapshot=previous_snapshot,
+                risk_decision=risk_decision,
+                event_decision=event_decision,
+                active_events=active_events,
+                now=now,
+                price_jump_threshold=resolved_auto_quant_analysis_price_jump_pct,
+                min_interval_seconds=resolved_auto_quant_analysis_min_interval_seconds,
+            )
+        except Exception:
+            logger.exception("Auto full-analysis trigger evaluation failed.")
+            previous_snapshot = None
+            auto_trigger = {"should_run": False, "message": "Auto trigger evaluation failed."}
+
+        if auto_trigger.get("should_run"):
+            try:
+                runtime_strategy = qpa.load_default_runtime_strategy(history_period="2y")
+                if runtime_strategy is not None:
+                    analysis_snapshot = qpa.build_portfolio_quant_analysis_snapshot(
+                        refreshed_data,
+                        strategy=runtime_strategy,
+                        history_period="2y",
+                        engine_name="backtrader",
+                        risk_gate=risk_decision,
+                        allocation_regime=allocation_regime,
+                        active_events=active_events,
+                        event_decision=event_decision,
+                        now=now,
+                    )
+                    qpa.save_quant_analysis_snapshot(analysis_snapshot, path=quant_analysis_snapshot_path)
+                    analysis_report_text = nr.build_quant_analysis_report(analysis_snapshot)
+                    nr.save_quant_analysis_report_files(
+                        analysis_snapshot,
+                        report_text=analysis_report_text,
+                        reports_dir=report_output_dir,
+                    )
+                    if (
+                        slack_config.get("enabled")
+                        and slack_config.get("webhook_url")
+                        and bool(alert_settings.get("send_quant_analysis_change_summary", True))
+                    ):
+                        change_summary = qpa.build_quant_analysis_change_summary(previous_snapshot, analysis_snapshot)
+                        if change_summary.get("has_changes"):
+                            message = auto_trigger.get("message", "")
+                            if change_summary.get("message"):
+                                message = f"{message}\n\n{change_summary['message']}".strip()
+                            ok, message_text = slack_sender(message, slack_config.get("webhook_url"))
+                            if ok:
+                                logger.info("Auto full-analysis change summary sent to Slack.")
+                            else:
+                                logger.warning("Auto full-analysis change summary failed: %s", message_text)
+            except Exception:
+                logger.exception("Auto full-analysis refresh failed.")
+
     if (
         slack_config.get("enabled")
         and slack_config.get("webhook_url")
@@ -163,53 +304,24 @@ def maybe_run_market_refresh(
         market_hours_only = bool(alert_settings.get("send_hourly_market_summary_market_hours_only", True))
         if market_hours_only and not nr.is_us_market_session(now):
             logger.info("Skipping hourly market summary outside regular US market hours.")
-            logger.info("Market cache refresh completed.")
-            return True
-        try:
+        else:
             try:
-                account_snapshot = ss.build_account_snapshot(refreshed_data)
-            except Exception:
-                account_snapshot = {}
-            try:
-                risk_decision = evaluate_current_market_risk(refreshed_data, history_period="2y") if refreshed_data.get("holdings") else None
-            except Exception:
-                risk_decision = None
-            try:
-                transaction_rows = tx.normalize_transactions(tx.load_transactions())
-            except Exception:
-                transaction_rows = []
-            try:
-                benchmark_history = qa.get_historical_data("SPY", period="2y")
-            except Exception:
-                benchmark_history = None
-            try:
-                live_scoreboard = build_signal_scoreboard(transaction_rows, benchmark_history=benchmark_history)
-            except Exception:
-                live_scoreboard = None
-            try:
-                allocation_regime = evaluate_allocation_regime(
-                    live_scoreboard,
-                    risk_gate=risk_decision,
+                summary_text = summary_builder(
+                    before_data=before_data,
+                    after_data=refreshed_data,
                     account_snapshot=account_snapshot,
+                    risk_gate=risk_decision.to_dict() if hasattr(risk_decision, "to_dict") else risk_decision,
+                    allocation_regime=allocation_regime.to_dict() if hasattr(allocation_regime, "to_dict") else allocation_regime,
+                    data_sources=md.get_market_data_status_snapshot(),
+                    now=now,
                 )
+                ok, message = slack_sender(summary_text, slack_config.get("webhook_url"))
+                if ok:
+                    logger.info("Hourly market refresh summary sent to Slack.")
+                else:
+                    logger.warning("Hourly market refresh summary failed: %s", message)
             except Exception:
-                allocation_regime = None
-            summary_text = summary_builder(
-                before_data=before_data,
-                after_data=refreshed_data,
-                account_snapshot=account_snapshot,
-                risk_gate=risk_decision.to_dict() if hasattr(risk_decision, "to_dict") else risk_decision,
-                allocation_regime=allocation_regime.to_dict() if hasattr(allocation_regime, "to_dict") else allocation_regime,
-                data_sources=md.get_market_data_status_snapshot(),
-                now=now,
-            )
-            ok, message = slack_sender(summary_text, slack_config.get("webhook_url"))
-            if ok:
-                logger.info("Hourly market refresh summary sent to Slack.")
-            else:
-                logger.warning("Hourly market refresh summary failed: %s", message)
-        except Exception:
-            logger.exception("Hourly market refresh summary failed.")
+                logger.exception("Hourly market refresh summary failed.")
     else:
         logger.info("Hourly market summary skipped because Slack webhook notifications are not enabled.")
     logger.info("Market cache refresh completed.")
@@ -244,6 +356,11 @@ def market_refresh_loop(
     loader: Callable[[], dict] = data_storage.load_data,
     refresher: Callable[..., tuple] = data_storage.auto_refresh_market_data,
     saver: Callable[[dict], None] = data_storage.save_data,
+    quant_analysis_snapshot_path: str = qpa.DEFAULT_QUANT_ANALYSIS_SNAPSHOT_FILE,
+    report_output_dir: str = nr.DEFAULT_REPORTS_DIR,
+    auto_quant_analysis_min_interval_seconds: Optional[int] = None,
+    auto_quant_analysis_price_jump_pct: Optional[float] = None,
+    enable_auto_quant_analysis: Optional[bool] = None,
     logger: Optional[logging.Logger] = None,
 ):
     logger = logger or logging.getLogger(__name__)
@@ -255,6 +372,11 @@ def market_refresh_loop(
                 refresher=refresher,
                 saver=saver,
                 refresh_interval_seconds=refresh_interval_seconds,
+                quant_analysis_snapshot_path=quant_analysis_snapshot_path,
+                report_output_dir=report_output_dir,
+                auto_quant_analysis_min_interval_seconds=auto_quant_analysis_min_interval_seconds,
+                auto_quant_analysis_price_jump_pct=auto_quant_analysis_price_jump_pct,
+                enable_auto_quant_analysis=enable_auto_quant_analysis,
                 logger=logger,
             )
         except Exception:
@@ -283,6 +405,9 @@ def run_supervisor(
     nightly_poll_seconds: int = DEFAULT_NIGHTLY_POLL_SECONDS,
     market_refresh_poll_seconds: int = DEFAULT_MARKET_REFRESH_POLL_SECONDS,
     market_refresh_interval_seconds: int = DEFAULT_MARKET_REFRESH_INTERVAL_SECONDS,
+    auto_quant_analysis_min_interval_seconds: Optional[int] = None,
+    auto_quant_analysis_price_jump_pct: Optional[float] = None,
+    enable_auto_quant_analysis: Optional[bool] = None,
     python_executable: Optional[str] = None,
     project_root: Optional[Path] = None,
     popen=subprocess.Popen,
@@ -363,6 +488,11 @@ def run_supervisor(
                     "loader": data_storage.load_data,
                     "refresher": data_storage.auto_refresh_market_data,
                     "saver": data_storage.save_data,
+                    "quant_analysis_snapshot_path": qpa.DEFAULT_QUANT_ANALYSIS_SNAPSHOT_FILE,
+                    "report_output_dir": nr.DEFAULT_REPORTS_DIR,
+                    "auto_quant_analysis_min_interval_seconds": auto_quant_analysis_min_interval_seconds,
+                    "auto_quant_analysis_price_jump_pct": auto_quant_analysis_price_jump_pct,
+                    "enable_auto_quant_analysis": enable_auto_quant_analysis,
                     "logger": logger,
                 },
                 daemon=True,
@@ -456,6 +586,9 @@ def main(argv=None):
     parser.add_argument("--nightly-poll-seconds", type=int, default=DEFAULT_NIGHTLY_POLL_SECONDS, help="How often to check whether nightly alerts are due.")
     parser.add_argument("--market-refresh-poll-seconds", type=int, default=DEFAULT_MARKET_REFRESH_POLL_SECONDS, help="How often to check whether market cache refresh is due.")
     parser.add_argument("--market-refresh-interval-seconds", type=int, default=DEFAULT_MARKET_REFRESH_INTERVAL_SECONDS, help="Minimum interval between market cache refreshes.")
+    parser.add_argument("--auto-quant-analysis-min-interval-seconds", type=int, default=None, help="Override config-page minimum interval between auto-triggered full quant analysis runs.")
+    parser.add_argument("--auto-quant-analysis-price-jump-pct", type=float, default=None, help="Override config-page absolute price change threshold that triggers auto full quant analysis.")
+    parser.add_argument("--disable-auto-quant-analysis", action="store_true", help="Do not auto-run full quant analysis during market refresh.")
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"), format="%(asctime)s %(levelname)s %(message)s")
@@ -468,6 +601,9 @@ def main(argv=None):
         nightly_poll_seconds=args.nightly_poll_seconds,
         market_refresh_poll_seconds=args.market_refresh_poll_seconds,
         market_refresh_interval_seconds=args.market_refresh_interval_seconds,
+        auto_quant_analysis_min_interval_seconds=args.auto_quant_analysis_min_interval_seconds,
+        auto_quant_analysis_price_jump_pct=args.auto_quant_analysis_price_jump_pct,
+        enable_auto_quant_analysis=False if args.disable_auto_quant_analysis else None,
     )
     print(f"Supervisor exited. services={result['services']} launch_count={result['launch_count']}")
     return 0

@@ -128,6 +128,34 @@ class UIPagesHelpersTests(unittest.TestCase):
         self.assertEqual(alerts[0]["symbols"], ["SPY"])
         self.assertTrue(alerts[0]["verified"])
 
+    def test_format_robinhood_import_result_message_includes_dedupe_counts(self):
+        message = self.pages.format_robinhood_import_result_message(
+            {
+                "imported_count": 3,
+                "duplicate_count": 2,
+                "skipped_count": 4,
+            }
+        )
+
+        self.assertIn("新增 3", message)
+        self.assertIn("重复跳过 2", message)
+        self.assertIn("不支持/缺失字段跳过 4", message)
+
+    def test_format_robinhood_reconcile_result_message_includes_cash_and_issues(self):
+        message = self.pages.format_robinhood_reconcile_result_message(
+            {
+                "holdings": [{"symbol": "AAPL"}],
+                "cash_available": 860.0,
+                "cash_mode": "imported_cash_events",
+                "issues": ["history may be incomplete"],
+            }
+        )
+
+        self.assertIn("持仓 1 个", message)
+        self.assertIn("$860.00", message)
+        self.assertIn("imported_cash_events", message)
+        self.assertIn("history may be incomplete", message)
+
 
 if __name__ == "__main__":
     unittest.main()

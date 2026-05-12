@@ -93,6 +93,39 @@ class TransactionsSchemaTests(unittest.TestCase):
         self.assertEqual(recap["symbols"], ["AAPL", "MSFT"])
         self.assertEqual(recap["largest_win"]["symbol"], "AAPL")
 
+    def test_normalize_transaction_record_preserves_import_metadata(self):
+        from quant_core.ledger.transactions import normalize_transaction_record
+
+        normalized = normalize_transaction_record(
+            {
+                "date": "2026-05-10 09:30",
+                "symbol": "AAPL",
+                "event_type": "BUY",
+                "side": "BUY",
+                "shares": 1.0,
+                "price": 100.0,
+                "source": "ROBINHOOD_ACCOUNT_ACTIVITY_CSV",
+                "import_key": "abc123",
+            }
+        )
+
+        self.assertEqual(normalized["source"], "ROBINHOOD_ACCOUNT_ACTIVITY_CSV")
+        self.assertEqual(normalized["import_key"], "abc123")
+
+    def test_normalize_transaction_record_keeps_cash_event_side_blank(self):
+        from quant_core.ledger.transactions import normalize_transaction_record
+
+        normalized = normalize_transaction_record(
+            {
+                "record_type": "CASH_EVENT",
+                "event_type": "CASH_DEPOSIT",
+                "date": "2026-05-10 09:00:00",
+                "proceeds": 1000.0,
+            }
+        )
+
+        self.assertEqual(normalized["side"], "")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -12,6 +12,7 @@ from quant_core.data import storage as du
 from quant_core.data import market_data as md
 from quant_core.ledger import transactions as tx
 from quant_core.analytics import quant_analysis as qa
+from quant_core.analytics import portfolio_analysis as qpa
 from strategies import ui as su
 import ml_strategy as ml_utils
 import deep_learning_strategy as dl_utils
@@ -20,6 +21,7 @@ from quant_core.events import event_fetcher as ef
 from quant_core.events import analyst_consensus as ac
 from quant_core.notifications import notification_config as ncfg
 from quant_core.notifications import notification_channels as nch
+from quant_core.notifications import reporting as nr
 from quant_core.portfolio import actions as pactions
 from quant_core.snapshots import system_snapshot as ss
 import locales as loc
@@ -165,6 +167,7 @@ elif "analyst_consensus_status" not in st.session_state:
 
 data = st.session_state.app_data
 analyst_consensus_cache = ac.load_analyst_consensus_cache()
+quant_analysis_snapshot = qpa.load_quant_analysis_snapshot()
 
 # ========== 侧边栏 ==========
 with st.sidebar:
@@ -297,13 +300,14 @@ with st.sidebar:
     if st.button(L("refresh_price")):
         with st.spinner("刷新中..."):
             try:
-                updated = pactions.refresh_all_market_data()
+                updated = pactions.refresh_all_market_data(force_source_refresh=True)
                 st.session_state.app_data = updated
                 du.save_data(updated)
                 st.success(L("refresh_price") + " 完成！")
                 st.rerun()
             except Exception as e:
                 st.error(f"刷新失败: {e}")
+    st.caption("手动刷新会优先强制从当前配置的数据源拉取最新价格，并回写本地缓存。")
     if data.get("prices_last_updated"):
         st.caption(f"{L('last_price_refresh')}: {data['prices_last_updated']}")
     else:
@@ -456,10 +460,20 @@ allocation_regime_decision = evaluate_allocation_regime(
     risk_gate=market_risk_gate_decision,
     account_snapshot=account_snapshot,
 )
+analysis_freshness_alert = ui.build_holdings_analysis_freshness_alert(
+    data.get("holdings", []),
+    quant_analysis_snapshot,
+    now=datetime.now(),
+)
 
 # ---------- 主区域 ----------
 st.title(L("app_title"))
 st.caption(L("app_caption"))
+up.render_analysis_freshness_banner(
+    analysis_freshness_alert,
+    ui_text=ui_text,
+    st_module=st,
+)
 
 tab1, tab2, tab3, tab4, tab5 = st.tabs([
     L("holdings_tab"), L("watchlist_tab"),
@@ -523,6 +537,7 @@ with tab1:
         risk_gate=market_risk_gate_decision,
         analyst_consensus_cache=analyst_consensus_cache,
         allocation_regime=allocation_regime_decision,
+        analysis_snapshot=quant_analysis_snapshot,
     )
     up.render_account_snapshot_panel(account_snapshot, ui_text=ui_text)
     up.render_data_source_status_panel(md.get_market_data_status_snapshot(), ui_text=ui_text)
@@ -575,6 +590,7 @@ with tab2:
         analyst_consensus_cache=analyst_consensus_cache,
         risk_gate=market_risk_gate_decision,
         allocation_regime=allocation_regime_decision,
+        analysis_snapshot=quant_analysis_snapshot,
     )
 
 # ----- Tab3 交易记录 -----
@@ -584,12 +600,16 @@ with tab3:
         L=L,
         format_share_quantity_fn=format_share_quantity,
         st_module=st,
+        session_state=st.session_state,
+        portfolio_actions_module=pactions,
+        data_utils_module=du,
     )
 
 # ----- Tab4 量化分析 -----
 with tab4:
     st.header(L("quant_title"))
     st.markdown(L("quant_desc"))
+    st.info(ui_text("本页现在主要用于报告中心和单票深挖；日常决策请优先查看持仓页和关注页。", "This page now serves as a report center and deep-dive tool. For day-to-day decisions, use the holdings and watchlist pages first."))
     if data["holdings"]:
         up.render_market_risk_gate_banner(market_risk_gate_decision, market_risk_snapshot, L)
         up.render_active_events_panel(
@@ -625,6 +645,136 @@ with tab4:
         if selected_strategy_tab4:
             su.display_strategy_description(selected_strategy_tab4)
 
+        st.subheader(ui_text("组合全量分析报告", "Portfolio Analysis Report"))
+        if selected_strategy_tab4_runtime and st.button(
+            ui_text("生成全量分析报告", "Generate Full Analysis Report"),
+            key="generate_portfolio_quant_report",
+        ):
+            with st.spinner(ui_text("全量分析报告生成中...", "Generating portfolio analysis report...")):
+                try:
+                    report_snapshot = qpa.build_portfolio_quant_analysis_snapshot(
+                        data,
+                        strategy=selected_strategy_tab4_runtime,
+                        history_period=st.session_state.get("history_period", "2y"),
+                        engine_name="backtrader" if use_backtrader else "pybroker",
+                        engine_factory_fn=(
+                            (lambda: BacktraderEngine(initial_cash=100000))
+                            if use_backtrader
+                            else (lambda: PyBrokerEngine(initial_cash=100000))
+                        ),
+                        risk_gate=market_risk_gate_decision,
+                        allocation_regime=allocation_regime_decision,
+                        now=datetime.now(),
+                    )
+                    report_text = nr.build_quant_analysis_report(report_snapshot)
+                    report_files = nr.save_quant_analysis_report_files(
+                        report_snapshot,
+                        report_text=report_text,
+                    )
+                    qpa.save_quant_analysis_snapshot(report_snapshot)
+                    st.session_state.latest_quant_analysis_report = {
+                        "snapshot": report_snapshot,
+                        "files": report_files,
+                    }
+                    st.success(ui_text("全量分析报告已生成。", "Portfolio analysis report generated."))
+                except Exception as e:
+                    st.error(f"{ui_text('生成报告失败', 'Report generation failed')}: {e}")
+
+        latest_report_bundle = st.session_state.get("latest_quant_analysis_report", {})
+        latest_report_snapshot = latest_report_bundle.get("snapshot") if isinstance(latest_report_bundle, dict) else None
+        latest_report_files = (
+            dict(latest_report_bundle.get("files", {}) or {})
+            if isinstance(latest_report_bundle, dict)
+            else {}
+        )
+        if not latest_report_snapshot:
+            latest_report_snapshot = qpa.load_quant_analysis_snapshot() or nr.load_latest_quant_analysis_snapshot()
+        latest_report_files = {
+            **nr.get_quant_analysis_report_latest_paths(),
+            **latest_report_files,
+        }
+
+        if latest_report_snapshot:
+            latest_summary = dict(latest_report_snapshot.get("summary", {}) or {})
+            st.caption(
+                ui_text(
+                    f"最新报告时间: {latest_report_snapshot.get('generated_at', '—')}",
+                    f"Latest report: {latest_report_snapshot.get('generated_at', '—')}",
+                )
+            )
+            r1, r2, r3, r4 = st.columns(4)
+            r1.metric(ui_text("覆盖标的", "Tracked"), f"{int(latest_summary.get('total_symbols', 0) or 0)}")
+            r2.metric(ui_text("买入信号", "BUY"), f"{int(latest_summary.get('buy_count', 0) or 0)}")
+            r3.metric(ui_text("卖出信号", "SELL"), f"{int(latest_summary.get('sell_count', 0) or 0)}")
+            r4.metric(ui_text("观望信号", "HOLD"), f"{int(latest_summary.get('hold_count', 0) or 0)}")
+
+            top_buys = ", ".join(latest_summary.get("top_buy_symbols", []) or [])
+            if top_buys:
+                st.caption(ui_text(f"优先关注: {top_buys}", f"Top candidates: {top_buys}"))
+
+            latest_symbol_rows = list(latest_report_snapshot.get("symbols", []) or [])
+            if latest_symbol_rows:
+                latest_report_df = pd.DataFrame(
+                    [
+                        {
+                            ui_text("代码", "Symbol"): row.get("symbol"),
+                            ui_text("类型", "Type"): row.get("list_type"),
+                            ui_text("信号", "Signal"): row.get("signal"),
+                            ui_text("现价", "Price"): (
+                                f"${float(row.get('latest_price')):.2f}"
+                                if row.get("latest_price") is not None
+                                else "—"
+                            ),
+                            ui_text("回测收益", "Backtest Return"): (
+                                f"{float((row.get('backtest') or {}).get('total_return')):.2%}"
+                                if (row.get("backtest") or {}).get("total_return") is not None
+                                else "—"
+                            ),
+                            ui_text("胜率", "Win Rate"): (
+                                f"{float((row.get('backtest') or {}).get('win_rate')):.2%}"
+                                if (row.get("backtest") or {}).get("win_rate") is not None
+                                else "—"
+                            ),
+                            ui_text("MC预期收益", "MC Exp Return"): (
+                                f"{float((row.get('monte_carlo') or {}).get('expected_return')):.2%}"
+                                if (row.get("monte_carlo") or {}).get("expected_return") is not None
+                                else "—"
+                            ),
+                            ui_text("仓位动作", "Action"): ((row.get("position_advice") or {}).get("action") or "WATCH"),
+                            ui_text("备注", "Notes"): row.get("error") or row.get("signal_reason") or "",
+                        }
+                        for row in latest_symbol_rows
+                    ]
+                )
+                st.dataframe(latest_report_df, hide_index=True, width="stretch")
+
+        download_cols = st.columns(3)
+        if os.path.exists(latest_report_files["latest_pdf_path"]):
+            with open(latest_report_files["latest_pdf_path"], "rb") as handle:
+                download_cols[0].download_button(
+                    ui_text("下载最新 PDF", "Download Latest PDF"),
+                    data=handle.read(),
+                    file_name=os.path.basename(latest_report_files["latest_pdf_path"]),
+                    mime="application/pdf",
+                )
+        if os.path.exists(latest_report_files["latest_markdown_path"]):
+            with open(latest_report_files["latest_markdown_path"], "rb") as handle:
+                download_cols[1].download_button(
+                    ui_text("下载最新 Markdown", "Download Latest Markdown"),
+                    data=handle.read(),
+                    file_name=os.path.basename(latest_report_files["latest_markdown_path"]),
+                    mime="text/markdown",
+                )
+        if os.path.exists(latest_report_files["latest_json_path"]):
+            with open(latest_report_files["latest_json_path"], "rb") as handle:
+                download_cols[2].download_button(
+                    ui_text("下载最新 JSON", "Download Latest JSON"),
+                    data=handle.read(),
+                    file_name=os.path.basename(latest_report_files["latest_json_path"]),
+                    mime="application/json",
+                )
+
+        st.subheader(ui_text("单票深挖工具", "Single-Symbol Deep Dive"))
         selected_symbol = st.selectbox(L("select_stock"), all_symbols)
 
         # ---- 模型重训练（仅ML/集成策略）----

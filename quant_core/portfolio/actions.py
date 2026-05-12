@@ -1,5 +1,6 @@
 from quant_core.data import storage as du
 from quant_core.ledger import transactions as tx
+from . import reconciliation as pr
 from share_utils import MIN_SHARE_QUANTITY, normalize_share_quantity, validate_share_quantity
 
 
@@ -314,8 +315,27 @@ def clear_all_holdings(*, notes: str = "manual clear"):
     return {"action": "CLEAR_HOLDINGS", "count": len(holdings)}
 
 
-def refresh_all_market_data():
+def refresh_all_market_data(force_source_refresh: bool = False):
     data = du.load_data()
-    refreshed = du.refresh_market_data(data)
+    refreshed = du.refresh_market_data(data, force_source_refresh=force_source_refresh)
     du.save_data(refreshed)
     return refreshed
+
+
+def reconcile_portfolio_from_robinhood_imports(*, force_price_refresh: bool = False):
+    data = du.load_data()
+    result = pr.build_robinhood_reconciled_portfolio(
+        tx.load_transactions(),
+        existing_data=data,
+    )
+    if int(result.get("imported_record_count", 0) or 0) <= 0:
+        raise ValueError("No Robinhood imported records were found. Import Account activity CSV first.")
+
+    data["account"] = result["account"]
+    data["holdings"] = result["holdings"]
+    data["watchlist"] = result["watchlist"]
+    du.invalidate_market_data_timestamp(data)
+    if force_price_refresh:
+        data = du.refresh_market_data(data, force_source_refresh=False)
+    du.save_data(data)
+    return result

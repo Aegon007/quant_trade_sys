@@ -283,16 +283,16 @@ def invalidate_market_data_timestamp(data):
     data["prices_last_updated"] = None
     return data
 
-def refresh_market_data(data, now=None):
+def refresh_market_data(data, now=None, force_source_refresh=False):
     if not _tracked_symbols(data):
         return data
-    updated = update_all_prices(data)
+    updated = update_all_prices(data, force_source_refresh=force_source_refresh)
     return mark_prices_updated(updated, now=now)
 
-def auto_refresh_market_data(data, refresh_interval_seconds=DEFAULT_AUTO_REFRESH_SECONDS, now=None, force=False):
+def auto_refresh_market_data(data, refresh_interval_seconds=DEFAULT_AUTO_REFRESH_SECONDS, now=None, force=False, force_source_refresh=False):
     if not should_auto_refresh_market_data(data, refresh_interval_seconds, now=now, force=force):
         return data, False
-    return refresh_market_data(data, now=now), True
+    return refresh_market_data(data, now=now, force_source_refresh=force_source_refresh), True
 
 def _cache_parquet_file(cache_file=None):
     cache_file = str(cache_file or CACHE_FILE)
@@ -480,7 +480,7 @@ def _format_provider_errors(provider_errors):
     return "; ".join(f"{name}: {error}" for name, error in provider_errors.items())
 
 
-def fetch_prices(symbols, use_cache=True, cache_ttl=DEFAULT_PRICE_CACHE_TTL_SECONDS):
+def fetch_prices(symbols, use_cache=True, cache_ttl=DEFAULT_PRICE_CACHE_TTL_SECONDS, write_cache=True):
     """批量获取价格：本地缓存优先，缓存失效后按数据源顺序自动降级。"""
     normalized_symbols = _normalize_symbols(symbols)
     if not normalized_symbols:
@@ -488,11 +488,14 @@ def fetch_prices(symbols, use_cache=True, cache_ttl=DEFAULT_PRICE_CACHE_TTL_SECO
 
     prices = {}
     now_ts = float(time.time())
-    cache_frame = _load_cache() if use_cache else pd.DataFrame(columns=["symbol", "price", "timestamp", "source"])
+    cache_frame = _load_cache() if (use_cache or write_cache) else pd.DataFrame(columns=["symbol", "price", "timestamp", "source"])
     cache_lookup = _cache_frame_to_dict(cache_frame)
 
     symbols_to_fetch = []
     for symbol in normalized_symbols:
+        if not use_cache:
+            symbols_to_fetch.append(symbol)
+            continue
         cached = cache_lookup.get(symbol)
         if cached is None:
             symbols_to_fetch.append(symbol)
@@ -544,12 +547,12 @@ def fetch_prices(symbols, use_cache=True, cache_ttl=DEFAULT_PRICE_CACHE_TTL_SECO
                 count=0,
             )
 
-    if use_cache:
+    if write_cache:
         cache_frame = _cache_dict_to_frame(cache_lookup)
         _save_cache(cache_frame)
     return {symbol: prices[symbol] for symbol in normalized_symbols if symbol in prices}
 
-def update_all_prices(data):
+def update_all_prices(data, force_source_refresh=False):
     symbols_to_fetch = set()
     for h in data["holdings"]:
         symbols_to_fetch.add(h["symbol"])
@@ -557,7 +560,11 @@ def update_all_prices(data):
         symbols_to_fetch.add(w["symbol"])
     if not symbols_to_fetch:
         return data
-    prices = fetch_prices(list(symbols_to_fetch))
+    prices = fetch_prices(
+        list(symbols_to_fetch),
+        use_cache=not force_source_refresh,
+        write_cache=True,
+    )
     for h in data["holdings"]:
         if h["symbol"] in prices:
             h["current_price"] = prices[h["symbol"]]

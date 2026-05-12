@@ -107,6 +107,16 @@ class UINotificationPageTests(unittest.TestCase):
                     "from_email": "mock@outlook.com",
                     "to_emails": ["user@gmail.com"],
                 },
+                "alert_settings": {
+                    "enable_auto_quant_analysis": True,
+                    "auto_quant_analysis_min_interval_seconds": 7200,
+                    "auto_quant_analysis_price_jump_pct": 0.03,
+                    "cooldown_hours": 6,
+                    "send_daily_summary": True,
+                    "send_hourly_market_summary": True,
+                    "send_hourly_market_summary_market_hours_only": True,
+                    "send_quant_analysis_change_summary": True,
+                },
             },
             save_notification_config=lambda cfg: cfg,
             apply_outlook_smtp_preset=lambda cfg: cfg,
@@ -127,6 +137,7 @@ class UINotificationPageTests(unittest.TestCase):
         self.assertIn("当前状态", self.fake_st.state["subheaders"])
         self.assertTrue(any(line.startswith("Slack:") for line in self.fake_st.state["writes"]))
         self.assertTrue(any(line.startswith("Email:") for line in self.fake_st.state["writes"]))
+        self.assertTrue(any(line.startswith("自动全量分析:") for line in self.fake_st.state["writes"]))
 
 
 if __name__ == "__main__":

@@ -219,6 +219,93 @@ class PortfolioActionsTests(unittest.TestCase):
         self.assertEqual(len(transactions), 2)
         self.assertTrue(all(row["event_type"] == "REMOVE_HOLDING" for row in transactions))
 
+    def test_refresh_all_market_data_can_force_source_refresh(self):
+        calls = []
+        self.actions.du.load_data = lambda: {"holdings": [{"symbol": "AAPL"}], "watchlist": []}
+        self.actions.du.refresh_market_data = lambda data, **kwargs: (calls.append(kwargs) or {**data, "prices_last_updated": "2026-05-11T10:00:00"})
+        self.actions.du.save_data = lambda data: None
+
+        result = self.actions.refresh_all_market_data(force_source_refresh=True)
+
+        self.assertEqual(result["prices_last_updated"], "2026-05-11T10:00:00")
+        self.assertEqual(calls, [{"force_source_refresh": True}])
+
+    def test_reconcile_portfolio_from_robinhood_imports_updates_holdings_and_cash(self):
+        self.data_utils.save_data(
+            {
+                "account": {
+                    "cash_available": 0.0,
+                    "min_cash_buffer_pct": 0.1,
+                    "max_single_position_pct": 0.2,
+                    "max_total_exposure_pct": 0.9,
+                },
+                "holdings": [],
+                "watchlist": [{"symbol": "TSLA", "notes": "keep", "last_price": 300.0}],
+            }
+        )
+        self.transactions.save_transactions(
+            [
+                {
+                    "record_type": "CASH_EVENT",
+                    "event_type": "CASH_DEPOSIT",
+                    "side": "",
+                    "date": "2026-05-10 09:00:00",
+                    "symbol": "",
+                    "shares": None,
+                    "price": None,
+                    "proceeds": 1000.0,
+                    "source": "ROBINHOOD_ACCOUNT_ACTIVITY_CSV",
+                },
+                {
+                    "record_type": "TRADE",
+                    "event_type": "BUY",
+                    "side": "BUY",
+                    "date": "2026-05-10 09:30:00",
+                    "symbol": "AAPL",
+                    "shares": 2.0,
+                    "price": 100.0,
+                    "cost_basis": 100.0,
+                    "source": "ROBINHOOD_ACCOUNT_ACTIVITY_CSV",
+                },
+                {
+                    "record_type": "TRADE",
+                    "event_type": "SELL",
+                    "side": "SELL",
+                    "date": "2026-05-10 15:45:00",
+                    "symbol": "AAPL",
+                    "shares": 0.5,
+                    "price": 120.0,
+                    "proceeds": 60.0,
+                    "source": "ROBINHOOD_ACCOUNT_ACTIVITY_CSV",
+                },
+            ]
+        )
+
+        result = self.actions.reconcile_portfolio_from_robinhood_imports()
+        data = self.data_utils.load_data()
+
+        self.assertAlmostEqual(result["cash_available"], 860.0)
+        self.assertEqual(result["cash_mode"], "imported_cash_events")
+        self.assertEqual(len(data["holdings"]), 1)
+        self.assertEqual(data["holdings"][0]["symbol"], "AAPL")
+        self.assertAlmostEqual(data["holdings"][0]["shares"], 1.5)
+        self.assertAlmostEqual(data["holdings"][0]["cost"], 100.0)
+        self.assertAlmostEqual(data["account"]["cash_available"], 860.0)
+        self.assertEqual(data["watchlist"][0]["symbol"], "TSLA")
+
+    def test_reconcile_portfolio_from_robinhood_imports_requires_imported_records(self):
+        self.data_utils.save_data(
+            {
+                "account": {"cash_available": 100.0},
+                "holdings": [{"symbol": "AAPL", "shares": 1.0, "cost": 100.0, "current_price": 110.0, "sector": "Tech"}],
+                "watchlist": [],
+            }
+        )
+        self.transactions.save_transactions([])
+
+        with self.assertRaises(ValueError):
+            self.actions.reconcile_portfolio_from_robinhood_imports()
+
     def test_add_watch_symbol_appends_new_watch_without_cash_change(self):
         self.data_utils.save_data(
             {

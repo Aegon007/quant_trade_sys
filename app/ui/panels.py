@@ -152,6 +152,37 @@ def render_market_risk_gate_banner(decision, snapshot, L, *, st_module=None):
         st_module.success(message)
 
 
+def render_analysis_freshness_banner(alert, *, ui_text, st_module=None):
+    st_module = st_module or st
+    if not alert or not bool(alert.get("needs_warning")):
+        return
+
+    expired_symbols = list(alert.get("expired_symbols", []) or [])
+    missing_symbols = list(alert.get("missing_symbols", []) or [])
+
+    fragments = []
+    if expired_symbols:
+        fragments.append(
+            ui_text(
+                f"以下持仓的全量分析已过期：{', '.join(expired_symbols[:6])}",
+                f"Full analysis is expired for: {', '.join(expired_symbols[:6])}",
+            )
+        )
+    if missing_symbols:
+        fragments.append(
+            ui_text(
+                f"以下持仓尚未生成全量分析：{', '.join(missing_symbols[:6])}",
+                f"Full analysis is missing for: {', '.join(missing_symbols[:6])}",
+            )
+        )
+
+    guidance = ui_text(
+        "建议先重跑全量分析，再参考仓位建议和退出参考。",
+        "Run a fresh full analysis before relying on position sizing or exit guidance.",
+    )
+    st_module.warning(" | ".join(fragments + [guidance]))
+
+
 def render_signal_scoreboard_panel(scoreboard, *, ui_text, st_module=None):
     st_module = st_module or st
     if scoreboard is None:

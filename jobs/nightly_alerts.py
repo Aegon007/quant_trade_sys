@@ -11,6 +11,7 @@ from quant_core.notifications import reporting as nr
 from quant_core.portfolio import risk as pa
 from quant_core.portfolio.control_loop import evaluate_allocation_regime
 from quant_core.analytics import quant_analysis as qa
+from quant_core.analytics import portfolio_analysis as qpa
 from quant_core.analytics.strategy_compare import compare_strategies_for_symbol
 from quant_core.snapshots import system_snapshot as ss
 from quant_core.ledger import transactions as tx
@@ -67,12 +68,19 @@ def run_nightly_alerts(
     slack_sender=None,
     report_builder=None,
     report_writer=None,
+    quant_analysis_snapshot_builder=None,
+    quant_analysis_report_builder=None,
+    quant_analysis_report_writer=None,
+    quant_analysis_snapshot_path=qpa.DEFAULT_QUANT_ANALYSIS_SNAPSHOT_FILE,
     environ=None,
 ):
     now = now or datetime.now()
     slack_sender = slack_sender or nch.send_slack_message
     report_builder = report_builder or nr.build_nightly_report
     report_writer = report_writer or nr.save_nightly_report_files
+    quant_analysis_snapshot_builder = quant_analysis_snapshot_builder or qpa.build_portfolio_quant_analysis_snapshot
+    quant_analysis_report_builder = quant_analysis_report_builder or nr.build_quant_analysis_report
+    quant_analysis_report_writer = quant_analysis_report_writer or nr.save_quant_analysis_report_files
     md.reset_market_data_status()
     data = du.load_data()
     symbols = _tracked_symbols(data)
@@ -104,6 +112,10 @@ def run_nightly_alerts(
         account_snapshot=account_snapshot,
     )
     strategy_comparison_rows = []
+    quant_analysis_snapshot = None
+    quant_analysis_report_files = {}
+    quant_analysis_change_results = []
+    default_runtime_strategy = qpa.load_default_runtime_strategy(history_period=history_period)
     if with_strategy_comparison and symbols:
         symbol_for_compare = symbols[0]
         strategies = su.load_strategies()
@@ -125,6 +137,22 @@ def run_nightly_alerts(
             runtime_param_fn=_runtime_strategy,
         )
 
+    if default_runtime_strategy is not None:
+        previous_quant_snapshot = qpa.load_quant_analysis_snapshot(path=quant_analysis_snapshot_path)
+        quant_analysis_snapshot = quant_analysis_snapshot_builder(
+            data=data,
+            strategy=default_runtime_strategy,
+            history_period=history_period,
+            engine_name="backtrader",
+            risk_gate=risk_decision,
+            allocation_regime=allocation_regime,
+            now=now,
+        )
+        quant_analysis_change_summary = qpa.build_quant_analysis_change_summary(previous_quant_snapshot, quant_analysis_snapshot)
+    else:
+        previous_quant_snapshot = None
+        quant_analysis_change_summary = {"has_changes": False, "message": ""}
+
     snapshot = ss.build_system_snapshot(
         data=data,
         risk_gate=risk_decision,
@@ -139,6 +167,7 @@ def run_nightly_alerts(
                 "max_drawdown_pct": getattr(live_scoreboard, "max_drawdown_pct", None),
             },
             "strategy_comparison": strategy_comparison_rows,
+            "quant_analysis_summary": dict((quant_analysis_snapshot or {}).get("summary", {}) or {}),
         },
         allocation_regime=allocation_regime.to_dict(),
         daily_recap=daily_recap,
@@ -156,6 +185,8 @@ def run_nightly_alerts(
             "sent_results": [],
             "report_results": [],
             "report_files": {},
+            "quant_analysis_report_files": {},
+            "quant_analysis_change_results": [],
             "dry_run": True,
             "snapshot": snapshot,
         }
@@ -169,6 +200,14 @@ def run_nightly_alerts(
     journal_path = ss.append_snapshot_journal(snapshot, journal_path=snapshot_journal_path)
     report_text = report_builder(snapshot)
     report_files = report_writer(snapshot, report_text=report_text, reports_dir=report_output_dir)
+    if quant_analysis_snapshot is not None:
+        qpa.save_quant_analysis_snapshot(quant_analysis_snapshot, path=quant_analysis_snapshot_path)
+        quant_analysis_report_text = quant_analysis_report_builder(quant_analysis_snapshot)
+        quant_analysis_report_files = quant_analysis_report_writer(
+            quant_analysis_snapshot,
+            report_text=quant_analysis_report_text,
+            reports_dir=report_output_dir,
+        )
     report_results = []
     alert_settings = config.get("alert_settings", {}) if isinstance(config, dict) else {}
     if (
@@ -183,11 +222,31 @@ def run_nightly_alerts(
             report_results.append({"channel": "slack", "ok": False, "message": f"nightly report failed: {exc}"})
     else:
         report_results.append({"channel": "slack", "ok": False, "message": "nightly report skipped: Slack webhook notifications are not enabled"})
+
+    if (
+        quant_analysis_snapshot is not None
+        and bool(alert_settings.get("send_quant_analysis_change_summary", True))
+        and config.get("slack", {}).get("enabled")
+        and config.get("slack", {}).get("webhook_url")
+    ):
+        if quant_analysis_change_summary.get("has_changes"):
+            try:
+                ok, message = slack_sender(
+                    quant_analysis_change_summary.get("message", ""),
+                    config["slack"].get("webhook_url"),
+                )
+                quant_analysis_change_results.append({"channel": "slack", "ok": ok, "message": message})
+            except Exception as exc:
+                quant_analysis_change_results.append({"channel": "slack", "ok": False, "message": f"quant change summary failed: {exc}"})
+        else:
+            quant_analysis_change_results.append({"channel": "slack", "ok": False, "message": "quant change summary skipped: no material changes"})
     return {
         "alerts": alert_dicts,
         "sent_results": sent_results,
         "report_results": report_results,
         "report_files": report_files,
+        "quant_analysis_report_files": quant_analysis_report_files,
+        "quant_analysis_change_results": quant_analysis_change_results,
         "dry_run": False,
         "snapshot": snapshot,
         "snapshot_journal_path": journal_path,

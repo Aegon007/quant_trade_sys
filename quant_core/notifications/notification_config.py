@@ -7,6 +7,8 @@ from quant_core import paths as qpaths
 qpaths.bootstrap_storage_paths()
 
 NOTIFICATION_CONFIG_FILE = qpaths.NOTIFICATION_CONFIG_FILE
+DEFAULT_AUTO_QUANT_ANALYSIS_MIN_INTERVAL_SECONDS = 7200
+DEFAULT_AUTO_QUANT_ANALYSIS_PRICE_JUMP_PCT = 0.03
 
 OUTLOOK_SMTP_PRESET = {
     "smtp_host": "smtp-mail.outlook.com",
@@ -32,6 +34,10 @@ DEFAULT_NOTIFICATION_CONFIG = {
         "send_daily_summary": True,
         "send_hourly_market_summary": True,
         "send_hourly_market_summary_market_hours_only": True,
+        "send_quant_analysis_change_summary": True,
+        "enable_auto_quant_analysis": True,
+        "auto_quant_analysis_min_interval_seconds": DEFAULT_AUTO_QUANT_ANALYSIS_MIN_INTERVAL_SECONDS,
+        "auto_quant_analysis_price_jump_pct": DEFAULT_AUTO_QUANT_ANALYSIS_PRICE_JUMP_PCT,
     },
 }
 
@@ -51,6 +57,20 @@ def _parse_recipients(value):
         if email and email not in recipients:
             recipients.append(email)
     return recipients
+
+
+def _coerce_int(value, default):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return int(default)
+
+
+def _coerce_float(value, default):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return float(default)
 
 
 def normalize_notification_config(config):
@@ -89,6 +109,32 @@ def normalize_notification_config(config):
         )
         normalized["alert_settings"]["send_hourly_market_summary_market_hours_only"] = bool(
             alert_settings.get("send_hourly_market_summary_market_hours_only", True)
+        )
+        normalized["alert_settings"]["send_quant_analysis_change_summary"] = bool(
+            alert_settings.get("send_quant_analysis_change_summary", True)
+        )
+        normalized["alert_settings"]["enable_auto_quant_analysis"] = bool(
+            alert_settings.get("enable_auto_quant_analysis", True)
+        )
+        normalized["alert_settings"]["auto_quant_analysis_min_interval_seconds"] = max(
+            0,
+            _coerce_int(
+                alert_settings.get(
+                    "auto_quant_analysis_min_interval_seconds",
+                    DEFAULT_AUTO_QUANT_ANALYSIS_MIN_INTERVAL_SECONDS,
+                ),
+                DEFAULT_AUTO_QUANT_ANALYSIS_MIN_INTERVAL_SECONDS,
+            ),
+        )
+        normalized["alert_settings"]["auto_quant_analysis_price_jump_pct"] = max(
+            0.0,
+            _coerce_float(
+                alert_settings.get(
+                    "auto_quant_analysis_price_jump_pct",
+                    DEFAULT_AUTO_QUANT_ANALYSIS_PRICE_JUMP_PCT,
+                ),
+                DEFAULT_AUTO_QUANT_ANALYSIS_PRICE_JUMP_PCT,
+            ),
         )
 
     return normalized

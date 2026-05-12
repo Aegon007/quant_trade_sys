@@ -4,6 +4,8 @@ import unittest
 from datetime import datetime
 from pathlib import Path
 
+import pandas as pd
+
 from tests.support import clear_modules, install_fake_yfinance, reload_module
 
 
@@ -21,6 +23,7 @@ class NightlyAlertsTests(unittest.TestCase):
         self.module.ae.collect_alerts = lambda **kwargs: []
         self.module.ae.alerts_to_dicts = lambda alerts: []
         self.module.ae.send_new_alerts = lambda *args, **kwargs: []
+        self.module.qa.get_historical_data = lambda symbol, period="2y": pd.DataFrame()
         self.module.ncfg.load_notification_config = lambda _path: {
             "slack": {"enabled": True, "webhook_url": "https://hooks.slack.com/services/test"},
             "email": {"enabled": False},
@@ -41,6 +44,14 @@ class NightlyAlertsTests(unittest.TestCase):
                 dry_run=False,
                 snapshot_journal_path=str(journal_path),
                 report_output_dir=str(report_dir),
+                quant_analysis_snapshot_builder=lambda **kwargs: {
+                    "generated_at": "2026-05-10T23:30:00",
+                    "strategy": {"id": "deep_tcn", "name": "TCN"},
+                    "engine": {"name": "backtrader"},
+                    "history_period": "2y",
+                    "summary": {"total_symbols": 0, "analyzed_symbols": 0, "buy_count": 0, "sell_count": 0, "hold_count": 0, "error_count": 0, "top_buy_symbols": []},
+                    "symbols": [],
+                },
                 slack_sender=lambda text, url: (sent_reports.append((text, url)) or True, "ok"),
             )
 
@@ -56,12 +67,14 @@ class NightlyAlertsTests(unittest.TestCase):
             self.assertIn("allocation_regime", payload)
             self.assertIn("daily_recap", payload)
             self.assertIn("signal_attribution", payload)
+            self.assertIn("quant_analysis_summary", payload["performance"])
             self.assertEqual(payload["data_sources"]["history"]["last_source"], "stooq")
             self.assertEqual(len(result["report_results"]), 1)
             self.assertEqual(result["report_results"][0]["channel"], "slack")
             self.assertEqual(sent_reports[0][1], "https://hooks.slack.com/services/test")
             self.assertTrue(Path(result["report_files"]["markdown_path"]).exists())
             self.assertTrue(Path(result["report_files"]["json_path"]).exists())
+            self.assertTrue(Path(result["quant_analysis_report_files"]["pdf_path"]).exists())
 
     def test_run_nightly_alerts_applies_env_webhook_overrides_for_report_delivery(self):
         self.module.du.load_data = lambda: {"account": {}, "holdings": [], "watchlist": []}
@@ -71,6 +84,7 @@ class NightlyAlertsTests(unittest.TestCase):
         self.module.ae.collect_alerts = lambda **kwargs: []
         self.module.ae.alerts_to_dicts = lambda alerts: []
         self.module.ae.send_new_alerts = lambda *args, **kwargs: []
+        self.module.qa.get_historical_data = lambda symbol, period="2y": pd.DataFrame()
         self.module.ncfg.load_notification_config = lambda _path: {
             "slack": {"enabled": False, "webhook_url": ""},
             "email": {"enabled": False},
@@ -91,6 +105,59 @@ class NightlyAlertsTests(unittest.TestCase):
 
             self.assertFalse(result["dry_run"])
             self.assertEqual(sent_reports, [(self.module.nr.build_nightly_report(result["snapshot"]), "https://hooks.slack.com/services/from-env")])
+
+    def test_run_nightly_alerts_sends_quant_change_summary_only_when_snapshot_changes(self):
+        self.module.du.load_data = lambda: {"account": {}, "holdings": [], "watchlist": []}
+        self.module.md.get_market_data_status_snapshot = lambda: {"history": {"last_source": "stooq"}, "prices": {}}
+        self.module.ac.should_run_nightly_consensus_update = lambda now=None: False
+        self.module.ac.load_analyst_consensus_cache = lambda: {}
+        self.module.ae.collect_alerts = lambda **kwargs: []
+        self.module.ae.alerts_to_dicts = lambda alerts: []
+        self.module.ae.send_new_alerts = lambda *args, **kwargs: []
+        self.module.qa.get_historical_data = lambda symbol, period="2y": pd.DataFrame()
+        self.module.ncfg.load_notification_config = lambda _path: {
+            "slack": {"enabled": True, "webhook_url": "https://hooks.slack.com/services/test"},
+            "email": {"enabled": False},
+            "alert_settings": {
+                "send_daily_summary": True,
+                "send_quant_analysis_change_summary": True,
+            },
+        }
+        self.module.tx.load_transactions = lambda: []
+        self.module.tx.normalize_transactions = lambda rows: rows
+
+        sent_messages = []
+        changed_snapshot = {
+            "generated_at": "2026-05-10T23:30:00",
+            "strategy": {"id": "deep_tcn", "name": "TCN"},
+            "engine": {"name": "backtrader"},
+            "history_period": "2y",
+            "summary": {"total_symbols": 1, "analyzed_symbols": 1, "buy_count": 1, "sell_count": 0, "hold_count": 0, "error_count": 0, "top_buy_symbols": ["AAPL"]},
+            "symbols": [{"symbol": "AAPL", "signal": "BUY", "position_advice": {"action": "ADD"}}],
+        }
+        previous_snapshot = {
+            "generated_at": "2026-05-09T23:30:00",
+            "summary": {"top_buy_symbols": []},
+            "symbols": [{"symbol": "AAPL", "signal": "HOLD", "position_advice": {"action": "HOLD"}}],
+        }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            snapshot_path = Path(temp_dir) / "quant_analysis_snapshot.json"
+            snapshot_path.write_text(json.dumps(previous_snapshot), encoding="utf-8")
+            result = self.module.run_nightly_alerts(
+                now=datetime(2026, 5, 10, 23, 30, 0),
+                dry_run=False,
+                report_output_dir=temp_dir,
+                quant_analysis_snapshot_path=str(snapshot_path),
+                quant_analysis_snapshot_builder=lambda **kwargs: changed_snapshot,
+                slack_sender=lambda text, url: (sent_messages.append((text, url)) or True, "ok"),
+            )
+
+            self.assertFalse(result["dry_run"])
+            self.assertEqual(len(result["quant_analysis_change_results"]), 1)
+            self.assertTrue(result["quant_analysis_change_results"][0]["ok"])
+            self.assertEqual(sent_messages[-1][1], "https://hooks.slack.com/services/test")
+            self.assertIn("AAPL", sent_messages[-1][0])
 
 
 if __name__ == "__main__":
