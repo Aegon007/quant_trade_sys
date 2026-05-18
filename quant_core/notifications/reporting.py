@@ -88,6 +88,18 @@ def _format_pct(value, *, scale=100.0, digits=1) -> str:
     return f"{number * scale:.{digits}f}%"
 
 
+def _format_source_with_role(source_name, *, primary_source=None) -> str:
+    source = str(source_name or "").strip().lower()
+    primary = str(primary_source or "").strip().lower()
+    if not source:
+        return "unknown"
+    if primary and source == primary:
+        return f"{source} (primary)"
+    if primary:
+        return f"{source} (fallback)"
+    return source
+
+
 def is_us_market_session(now: Optional[datetime] = None) -> bool:
     now = now or datetime.now().astimezone()
     if not isinstance(now, datetime):
@@ -208,8 +220,10 @@ def build_market_refresh_report(
 
     risk_regime = _mapping_value(risk_gate, "regime", "UNKNOWN")
     allocation_name = _mapping_value(allocation_regime, "regime", "UNKNOWN")
-    source_name = _mapping_value(_mapping_value(data_sources, "prices", {}), "last_source", "unknown")
-    fallback_count = int(_float(_mapping_value(_mapping_value(data_sources, "prices", {}), "fallback_symbols", 0), 0) or 0)
+    prices_status = _mapping_value(data_sources, "prices", {})
+    source_name = _mapping_value(prices_status, "last_source", "unknown")
+    primary_source = _mapping_value(prices_status, "primary_source", None)
+    fallback_count = int(_float(_mapping_value(prices_status, "fallback_symbols", 0), 0) or 0)
 
     lines = [
         "Hourly Market Refresh",
@@ -217,7 +231,7 @@ def build_market_refresh_report(
         f"Holdings: {len((after_data or {}).get('holdings', []) or [])} | Watchlist: {len((after_data or {}).get('watchlist', []) or [])}",
         f"Capital: {_format_money(account_snapshot.get('total_capital'))} | Cash: {_format_money(account_snapshot.get('cash_available'))} | Exposure: {_format_pct(_float(account_snapshot.get('exposure_pct'), None), scale=1.0)}",
         f"Risk regime: {risk_regime} | Allocation regime: {allocation_name}",
-        f"Price source: {source_name} | Fallback symbols: {fallback_count}",
+        f"Price source: {_format_source_with_role(source_name, primary_source=primary_source)} | Fallback symbols: {fallback_count}",
         f"Top movers: {_format_top_movers(before_data, after_data)}",
     ]
 
@@ -241,6 +255,15 @@ def build_nightly_report(snapshot: Mapping) -> str:
     scoreboard = dict(performance.get("live_scoreboard", {}) or {})
     recap = dict(snapshot.get("daily_recap", {}) or {})
     signal_attribution = dict(snapshot.get("signal_attribution", {}) or {})
+    trade_plan = dict(snapshot.get("trade_plan", {}) or {})
+    execution_review = dict(snapshot.get("execution_review", {}) or {})
+    core_etf_snapshot = dict(snapshot.get("core_etf_snapshot", {}) or {})
+    satellite_candidate_snapshot = dict(snapshot.get("satellite_candidate_snapshot", {}) or {})
+    discipline_snapshot = dict(snapshot.get("discipline_snapshot", {}) or {})
+    monthly_discipline_review = dict(snapshot.get("monthly_discipline_review", {}) or {})
+    intraday_event_summary = dict(snapshot.get("intraday_event_summary", {}) or {})
+    change_feed = dict(snapshot.get("change_feed", {}) or {})
+    nightly_manifest = dict(snapshot.get("nightly_manifest", {}) or {})
     alerts = list(snapshot.get("alerts", []) or [])
     strategy_rows = list(performance.get("strategy_comparison", []) or [])
     quant_analysis_summary = dict(performance.get("quant_analysis_summary", {}) or {})
@@ -291,6 +314,100 @@ def build_nightly_report(snapshot: Mapping) -> str:
         top_buys = ", ".join(quant_analysis_summary.get("top_buy_symbols", []) or [])
         if top_buys:
             lines.append(f"Top buy candidates: {top_buys}")
+
+    if core_etf_snapshot:
+        core_summary = dict(core_etf_snapshot.get("summary", {}) or {})
+        lines.append(
+            "Core ETF engine: "
+            f"accumulate={int(_float(core_summary.get('accumulate_count'), 0) or 0)} "
+            f"trim={int(_float(core_summary.get('trim_count'), 0) or 0)} "
+            f"focus={', '.join(core_summary.get('focus_symbols', []) or []) or '-'}"
+        )
+
+    if satellite_candidate_snapshot:
+        satellite_summary = dict(satellite_candidate_snapshot.get("summary", {}) or {})
+        lines.append(
+            "Satellite radar: "
+            f"scanned={int(_float(satellite_summary.get('scanned_symbols'), 0) or 0)} "
+            f"pool={int(_float(satellite_summary.get('candidate_count'), 0) or 0)} "
+            f"deep={int(_float(satellite_summary.get('deep_analysis_count'), 0) or 0)} "
+            f"top={', '.join(satellite_summary.get('top_symbols', []) or []) or '-'}"
+        )
+        lines.append(
+            "Satellite status mix: "
+            f"confirmed={int(_float(satellite_summary.get('confirmed_count'), 0) or 0)} "
+            f"probe={int(_float(satellite_summary.get('probe_count'), 0) or 0)} "
+            f"watch={int(_float(satellite_summary.get('watch_count'), 0) or 0)} "
+            f"overheated={int(_float(satellite_summary.get('overheated_count'), 0) or 0)}"
+        )
+
+    if discipline_snapshot:
+        lines.append(
+            "Discipline: "
+            f"{discipline_snapshot.get('regime', 'UNKNOWN')} | "
+            f"core_new={'yes' if discipline_snapshot.get('can_open_new_core_positions') else 'no'} | "
+            f"satellite_new={'yes' if discipline_snapshot.get('can_open_new_satellite_positions') else 'no'}"
+        )
+        discipline_summary = str(discipline_snapshot.get("summary") or "").strip()
+        if discipline_summary:
+            lines.append(f"Discipline summary: {discipline_summary}")
+
+    if monthly_discipline_review:
+        lines.append(
+            "Discipline month: "
+            f"status={monthly_discipline_review.get('status', 'MONITOR')} | "
+            f"follow={int(_float(monthly_discipline_review.get('follow_days'), 0) or 0)} | "
+            f"ignore={int(_float(monthly_discipline_review.get('ignore_days'), 0) or 0)} | "
+            f"follow_pnl={_format_money(monthly_discipline_review.get('follow_realized_pl'))} | "
+            f"ignore_pnl={_format_money(monthly_discipline_review.get('ignore_realized_pl'))}"
+        )
+        discipline_month_summary = str(monthly_discipline_review.get("summary") or "").strip()
+        if discipline_month_summary:
+            lines.append(f"Discipline month summary: {discipline_month_summary}")
+
+    if intraday_event_summary:
+        lines.append(
+            "Intraday event review: "
+            f"reviewed={int(_float(intraday_event_summary.get('reviewed_count'), 0) or 0)} | "
+            f"favorable={int(_float(intraday_event_summary.get('favorable_count'), 0) or 0)} | "
+            f"unfavorable={int(_float(intraday_event_summary.get('unfavorable_count'), 0) or 0)} | "
+            f"neutral={int(_float(intraday_event_summary.get('neutral_count'), 0) or 0)} | "
+            f"unscored={int(_float(intraday_event_summary.get('unscored_count'), 0) or 0)}"
+        )
+
+    if trade_plan:
+        lines.append(
+            f"Next-day plan: {'ACTION' if trade_plan.get('has_actions') else 'NO_ACTION'} | "
+            f"items={int(_float(trade_plan.get('action_count'), 0) or 0)}"
+        )
+        summary_reason = str(trade_plan.get("summary_reason") or "").strip()
+        if summary_reason:
+            lines.append(f"Plan summary: {summary_reason}")
+
+    if execution_review:
+        lines.append(
+            "Execution review: "
+            f"executed={int(_float(execution_review.get('executed_count'), 0) or 0)} | "
+            f"missed={int(_float(execution_review.get('missed_count'), 0) or 0)} | "
+            f"unplanned={int(_float(execution_review.get('unplanned_trade_count'), 0) or 0)}"
+        )
+
+    if change_feed:
+        summary = dict(change_feed.get("summary", {}) or {})
+        lines.append(
+            "Change feed: "
+            f"H={int(_float(summary.get('high_count'), 0) or 0)} "
+            f"M={int(_float(summary.get('medium_count'), 0) or 0)} "
+            f"L={int(_float(summary.get('low_count'), 0) or 0)}"
+        )
+
+    if nightly_manifest:
+        lines.append(
+            "Nightly manifest: "
+            f"run_id={nightly_manifest.get('run_id', '-') } | "
+            f"status={nightly_manifest.get('status', 'unknown')} | "
+            f"steps={len(dict(nightly_manifest.get('steps', {}) or {}))}"
+        )
 
     if alerts:
         lines.append(f"Active alerts: {len(alerts)}")

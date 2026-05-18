@@ -4,19 +4,6 @@ from types import SimpleNamespace
 
 
 class RuntimeOrchestrationTests(unittest.TestCase):
-    def test_ensure_dialog_state_defaults_includes_buy_dialog(self):
-        from app.orchestration import runtime
-
-        session_state = {}
-        runtime.ensure_dialog_state_defaults(session_state)
-
-        self.assertIn("sell_dialog_index", session_state)
-        self.assertIn("buy_dialog_index", session_state)
-        self.assertIn("editing_holding", session_state)
-        self.assertIn("move_watch_dialog_index", session_state)
-        self.assertIn("move_watch_dialog_shares", session_state)
-        self.assertIsNone(session_state["buy_dialog_index"])
-
     def test_bootstrap_app_data_loads_and_saves_when_auto_refreshed(self):
         from app.orchestration import runtime
 

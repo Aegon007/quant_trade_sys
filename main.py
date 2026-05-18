@@ -1,48 +1,52 @@
-import streamlit as st
-import pandas as pd
 from datetime import datetime
-import os
+
+import streamlit as st
+
 from app.orchestration import runtime as rt
-from app.ui import dialogs as ud
+from app.ui import cockpit as uc
+from app.ui import components as ui
+from app.ui import notification_page as unp
 from app.ui import pages as pg
 from app.ui import panels as up
-from app.ui import notification_page as unp
-from app.ui import components as ui
-from quant_core.data import storage as du
-from quant_core.data import market_data as md
-from quant_core.ledger import transactions as tx
-from quant_core.analytics import quant_analysis as qa
-from quant_core.analytics import portfolio_analysis as qpa
-from strategies import ui as su
-import ml_strategy as ml_utils
+from engine import BacktraderEngine
 import deep_learning_strategy as dl_utils
-from quant_core.events import event_news as en
-from quant_core.events import event_fetcher as ef
+import locales as loc
+from quant_core.analytics import candidate_pool as cpool
+from quant_core.analytics import core_etf_rotation as cer
+from quant_core.analytics import portfolio_analysis as qpa
+from quant_core.analytics import quant_analysis as qa
+from quant_core.data import market_data as md
+from quant_core.data import storage as du
 from quant_core.events import analyst_consensus as ac
-from quant_core.notifications import notification_config as ncfg
+from quant_core.events import event_fetcher as ef
+from quant_core.events import event_news as en
+from quant_core.execution import nightly_manifest as nman
+from quant_core.execution import nightly_planner as nplanner
+from quant_core.execution import post_close_review as pclose
+from quant_core.ledger import transactions as tx
+from quant_core.llm import explainer as lexp
+from quant_core.monitoring import intraday_journal as ij
+from quant_core.notifications import change_feed as cfeed
 from quant_core.notifications import notification_channels as nch
+from quant_core.notifications import notification_config as ncfg
 from quant_core.notifications import reporting as nr
 from quant_core.portfolio import actions as pactions
-from quant_core.snapshots import system_snapshot as ss
-import locales as loc
-from strategies.registry import create_strategy
-from share_utils import format_share_quantity, validate_share_quantity
-from quant_core.portfolio.metrics import summarize_holdings
-from quant_core.portfolio.position import recommend_position_action, summarize_backtest_guidance
-from quant_core.portfolio.risk import analyze_portfolio_risk
+from quant_core.portfolio import core_etf_engine as cee
+from quant_core.portfolio import discipline as qdisc
 from quant_core.portfolio.control_loop import evaluate_allocation_regime
-from signal_approval import approve_signal
-from signal_scoreboard import build_signal_scoreboard
-from quant_core.analytics.strategy_compare import compare_strategies_for_symbol
+from quant_core.portfolio.metrics import summarize_holdings
+from quant_core.portfolio.risk import analyze_portfolio_risk
 from quant_core.risk.risk_gate import (
     build_market_risk_snapshot_from_histories,
     evaluate_market_risk_gate,
     merge_risk_gate_decisions,
 )
-from quant_core.analytics.monte_carlo import simulate_return_distribution
+from quant_core.snapshots import system_snapshot as ss
+from share_utils import format_share_quantity
+from signal_scoreboard import build_signal_scoreboard
+from strategies import ui as su
+from jobs.nightly_alerts import run_nightly_alerts
 
-# 引擎
-from engine import BacktraderEngine, PyBrokerEngine
 
 st.set_page_config(page_title="Portfolio Tracker", layout="wide")
 
@@ -60,13 +64,30 @@ def load_correlation_matrix_cached(symbols, period="6mo"):
     return qa.calculate_correlation_matrix(list(symbols), period=period)
 
 
-# ---------- 语言设置 ----------
 if "lang" not in st.session_state:
     st.session_state.lang = "zh"
 
 
 def ui_text(zh_text, en_text):
     return zh_text if st.session_state.get("lang", "zh") == "zh" else en_text
+
+
+def render_flash_notice(session_key):
+    notice = st.session_state.pop(session_key, None)
+    if not isinstance(notice, dict):
+        return
+    level = str(notice.get("level", "info")).lower()
+    message = str(notice.get("message", "") or "").strip()
+    if not message:
+        return
+    if level == "success":
+        st.success(message)
+    elif level == "warning":
+        st.warning(message)
+    elif level == "error":
+        st.error(message)
+    else:
+        st.info(message)
 
 
 def _scoreboard_to_dict(scoreboard):
@@ -95,23 +116,276 @@ def _scoreboard_to_dict(scoreboard):
         ],
     }
 
-# ---------- 数据状态 ----------
-md.reset_market_data_status()
+
+def handle_force_market_refresh():
+    with st.spinner(ui_text("正在强制刷新行情...", "Forcing a fresh market-data refresh...")):
+        md.reset_market_data_status()
+        updated = pactions.refresh_all_market_data(force_source_refresh=True)
+        load_historical_data_cached.clear()
+        load_correlation_matrix_cached.clear()
+        refresh_status = md.get_market_data_status_snapshot()
+        refresh_notice = ui.build_manual_refresh_notice(
+            refresh_status,
+            tracked_symbol_count=len(rt.collect_tracked_symbols(updated)),
+            lang=st.session_state.get("lang", "zh"),
+        )
+        st.session_state["manual_refresh_notice"] = refresh_notice
+        st.session_state.app_data = updated
+        du.save_data(updated)
+        st.rerun()
+
+
+def handle_refresh_news():
+    with st.spinner(ui_text("正在刷新新闻与事件...", "Refreshing news and event sources...")):
+        symbols_for_news = rt.collect_tracked_symbols(st.session_state.app_data)
+        events, reports = ef.fetch_events_from_sources(
+            symbols=symbols_for_news,
+            now=datetime.now(),
+        )
+        st.session_state.event_fetch_bundle = {
+            "events": events,
+            "source_reports": reports,
+            "symbols": symbols_for_news,
+            "fetched_at": datetime.now().isoformat(),
+        }
+        st.success(
+            ui_text(
+                f"新闻刷新完成，共抓取 {len(events)} 条事件。",
+                f"News refresh completed with {len(events)} events.",
+            )
+        )
+        st.rerun()
+
+
+def _noop_slack_sender(message, webhook_url):
+    return True, "suppressed"
+
+
+def _noop_email_sender(subject, body, email_cfg):
+    return True, "suppressed"
+
+
+def _noop_message_router(delivery_type, subject, body, *, config=None, environ=None):
+    return [{"channel": "noop", "ok": True, "message": "suppressed", "delivery_type": delivery_type}]
+
+
+def handle_force_full_system_refresh():
+    with st.spinner(ui_text("正在强制补齐整套系统数据...", "Running a full system backfill now...")):
+        refreshed_data = pactions.refresh_all_market_data(force_source_refresh=True)
+        st.session_state.app_data = refreshed_data
+        du.save_data(refreshed_data)
+        run_nightly_alerts(
+            now=datetime.now(),
+            force=True,
+            dry_run=False,
+            history_period=st.session_state.get("history_period", "2y"),
+            with_strategy_comparison=True,
+            slack_sender=_noop_slack_sender,
+            email_sender=_noop_email_sender,
+            message_router=_noop_message_router,
+        )
+        load_historical_data_cached.clear()
+        load_correlation_matrix_cached.clear()
+        st.session_state.pop("event_fetch_bundle", None)
+        st.session_state.app_data = du.load_data()
+        st.session_state["manual_refresh_notice"] = {
+            "level": "success",
+            "message": ui_text(
+                "已完成一次无通知的全量补齐运行。nightly 快照、候选池、报告和计划单都已更新。",
+                "A no-delivery full backfill run is complete. Nightly snapshots, candidate pools, reports, and trade plans have been refreshed.",
+            ),
+        }
+        st.rerun()
+
+
+def handle_reload_editable_data():
+    if not du.editable_data_file_exists():
+        st.warning(ui_text("未检测到可编辑数据文件。", "Editable data file was not found."))
+        return
+    try:
+        st.session_state.app_data = du.load_data(force_editable_sync=True)
+        st.success(ui_text("已从可编辑数据文件重新载入。", "Reloaded from the editable data file."))
+        st.rerun()
+    except ValueError as exc:
+        st.error(str(exc))
+
+
+def handle_manual_tcn_retrain(deep_tcn_strategy):
+    if not deep_tcn_strategy:
+        st.info(ui_text("当前没有启用 TCN 默认策略。", "No default TCN strategy is configured right now."))
+        return
+    with st.spinner(ui_text("正在手动重训 TCN...", "Running manual TCN retraining...")):
+        refreshed_data = du.refresh_market_data(st.session_state.app_data)
+        st.session_state.app_data = refreshed_data
+        du.save_data(refreshed_data)
+        symbols_for_retrain = rt.collect_tracked_symbols(st.session_state.app_data)
+        manual_params = dict(deep_tcn_strategy.get("params", {}))
+        manual_params["period"] = st.session_state.history_period
+        ok, retrain_message = dl_utils.run_nightly_retraining_for_symbols(
+            symbols_for_retrain,
+            params=manual_params,
+            force=True,
+        )
+        st.session_state.nightly_retrain_status = retrain_message
+        if ok:
+            st.success(ui_text("TCN 手动重训已完成。", "Manual TCN retraining completed."))
+        else:
+            st.warning(retrain_message)
+        st.rerun()
+
+
+def save_account_config(current_data, *, cash_available, min_cash_buffer_pct, max_single_position_pct, max_total_exposure_pct):
+    current_data["account"] = {
+        "total_capital": None,
+        "cash_available": float(cash_available),
+        "min_cash_buffer_pct": float(min_cash_buffer_pct) / 100.0,
+        "max_single_position_pct": float(max_single_position_pct) / 100.0,
+        "max_total_exposure_pct": float(max_total_exposure_pct) / 100.0,
+    }
+    du.save_data(current_data)
+    st.session_state.app_data = du.load_data()
+    st.success(ui_text("资金参数已保存。", "Capital settings saved."))
+    st.rerun()
+
+
+def rebuild_latest_quant_report(*, data, strategy_runtime, market_risk_gate_decision, allocation_regime_decision):
+    with st.spinner(ui_text("正在生成组合级量化报告...", "Generating the portfolio-level quant report...")):
+        try:
+            report_snapshot = qpa.build_portfolio_quant_analysis_snapshot(
+                data,
+                strategy=strategy_runtime,
+                history_period=st.session_state.get("history_period", "2y"),
+                engine_name="backtrader",
+                engine_factory_fn=lambda: BacktraderEngine(initial_cash=100000),
+                risk_gate=market_risk_gate_decision,
+                allocation_regime=allocation_regime_decision,
+                now=datetime.now(),
+            )
+            report_text = nr.build_quant_analysis_report(report_snapshot)
+            report_files = nr.save_quant_analysis_report_files(
+                report_snapshot,
+                report_text=report_text,
+            )
+            qpa.save_quant_analysis_snapshot(report_snapshot)
+            st.session_state.latest_quant_analysis_report = {
+                "snapshot": report_snapshot,
+                "files": report_files,
+            }
+            st.success(ui_text("组合量化报告已生成。", "The portfolio quant report has been generated."))
+            st.rerun()
+        except Exception as exc:
+            st.error(f"{ui_text('生成报告失败', 'Report generation failed')}: {exc}")
+
+
+def explain_core_etf_row(row, *, discipline_snapshot, latest_change_feed):
+    config = ncfg.load_notification_config()
+    ok, message, meta = lexp.explain_core_etf_decision(
+        symbol_row=row,
+        notification_config=config,
+        discipline_snapshot=discipline_snapshot,
+        change_feed=latest_change_feed,
+        complexity="explanation",
+    )
+    symbol = str(dict(row or {}).get("symbol") or "").strip().upper()
+    if ok and symbol:
+        explanations = dict(st.session_state.get("core_etf_llm_explanations", {}) or {})
+        route_name = str((meta or {}).get("route_name") or "").strip()
+        model_name = str((meta or {}).get("model") or "").strip()
+        label_bits = [item for item in [route_name, model_name] if item]
+        if (meta or {}).get("cached"):
+            label_bits.append("cached")
+        explanations[symbol] = {
+            "text": str(message or "").strip(),
+            "label": " | ".join(label_bits),
+        }
+        st.session_state["core_etf_llm_explanations"] = explanations
+    return ok, message, meta
+
+
+def _build_llm_route_label(meta):
+    route_name = str((meta or {}).get("route_name") or "").strip()
+    model_name = str((meta or {}).get("model") or "").strip()
+    label_bits = [item for item in [route_name, model_name] if item]
+    if (meta or {}).get("cached"):
+        label_bits.append("cached")
+    return " | ".join(label_bits)
+
+
+def narrate_change_feed(*, latest_change_feed, monthly_discipline_review):
+    config = ncfg.load_notification_config()
+    ok, message, meta = lexp.narrate_change_feed(
+        change_feed=latest_change_feed,
+        monthly_discipline_review=monthly_discipline_review,
+        notification_config=config,
+    )
+    if ok:
+        st.session_state["change_feed_llm_narration"] = {
+            "text": str(message or "").strip(),
+            "label": _build_llm_route_label(meta),
+        }
+    return ok, message, meta
+
+
+def explain_change_feed(*, latest_change_feed, monthly_discipline_review):
+    config = ncfg.load_notification_config()
+    ok, message, meta = lexp.explain_change_feed(
+        change_feed=latest_change_feed,
+        monthly_discipline_review=monthly_discipline_review,
+        notification_config=config,
+    )
+    if ok:
+        st.session_state["change_feed_llm_explanation"] = {
+            "text": str(message or "").strip(),
+            "label": _build_llm_route_label(meta),
+        }
+    return ok, message, meta
+
+
+def narrate_discipline_review(*, monthly_discipline_review, discipline_snapshot, latest_post_close_review):
+    config = ncfg.load_notification_config()
+    ok, message, meta = lexp.narrate_discipline_review(
+        review=monthly_discipline_review,
+        discipline_snapshot=discipline_snapshot,
+        latest_post_close_review=latest_post_close_review,
+        notification_config=config,
+    )
+    if ok:
+        st.session_state["discipline_review_llm_narration"] = {
+            "text": str(message or "").strip(),
+            "label": _build_llm_route_label(meta),
+        }
+    return ok, message, meta
+
+
+def explain_discipline_review(*, monthly_discipline_review, discipline_snapshot, latest_post_close_review):
+    config = ncfg.load_notification_config()
+    ok, message, meta = lexp.explain_discipline_review(
+        review=monthly_discipline_review,
+        discipline_snapshot=discipline_snapshot,
+        latest_post_close_review=latest_post_close_review,
+        notification_config=config,
+    )
+    if ok:
+        st.session_state["discipline_review_llm_explanation"] = {
+            "text": str(message or "").strip(),
+            "label": _build_llm_route_label(meta),
+        }
+    return ok, message, meta
+
+
 try:
     rt.bootstrap_app_data(
         st.session_state,
         du,
         refresh_interval_seconds=AUTO_REFRESH_INTERVAL_SECONDS,
     )
-except ValueError as e:
-    st.error(f"数据文件加载失败: {e}")
+except ValueError as exc:
+    st.error(f"数据文件加载失败: {exc}")
     st.stop()
-rt.ensure_dialog_state_defaults(st.session_state)
 
 data = st.session_state.app_data
 market_events_bootstrapped = en.ensure_market_events_file()
 
-# ---------- 策略配置 ----------
 strategies = su.load_strategies()
 if not strategies:
     st.error("策略配置文件加载失败，请检查 config/strategies.json")
@@ -137,8 +411,7 @@ valid_strategy_ids = {strategy["id"] for strategy in strategies}
 if st.session_state.selected_strategy_id not in valid_strategy_ids:
     st.session_state.selected_strategy_id = default_strategy_id
 
-strategy_map = {s["id"]: s for s in strategies}
-strategy_names = [s["name"] for s in strategies]
+strategy_map = {strategy["id"]: strategy for strategy in strategies}
 tracked_symbols = rt.collect_tracked_symbols(st.session_state.app_data)
 
 if deep_tcn_strategy:
@@ -154,7 +427,10 @@ if deep_tcn_strategy:
         )
         st.session_state.nightly_retrain_status = retrain_message
     elif "nightly_retrain_status" not in st.session_state:
-        st.session_state.nightly_retrain_status = "白天推理模式：仅推理，不训练"
+        st.session_state.nightly_retrain_status = ui_text(
+            "白天推理模式：仅推理，不训练",
+            "Inference-only daytime mode: no training",
+        )
 
 if ac.should_run_nightly_consensus_update(now=datetime.now()):
     _, analyst_message = ac.refresh_analyst_consensus_cache(
@@ -163,234 +439,28 @@ if ac.should_run_nightly_consensus_update(now=datetime.now()):
     )
     st.session_state.analyst_consensus_status = analyst_message
 elif "analyst_consensus_status" not in st.session_state:
-    st.session_state.analyst_consensus_status = "白天缓存模式：仅读取夜间分析师共识缓存"
+    st.session_state.analyst_consensus_status = ui_text(
+        "白天缓存模式：仅读取夜间分析师共识缓存",
+        "Daytime cache mode: reading the nightly analyst-consensus cache only",
+    )
 
 data = st.session_state.app_data
 analyst_consensus_cache = ac.load_analyst_consensus_cache()
 quant_analysis_snapshot = qpa.load_quant_analysis_snapshot()
+latest_trade_plan = nplanner.load_next_day_trade_plan()
+latest_post_close_review = pclose.load_post_close_review()
+latest_change_feed = cfeed.load_change_feed()
+latest_nightly_manifest = nman.load_nightly_run_manifest()
+nightly_snapshot_journal = ss.load_snapshot_journal(limit=62)
+intraday_event_rows = ij.load_intraday_events(limit=120)
+intraday_event_summary = ij.summarize_intraday_events(intraday_event_rows)
 
-# ========== 侧边栏 ==========
-with st.sidebar:
-    # 语言切换
-    lang_choice = st.selectbox("🌐 Language / 语言", ["中文", "English"],
-                               index=0 if st.session_state.lang == "zh" else 1)
-    st.session_state.lang = "zh" if lang_choice == "中文" else "en"
-    L = lambda key, **kwargs: loc.get_text(st.session_state.lang, key, **kwargs)
-
-    history_period_index = HISTORY_PERIOD_OPTIONS.index(st.session_state.history_period)
-    st.session_state.history_period = st.selectbox(
-        L("history_window"),
-        HISTORY_PERIOD_OPTIONS,
-        index=history_period_index,
-    )
-    st.caption(L("history_window_hint", period=st.session_state.history_period))
-    if "nightly_retrain_status" in st.session_state:
-        st.caption(f"{L('nightly_retrain_status')}: {st.session_state.nightly_retrain_status}")
-    if "analyst_consensus_status" in st.session_state:
-        st.caption(f"分析师共识状态: {st.session_state.analyst_consensus_status}")
-    if deep_tcn_strategy and st.button(L("manual_tcn_retrain")):
-        with st.spinner(L("manual_tcn_retrain_running")):
-            refreshed_data = du.refresh_market_data(st.session_state.app_data)
-            st.session_state.app_data = refreshed_data
-            du.save_data(refreshed_data)
-            symbols_for_retrain = rt.collect_tracked_symbols(st.session_state.app_data)
-            manual_params = dict(deep_tcn_strategy.get("params", {}))
-            manual_params["period"] = st.session_state.history_period
-            ok, retrain_message = dl_utils.run_nightly_retraining_for_symbols(
-                symbols_for_retrain,
-                params=manual_params,
-                force=True,
-            )
-            st.session_state.nightly_retrain_status = retrain_message
-            if ok:
-                st.success(L("manual_tcn_retrain_done"))
-            else:
-                st.warning(retrain_message)
-            st.rerun()
-
-    st.divider()
-    st.header(ui_text("账户资金", "Account & Capital"))
-    account_config = dict(data.get("account", {}) or {})
-    with st.form("account_config_form"):
-        cash_available = st.number_input(
-            ui_text("可用现金 (USD)", "Cash available (USD)"),
-            min_value=0.0,
-            value=float(account_config.get("cash_available") or 0.0),
-            step=100.0,
-            format="%.2f",
-        )
-        account_col1, account_col2 = st.columns(2)
-        min_cash_buffer_pct = account_col1.number_input(
-            ui_text("最低现金缓冲 (%)", "Min cash buffer (%)"),
-            min_value=0.0,
-            max_value=100.0,
-            value=float(account_config.get("min_cash_buffer_pct", 0.05) or 0.0) * 100.0,
-            step=1.0,
-            format="%.1f",
-        )
-        max_single_position_pct = account_col2.number_input(
-            ui_text("单票上限 (%)", "Max single position (%)"),
-            min_value=0.0,
-            max_value=100.0,
-            value=float(account_config.get("max_single_position_pct", 0.20) or 0.0) * 100.0,
-            step=1.0,
-            format="%.1f",
-        )
-        max_total_exposure_pct = st.number_input(
-            ui_text("总暴露上限 (%)", "Max total exposure (%)"),
-            min_value=0.0,
-            max_value=100.0,
-            value=float(account_config.get("max_total_exposure_pct", 1.0) or 0.0) * 100.0,
-            step=1.0,
-            format="%.1f",
-        )
-        if st.form_submit_button(ui_text("保存资金参数", "Save capital settings")):
-            data["account"] = {
-                "total_capital": None,
-                "cash_available": float(cash_available),
-                "min_cash_buffer_pct": float(min_cash_buffer_pct) / 100.0,
-                "max_single_position_pct": float(max_single_position_pct) / 100.0,
-                "max_total_exposure_pct": float(max_total_exposure_pct) / 100.0,
-            }
-            du.save_data(data)
-            st.session_state.app_data = du.load_data()
-            st.success(ui_text("资金参数已保存", "Capital settings saved"))
-            st.rerun()
-    st.caption(
-        ui_text(
-            "系统会自动按“可用现金 + 持仓市值”计算总资金；这里仅需维护可用现金和风控参数。",
-            "Total capital is auto-derived as cash available plus holdings market value; maintain cash and risk limits here.",
-        )
-    )
-
-    st.header(L("add_holding"))
-    with st.form("add_holding"):
-        sym = st.text_input(L("stock_code"), placeholder="AAPL, TSM...")
-        shares = st.number_input(L("shares"), min_value=0.0, step=0.001, format="%.3f")
-        cost = st.number_input(L("cost_price"), min_value=0.0, step=0.01, format="%.2f")
-        sector = st.text_input(L("sector"), placeholder="Technology, Healthcare...")
-        if st.form_submit_button(L("submit_add_holding")):
-            if sym and shares > 0 and cost > 0:
-                try:
-                    pactions.buy_symbol(sym, shares, price=cost, sector=sector)
-                    st.session_state.app_data = du.load_data()
-                    st.success(f"{sym.upper()} {L('submit_add_holding')} 成功")
-                    st.rerun()
-                except ValueError as e:
-                    st.error(str(e))
-            else:
-                st.warning(L("submit_add_holding") + " 请完整填写")
-
-    st.divider()
-    st.header(L("add_watch"))
-    with st.form("add_watch"):
-        w_sym = st.text_input(L("stock_code"), key="watch_sym", placeholder="NVDA, MSFT...")
-        notes = st.text_input(L("notes"), placeholder="等待回调")
-        st.caption(L("upside_price_hint"))
-        if st.form_submit_button(L("submit_add_watch")):
-            if w_sym:
-                du.add_watch(w_sym, notes)
-                st.session_state.app_data = du.load_data()
-                st.success(f"{w_sym.upper()} {L('submit_add_watch')} 成功")
-                st.rerun()
-            else:
-                st.warning(L("submit_add_watch") + " 至少输入代码")
-
-    st.divider()
-    if st.button(L("refresh_price")):
-        with st.spinner("刷新中..."):
-            try:
-                updated = pactions.refresh_all_market_data(force_source_refresh=True)
-                st.session_state.app_data = updated
-                du.save_data(updated)
-                st.success(L("refresh_price") + " 完成！")
-                st.rerun()
-            except Exception as e:
-                st.error(f"刷新失败: {e}")
-    st.caption("手动刷新会优先强制从当前配置的数据源拉取最新价格，并回写本地缓存。")
-    if data.get("prices_last_updated"):
-        st.caption(f"{L('last_price_refresh')}: {data['prices_last_updated']}")
-    else:
-        st.caption(L("last_price_refresh_empty"))
-
-    st.divider()
-    st.header(L("data_files"))
-    st.caption(L("editable_data_file", path=du.EDITABLE_DATA_FILE))
-    st.caption(L("market_events_file", path=en.MARKET_EVENTS_FILE))
-    st.caption(L("event_sources_file", path=ef.EVENT_SOURCES_CONFIG_PATH))
-    st.caption(f"分析师共识缓存：`{ac.ANALYST_CONSENSUS_CACHE_FILE}`")
-    st.caption(L("news_auto_refresh_interval", minutes=NEWS_AUTO_REFRESH_INTERVAL_SECONDS // 60))
-    if market_events_bootstrapped:
-        st.success(L("market_events_bootstrapped", path=en.MARKET_EVENTS_FILE))
-    if not os.path.exists(en.MARKET_EVENTS_FILE):
-        st.info(L("market_events_missing", path=en.MARKET_EVENTS_FILE))
-    cached_event_bundle = st.session_state.get("event_fetch_bundle", {})
-    if isinstance(cached_event_bundle, dict) and cached_event_bundle.get("fetched_at"):
-        st.caption(L("news_last_fetched_at", ts=str(cached_event_bundle.get("fetched_at"))))
-    if st.button(L("refresh_news")):
-        with st.spinner(L("refresh_news_running")):
-            symbols_for_news = rt.collect_tracked_symbols(st.session_state.app_data)
-            events, reports = ef.fetch_events_from_sources(
-                symbols=symbols_for_news,
-                now=datetime.now(),
-            )
-            st.session_state.event_fetch_bundle = {
-                "events": events,
-                "source_reports": reports,
-                "symbols": symbols_for_news,
-                "fetched_at": datetime.now().isoformat(),
-            }
-            st.success(L("refresh_news_done", count=len(events)))
-            st.rerun()
-    if du.has_newer_editable_data():
-        st.info(L("editable_data_pending"))
-    if st.button(L("reload_data_file")):
-        if not du.editable_data_file_exists():
-            st.warning(L("editable_data_missing", path=du.EDITABLE_DATA_FILE))
-        else:
-            try:
-                st.session_state.app_data = du.load_data(force_editable_sync=True)
-                st.success(L("reload_data_file_done"))
-                st.rerun()
-            except ValueError as e:
-                st.error(f"{L('reload_data_file_failed')}: {e}")
-
-    st.divider()
-    st.header(L("clear_ops"))
-    c1, c2 = st.columns(2)
-    with c1:
-        if st.button(L("clear_holdings")):
-            pactions.clear_all_holdings(notes="ui clear holdings")
-            st.session_state.app_data = du.load_data()
-            st.warning(L("clear_holdings") + " 完成")
-            st.rerun()
-    with c2:
-        if st.button(L("clear_watchlist")):
-            du.clear_watchlist()
-            st.session_state.app_data = du.load_data()
-            st.warning(L("clear_watchlist") + " 完成")
-            st.rerun()
-
-    st.divider()
-    st.header(L("export"))
-    st.markdown(f"- {L('export_md')}")
-    st.markdown(f"- {L('export_pdf')}")
+L = lambda key, **kwargs: loc.get_text(st.session_state.lang, key, **kwargs)
 
 rt.enable_auto_news_rerun(
     session_state=st.session_state,
     interval_seconds=NEWS_AUTO_REFRESH_INTERVAL_SECONDS,
     st_module=st,
-)
-
-ud.render_portfolio_dialogs(
-    session_state=st.session_state,
-    data=data,
-    L=L,
-    st_module=st,
-    data_utils_module=du,
-    portfolio_actions_module=pactions,
-    format_share_quantity_fn=format_share_quantity,
-    validate_share_quantity_fn=validate_share_quantity,
 )
 
 market_risk_gate_decision = None
@@ -466,656 +536,333 @@ analysis_freshness_alert = ui.build_holdings_analysis_freshness_alert(
     now=datetime.now(),
 )
 
-# ---------- 主区域 ----------
-st.title(L("app_title"))
-st.caption(L("app_caption"))
-up.render_analysis_freshness_banner(
-    analysis_freshness_alert,
-    ui_text=ui_text,
-    st_module=st,
+core_etf_universe = cer.load_core_etf_universe()
+core_etf_symbols = [
+    str(row.get("symbol") or "").strip().upper()
+    for row in list(core_etf_universe.get("etfs", []) or [])
+    if bool(row.get("enabled", True))
+]
+core_etf_rotation_snapshot = cer.build_core_etf_rotation_snapshot(
+    data=data,
+    history_period=st.session_state.get("history_period", "2y"),
+    load_historical_data_fn=load_historical_data_cached,
+    universe=core_etf_universe,
+    risk_gate=market_risk_gate_decision,
+    allocation_regime=allocation_regime_decision,
+    now=datetime.now(),
+)
+previous_core_etf_snapshot = cee.load_core_etf_snapshot()
+core_etf_snapshot = cee.build_core_etf_snapshot(
+    data=data,
+    account_snapshot=account_snapshot,
+    rotation_snapshot=core_etf_rotation_snapshot,
+    risk_gate=market_risk_gate_decision,
+    allocation_regime=allocation_regime_decision,
+    previous_snapshot=previous_core_etf_snapshot,
+    now=datetime.now(),
+)
+discipline_snapshot = qdisc.build_discipline_snapshot(
+    account_snapshot=account_snapshot,
+    risk_gate=market_risk_gate_decision,
+    allocation_regime=allocation_regime_decision,
+    analysis_freshness_alert=analysis_freshness_alert,
+    core_etf_snapshot=core_etf_snapshot,
+    now=datetime.now(),
+)
+monthly_discipline_review = qdisc.build_monthly_discipline_review(
+    discipline_snapshot=discipline_snapshot,
+    scoreboard=live_scoreboard,
+    latest_post_close_review=latest_post_close_review,
+    snapshot_journal=nightly_snapshot_journal,
+    now=datetime.now(),
 )
 
-tab1, tab2, tab3, tab4, tab5 = st.tabs([
-    L("holdings_tab"), L("watchlist_tab"),
-    L("transactions_tab"), L("quant_tab"), "通知配置"
-])
-holding_records = []
-watchlist_records = []
+dashboard_strategy = strategy_map.get(st.session_state.selected_strategy_id, strategies[0])
+dashboard_strategy_runtime = rt.apply_runtime_strategy_params(
+    dashboard_strategy,
+    history_period=st.session_state.get("history_period", "2y"),
+)
 
-# ----- Tab1 持仓 -----
-with tab1:
-    st.caption(L("strategy_signal"))
-    selected_index = [s["id"] for s in strategies].index(st.session_state.selected_strategy_id)
-    selected_strategy_name = st.selectbox(
-        L("strategy_signal"),
-        strategy_names,
-        index=selected_index
-    )
-    selected_strategy = next((s for s in strategies if s["name"] == selected_strategy_name), strategies[0])
-    selected_strategy_runtime = rt.apply_runtime_strategy_params(
-        selected_strategy,
+satellite_candidate_snapshot = cpool.load_satellite_candidate_pool_snapshot()
+if satellite_candidate_snapshot is None and dashboard_strategy_runtime:
+    satellite_candidate_snapshot = cpool.build_satellite_candidate_pool_snapshot(
+        data=data,
+        strategy=dashboard_strategy_runtime,
         history_period=st.session_state.get("history_period", "2y"),
-    )
-    st.session_state.selected_strategy_id = selected_strategy["id"]
-    with st.expander(L("strategy_desc")):
-        st.markdown(selected_strategy.get("description", "无说明"))
-
-    def handle_sell(idx):
-        st.session_state.sell_dialog_index = idx
-
-    def handle_buy(idx):
-        st.session_state.buy_dialog_index = idx
-
-    def handle_delete_holding(idx):
-        try:
-            symbol = data["holdings"][idx]["symbol"]
-            pactions.remove_holding_record(symbol, notes="ui delete holding")
-            st.session_state.app_data = du.load_data()
-        except ValueError as e:
-            st.error(str(e))
-            return False
-
-    def handle_move_holding_to_watch(idx):
-        try:
-            symbol = data["holdings"][idx]["symbol"]
-            pactions.move_holding_to_watch(symbol)
-            st.session_state.app_data = du.load_data()
-        except ValueError as e:
-            st.error(str(e))
-            return False
-
-    if data["holdings"]:
-        up.render_market_risk_gate_banner(market_risk_gate_decision, market_risk_snapshot, L)
-    summary, holding_records = ui.render_holdings_table(
-        data,
-        on_price_change=du.update_holding_price,
-        on_delete=handle_delete_holding,
-        on_buy=handle_buy,
-        on_sell=handle_sell,
-        on_move_to_watch=handle_move_holding_to_watch,
-        strategy=selected_strategy_runtime,
-        risk_gate=market_risk_gate_decision,
-        analyst_consensus_cache=analyst_consensus_cache,
-        allocation_regime=allocation_regime_decision,
-        analysis_snapshot=quant_analysis_snapshot,
-    )
-    up.render_account_snapshot_panel(account_snapshot, ui_text=ui_text)
-    up.render_data_source_status_panel(md.get_market_data_status_snapshot(), ui_text=ui_text)
-    up.render_allocation_regime_panel(allocation_regime_decision, ui_text=ui_text)
-    up.render_signal_scoreboard_panel(live_scoreboard, ui_text=ui_text)
-    if data["holdings"]:
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric(L("total_cost"), f"${summary.total_cost:,.2f}")
-        c2.metric(L("total_value"), f"${summary.total_value:,.2f}")
-        c3.metric(L("total_pl"), f"${summary.total_pl:+,.2f}", delta=f"{summary.total_pl_pct:+.2f}%")
-        c4.metric(L("holdings_count"), f"{len(data['holdings'])}")
-
-        if st.button(L("gen_md")):
-            md_text = pg.build_holdings_markdown(
-                holding_records,
-                summary,
-                format_share_quantity_fn=format_share_quantity,
-                labels={
-                    "total_cost": L("total_cost"),
-                    "total_value": L("total_value"),
-                    "total_pl": L("total_pl"),
-                },
-            )
-            st.code(md_text, language="markdown")
-            st.download_button("⬇️ 下载 Markdown", data=md_text, file_name=f"holdings_{datetime.now().strftime('%Y%m%d')}.md")
-
-# ----- Tab2 关注列表 -----
-with tab2:
-    selected_strategy_for_watch = strategy_map.get(st.session_state.selected_strategy_id, strategies[0])
-    selected_strategy_for_watch_runtime = rt.apply_runtime_strategy_params(
-        selected_strategy_for_watch,
-        history_period=st.session_state.get("history_period", "2y"),
-    )
-    up.render_account_snapshot_panel(account_snapshot, ui_text=ui_text)
-    up.render_data_source_status_panel(md.get_market_data_status_snapshot(), ui_text=ui_text)
-    up.render_allocation_regime_panel(allocation_regime_decision, ui_text=ui_text)
-
-    def handle_delete_watch_batch(indices):
-        du.delete_watch_batch(indices)
-        st.session_state.app_data = du.load_data()
-
-    def handle_move_watch_to_holding(idx):
-        st.session_state.move_watch_dialog_index = idx
-
-    watchlist_records = ui.render_watchlist_table(
-        data,
-        on_delete_batch=handle_delete_watch_batch,
-        on_move_to_holding=handle_move_watch_to_holding,
-        strategy=selected_strategy_for_watch_runtime,
-        analyst_consensus_cache=analyst_consensus_cache,
+        load_historical_data_fn=load_historical_data_cached,
+        universe=cpool.load_satellite_universe(),
+        core_symbols=set(core_etf_symbols),
+        discipline_snapshot=discipline_snapshot,
+        policy=cer.load_engine_policy(),
         risk_gate=market_risk_gate_decision,
         allocation_regime=allocation_regime_decision,
-        analysis_snapshot=quant_analysis_snapshot,
+        now=datetime.now(),
     )
 
-# ----- Tab3 交易记录 -----
-with tab3:
-    pg.render_transactions_tab(
+dashboard_portfolio_summary = summarize_holdings(data["holdings"])
+holding_records = ui.build_holding_records(
+    data.get("holdings", []),
+    dashboard_strategy_runtime,
+    dashboard_portfolio_summary.total_value,
+    risk_gate=market_risk_gate_decision,
+    analyst_consensus_cache=analyst_consensus_cache,
+    allocation_regime=allocation_regime_decision,
+    analysis_snapshot=quant_analysis_snapshot,
+    analysis_now=datetime.now(),
+)
+watchlist_records = ui.build_watchlist_records(
+    data.get("watchlist", []),
+    strategy=dashboard_strategy_runtime,
+    analyst_consensus_cache=analyst_consensus_cache,
+    account=data.get("account", {}),
+    risk_gate=market_risk_gate_decision,
+    allocation_regime=allocation_regime_decision,
+    current_invested_dollars=dashboard_portfolio_summary.total_value,
+    analysis_snapshot=quant_analysis_snapshot,
+    analysis_now=datetime.now(),
+    active_events=active_market_events,
+)
+
+core_holdings_df = pg.build_holdings_focus_dataframe(
+    holding_records,
+    include_symbols=core_etf_symbols,
+)
+satellite_holdings_df = pg.build_holdings_focus_dataframe(
+    holding_records,
+    exclude_symbols=core_etf_symbols,
+)
+
+latest_report_bundle = st.session_state.get("latest_quant_analysis_report", {})
+latest_report_snapshot = latest_report_bundle.get("snapshot") if isinstance(latest_report_bundle, dict) else None
+latest_report_files = dict(latest_report_bundle.get("files", {}) or {}) if isinstance(latest_report_bundle, dict) else {}
+if not latest_report_snapshot:
+    latest_report_snapshot = qpa.load_quant_analysis_snapshot() or nr.load_latest_quant_analysis_snapshot()
+latest_report_files = {
+    **nr.get_quant_analysis_report_latest_paths(),
+    **latest_report_files,
+}
+
+uc.inject_cockpit_styles(st_module=st)
+st.title(ui_text("量化交易驾驶舱", "Quant Trading Cockpit"))
+st.caption(
+    ui_text(
+        "夜间生成次日计划，盘中只看紧急风险与计划触发，收盘后再用 Robinhood CSV 回流复盘。",
+        "The system plans at night, watches only urgent risk and planned triggers intraday, and reviews against Robinhood CSV after the close.",
+    )
+)
+render_flash_notice("manual_refresh_notice")
+trade_plan_banner = ui.build_trade_plan_banner(
+    latest_trade_plan,
+    lang=st.session_state.get("lang", "zh"),
+)
+
+tab_dashboard, tab_core, tab_satellite, tab_risk, tab_ops, tab_settings = st.tabs(
+    [
+        ui_text("🏠 Dashboard", "🏠 Dashboard"),
+        ui_text("🧭 Core ETFs", "🧭 Core ETFs"),
+        ui_text("🚀 Satellite Radar", "🚀 Satellite Radar"),
+        ui_text("🛡️ Risk & Discipline", "🛡️ Risk & Discipline"),
+        ui_text("🧰 Operations", "🧰 Operations"),
+        ui_text("⚙️ Settings", "⚙️ Settings"),
+    ]
+)
+
+with tab_dashboard:
+    uc.render_dashboard_page(
+        ui_text=ui_text,
+        latest_trade_plan=latest_trade_plan,
+        latest_post_close_review=latest_post_close_review,
+        trade_plan_banner=trade_plan_banner,
+        latest_change_feed=latest_change_feed,
+        change_feed_narration=str(dict(st.session_state.get("change_feed_llm_narration", {}) or {}).get("text") or "").strip(),
+        change_feed_explanation=str(dict(st.session_state.get("change_feed_llm_explanation", {}) or {}).get("text") or "").strip(),
+        narrate_change_feed_fn=lambda: narrate_change_feed(
+            latest_change_feed=latest_change_feed,
+            monthly_discipline_review=monthly_discipline_review,
+        ),
+        explain_change_feed_fn=lambda: explain_change_feed(
+            latest_change_feed=latest_change_feed,
+            monthly_discipline_review=monthly_discipline_review,
+        ),
+        latest_nightly_manifest=latest_nightly_manifest,
+        account_snapshot=account_snapshot,
+        data_source_status=md.get_market_data_status_snapshot(),
+        allocation_regime_decision=allocation_regime_decision,
+        discipline_snapshot=discipline_snapshot,
+        monthly_discipline_review=monthly_discipline_review,
+        live_scoreboard=live_scoreboard,
+        market_risk_gate_decision=market_risk_gate_decision,
+        market_risk_snapshot=market_risk_snapshot,
+        analysis_freshness_alert=analysis_freshness_alert,
+        active_market_events=active_market_events,
+        event_risk_decision=event_risk_decision,
+        event_source_reports=event_source_reports,
+        intraday_event_summary=intraday_event_summary,
+        L=L,
+        core_etf_snapshot=core_etf_snapshot,
+        satellite_candidate_snapshot=satellite_candidate_snapshot,
+        st_module=st,
+        lang=st.session_state.get("lang", "zh"),
+    )
+
+with tab_core:
+    st.header(ui_text("核心 ETF 引擎", "Core ETF Engine"))
+    st.caption(
+        ui_text(
+            "这一页只处理核心仓，展示候选 ETF、轮动结论、目标权重和价位区间。",
+            "This page is core-book only, showing the ETF universe, rotation conclusion, target weights, and price zones.",
+        )
+    )
+    uc.render_core_etfs_page(
+        core_etf_snapshot=core_etf_snapshot,
+        core_holdings_df=core_holdings_df,
+        llm_explanations=st.session_state.get("core_etf_llm_explanations", {}),
+        explain_core_etf_fn=lambda row: explain_core_etf_row(
+            row,
+            discipline_snapshot=discipline_snapshot,
+            latest_change_feed=latest_change_feed,
+        ),
+        ui_text=ui_text,
+        st_module=st,
+    )
+
+with tab_satellite:
+    st.header(ui_text("卫星仓雷达", "Satellite Radar"))
+    st.caption(
+        ui_text(
+            "这一页聚焦 Top 3 候选、候选池 Top 10 和当前卫星仓，由 nightly 快照统一驱动。",
+            "This page focuses on the Top 3 names, the Top 10 candidate pool, and current satellite positions, all driven by the nightly snapshot.",
+        )
+    )
+    uc.render_satellite_radar_page(
+        satellite_candidate_snapshot=satellite_candidate_snapshot,
+        satellite_holdings_df=satellite_holdings_df,
+        ui_text=ui_text,
+        active_market_events=active_market_events,
+        event_risk_decision=event_risk_decision,
+        event_source_reports=event_source_reports,
+        L=L,
+        st_module=st,
+        lang=st.session_state.get("lang", "zh"),
+    )
+
+with tab_risk:
+    st.header(ui_text("纪律与风险", "Risk & Discipline"))
+    st.caption(
+        ui_text(
+            "这页专门回答两件事：为什么不能重仓，为什么今天不该追价。所有阻断条件、分析过期和风险状态都在这里集中展示。",
+            "This page answers two questions: why you should not go heavy right now, and why you should not chase. All blocking reasons, stale analysis, and risk states are centralized here.",
+        )
+    )
+    uc.render_risk_page(
+        ui_text=ui_text,
+        discipline_snapshot=discipline_snapshot,
+        monthly_discipline_review=monthly_discipline_review,
+        discipline_review_narration=str(dict(st.session_state.get("discipline_review_llm_narration", {}) or {}).get("text") or "").strip(),
+        discipline_review_explanation=str(dict(st.session_state.get("discipline_review_llm_explanation", {}) or {}).get("text") or "").strip(),
+        narrate_discipline_review_fn=lambda: narrate_discipline_review(
+            monthly_discipline_review=monthly_discipline_review,
+            discipline_snapshot=discipline_snapshot,
+            latest_post_close_review=latest_post_close_review,
+        ),
+        explain_discipline_review_fn=lambda: explain_discipline_review(
+            monthly_discipline_review=monthly_discipline_review,
+            discipline_snapshot=discipline_snapshot,
+            latest_post_close_review=latest_post_close_review,
+        ),
+        market_risk_gate_decision=market_risk_gate_decision,
+        market_risk_snapshot=market_risk_snapshot,
+        analysis_freshness_alert=analysis_freshness_alert,
+        account_snapshot=account_snapshot,
+        data_source_status=md.get_market_data_status_snapshot(),
+        live_scoreboard=live_scoreboard,
+        latest_change_feed=latest_change_feed,
+        change_feed_narration=str(dict(st.session_state.get("change_feed_llm_narration", {}) or {}).get("text") or "").strip(),
+        change_feed_explanation=str(dict(st.session_state.get("change_feed_llm_explanation", {}) or {}).get("text") or "").strip(),
+        narrate_change_feed_fn=lambda: narrate_change_feed(
+            latest_change_feed=latest_change_feed,
+            monthly_discipline_review=monthly_discipline_review,
+        ),
+        explain_change_feed_fn=lambda: explain_change_feed(
+            latest_change_feed=latest_change_feed,
+            monthly_discipline_review=monthly_discipline_review,
+        ),
+        latest_post_close_review=latest_post_close_review,
+        snapshot_journal=nightly_snapshot_journal,
+        intraday_event_summary=intraday_event_summary,
+        L=L,
+        st_module=st,
+    )
+
+with tab_ops:
+    uc.render_control_center_page(
+        ui_text=ui_text,
+        latest_nightly_manifest=latest_nightly_manifest,
+        latest_change_feed=latest_change_feed,
+        change_feed_narration=str(dict(st.session_state.get("change_feed_llm_narration", {}) or {}).get("text") or "").strip(),
+        change_feed_explanation=str(dict(st.session_state.get("change_feed_llm_explanation", {}) or {}).get("text") or "").strip(),
+        narrate_change_feed_fn=lambda: narrate_change_feed(
+            latest_change_feed=latest_change_feed,
+            monthly_discipline_review=monthly_discipline_review,
+        ),
+        explain_change_feed_fn=lambda: explain_change_feed(
+            latest_change_feed=latest_change_feed,
+            monthly_discipline_review=monthly_discipline_review,
+        ),
+        latest_report_snapshot=latest_report_snapshot,
+        latest_report_files=latest_report_files,
+        market_events_bootstrapped=market_events_bootstrapped,
+        market_events_file=en.MARKET_EVENTS_FILE,
+        event_sources_config_path=ef.EVENT_SOURCES_CONFIG_PATH,
+        analyst_consensus_cache_file=ac.ANALYST_CONSENSUS_CACHE_FILE,
+        editable_data_file=du.EDITABLE_DATA_FILE,
+        manual_portfolio_editor=uc.render_manual_portfolio_editor,
+        transactions_renderer=pg.render_transactions_tab,
         tx_module=tx,
         L=L,
         format_share_quantity_fn=format_share_quantity,
-        st_module=st,
-        session_state=st.session_state,
         portfolio_actions_module=pactions,
         data_utils_module=du,
+        session_state=st.session_state,
+        report_rebuilder=lambda: rebuild_latest_quant_report(
+            data=data,
+            strategy_runtime=dashboard_strategy_runtime,
+            market_risk_gate_decision=market_risk_gate_decision,
+            allocation_regime_decision=allocation_regime_decision,
+        ),
+        st_module=st,
     )
 
-# ----- Tab4 量化分析 -----
-with tab4:
-    st.header(L("quant_title"))
-    st.markdown(L("quant_desc"))
-    st.info(ui_text("本页现在主要用于报告中心和单票深挖；日常决策请优先查看持仓页和关注页。", "This page now serves as a report center and deep-dive tool. For day-to-day decisions, use the holdings and watchlist pages first."))
-    if data["holdings"]:
-        up.render_market_risk_gate_banner(market_risk_gate_decision, market_risk_snapshot, L)
-        up.render_active_events_panel(
-            active_market_events,
-            event_risk_decision,
-            event_source_reports,
-            L,
-            lang=st.session_state.get("lang", "zh"),
-        )
-    portfolio_summary = summarize_holdings(data["holdings"])
-
-    all_symbols = list(set([h["symbol"] for h in data["holdings"]] + [w["symbol"] for w in data["watchlist"]]))
-    if not all_symbols:
-        st.warning("暂无数据")
-    else:
-        st.subheader(L("engine_setting"))
-        engine_option = st.selectbox(L("select_engine"), ["Backtrader (推荐)", "PyBroker"])
-        use_backtrader = (engine_option == "Backtrader (推荐)")
-
-        st.subheader(L("strategy_select"))
-        selected_strategy_tab4 = su.render_strategy_selector(
-            strategies,
-            default_strategy_id=st.session_state.selected_strategy_id,
-        )
-        selected_strategy_tab4_runtime = (
-            rt.apply_runtime_strategy_params(
-                selected_strategy_tab4,
-                history_period=st.session_state.get("history_period", "2y"),
-            )
-            if selected_strategy_tab4
-            else None
-        )
-        if selected_strategy_tab4:
-            su.display_strategy_description(selected_strategy_tab4)
-
-        st.subheader(ui_text("组合全量分析报告", "Portfolio Analysis Report"))
-        if selected_strategy_tab4_runtime and st.button(
-            ui_text("生成全量分析报告", "Generate Full Analysis Report"),
-            key="generate_portfolio_quant_report",
-        ):
-            with st.spinner(ui_text("全量分析报告生成中...", "Generating portfolio analysis report...")):
-                try:
-                    report_snapshot = qpa.build_portfolio_quant_analysis_snapshot(
-                        data,
-                        strategy=selected_strategy_tab4_runtime,
-                        history_period=st.session_state.get("history_period", "2y"),
-                        engine_name="backtrader" if use_backtrader else "pybroker",
-                        engine_factory_fn=(
-                            (lambda: BacktraderEngine(initial_cash=100000))
-                            if use_backtrader
-                            else (lambda: PyBrokerEngine(initial_cash=100000))
-                        ),
-                        risk_gate=market_risk_gate_decision,
-                        allocation_regime=allocation_regime_decision,
-                        now=datetime.now(),
-                    )
-                    report_text = nr.build_quant_analysis_report(report_snapshot)
-                    report_files = nr.save_quant_analysis_report_files(
-                        report_snapshot,
-                        report_text=report_text,
-                    )
-                    qpa.save_quant_analysis_snapshot(report_snapshot)
-                    st.session_state.latest_quant_analysis_report = {
-                        "snapshot": report_snapshot,
-                        "files": report_files,
-                    }
-                    st.success(ui_text("全量分析报告已生成。", "Portfolio analysis report generated."))
-                except Exception as e:
-                    st.error(f"{ui_text('生成报告失败', 'Report generation failed')}: {e}")
-
-        latest_report_bundle = st.session_state.get("latest_quant_analysis_report", {})
-        latest_report_snapshot = latest_report_bundle.get("snapshot") if isinstance(latest_report_bundle, dict) else None
-        latest_report_files = (
-            dict(latest_report_bundle.get("files", {}) or {})
-            if isinstance(latest_report_bundle, dict)
-            else {}
-        )
-        if not latest_report_snapshot:
-            latest_report_snapshot = qpa.load_quant_analysis_snapshot() or nr.load_latest_quant_analysis_snapshot()
-        latest_report_files = {
-            **nr.get_quant_analysis_report_latest_paths(),
-            **latest_report_files,
-        }
-
-        if latest_report_snapshot:
-            latest_summary = dict(latest_report_snapshot.get("summary", {}) or {})
-            st.caption(
-                ui_text(
-                    f"最新报告时间: {latest_report_snapshot.get('generated_at', '—')}",
-                    f"Latest report: {latest_report_snapshot.get('generated_at', '—')}",
-                )
-            )
-            r1, r2, r3, r4 = st.columns(4)
-            r1.metric(ui_text("覆盖标的", "Tracked"), f"{int(latest_summary.get('total_symbols', 0) or 0)}")
-            r2.metric(ui_text("买入信号", "BUY"), f"{int(latest_summary.get('buy_count', 0) or 0)}")
-            r3.metric(ui_text("卖出信号", "SELL"), f"{int(latest_summary.get('sell_count', 0) or 0)}")
-            r4.metric(ui_text("观望信号", "HOLD"), f"{int(latest_summary.get('hold_count', 0) or 0)}")
-
-            top_buys = ", ".join(latest_summary.get("top_buy_symbols", []) or [])
-            if top_buys:
-                st.caption(ui_text(f"优先关注: {top_buys}", f"Top candidates: {top_buys}"))
-
-            latest_symbol_rows = list(latest_report_snapshot.get("symbols", []) or [])
-            if latest_symbol_rows:
-                latest_report_df = pd.DataFrame(
-                    [
-                        {
-                            ui_text("代码", "Symbol"): row.get("symbol"),
-                            ui_text("类型", "Type"): row.get("list_type"),
-                            ui_text("信号", "Signal"): row.get("signal"),
-                            ui_text("现价", "Price"): (
-                                f"${float(row.get('latest_price')):.2f}"
-                                if row.get("latest_price") is not None
-                                else "—"
-                            ),
-                            ui_text("回测收益", "Backtest Return"): (
-                                f"{float((row.get('backtest') or {}).get('total_return')):.2%}"
-                                if (row.get("backtest") or {}).get("total_return") is not None
-                                else "—"
-                            ),
-                            ui_text("胜率", "Win Rate"): (
-                                f"{float((row.get('backtest') or {}).get('win_rate')):.2%}"
-                                if (row.get("backtest") or {}).get("win_rate") is not None
-                                else "—"
-                            ),
-                            ui_text("MC预期收益", "MC Exp Return"): (
-                                f"{float((row.get('monte_carlo') or {}).get('expected_return')):.2%}"
-                                if (row.get("monte_carlo") or {}).get("expected_return") is not None
-                                else "—"
-                            ),
-                            ui_text("仓位动作", "Action"): ((row.get("position_advice") or {}).get("action") or "WATCH"),
-                            ui_text("备注", "Notes"): row.get("error") or row.get("signal_reason") or "",
-                        }
-                        for row in latest_symbol_rows
-                    ]
-                )
-                st.dataframe(latest_report_df, hide_index=True, width="stretch")
-
-        download_cols = st.columns(3)
-        if os.path.exists(latest_report_files["latest_pdf_path"]):
-            with open(latest_report_files["latest_pdf_path"], "rb") as handle:
-                download_cols[0].download_button(
-                    ui_text("下载最新 PDF", "Download Latest PDF"),
-                    data=handle.read(),
-                    file_name=os.path.basename(latest_report_files["latest_pdf_path"]),
-                    mime="application/pdf",
-                )
-        if os.path.exists(latest_report_files["latest_markdown_path"]):
-            with open(latest_report_files["latest_markdown_path"], "rb") as handle:
-                download_cols[1].download_button(
-                    ui_text("下载最新 Markdown", "Download Latest Markdown"),
-                    data=handle.read(),
-                    file_name=os.path.basename(latest_report_files["latest_markdown_path"]),
-                    mime="text/markdown",
-                )
-        if os.path.exists(latest_report_files["latest_json_path"]):
-            with open(latest_report_files["latest_json_path"], "rb") as handle:
-                download_cols[2].download_button(
-                    ui_text("下载最新 JSON", "Download Latest JSON"),
-                    data=handle.read(),
-                    file_name=os.path.basename(latest_report_files["latest_json_path"]),
-                    mime="application/json",
-                )
-
-        st.subheader(ui_text("单票深挖工具", "Single-Symbol Deep Dive"))
-        selected_symbol = st.selectbox(L("select_stock"), all_symbols)
-
-        # ---- 模型重训练（仅ML/集成策略）----
-        if selected_strategy_tab4 and selected_strategy_tab4["id"] in ("ml_lightgbm", "ensemble_voting"):
-            st.subheader(L("model_management"))
-            if selected_symbol:
-                train_period = st.selectbox(L("select_train_period"), ["1y", "2y", "3y", "5y", "10y"], index=1)
-                if st.button(L("retrain_btn")):
-                    with st.spinner("训练中..."):
-                        try:
-                            train_hist = qa.get_historical_data(selected_symbol, period=train_period)
-                            if train_hist.empty:
-                                st.error("无法获取足够数据。")
-                            else:
-                                params = selected_strategy_tab4_runtime.get("params", {})
-                                status = ml_utils.retrain_and_save_model(selected_symbol, train_hist, params)
-                                if "✅" in status:
-                                    st.success(status)
-                                    st.cache_data.clear()
-                                else:
-                                    st.warning(status)
-                        except Exception as e:
-                            st.error(f"训练失败: {e}")
-            else:
-                st.info(L("need_select_stock"))
-
-        if selected_symbol and selected_strategy_tab4_runtime:
-            with st.spinner("加载历史数据..."):
-                history_period = selected_strategy_tab4_runtime.get("params", {}).get("period", "2y")
-                hist = load_historical_data_cached(selected_symbol, period=history_period)
-                if hist.empty:
-                    st.error("无历史数据")
-                else:
-                    st.subheader(f"{selected_symbol} 技术指标")
-                    df_ma = qa.calculate_ma(hist)
-                    rsi = qa.calculate_rsi(hist)
-                    c1, c2 = st.columns(2)
-                    with c1:
-                        st.metric(L("latest_price"), f"${hist['Close'].iloc[-1]:.2f}")
-                        st.metric(L("ma20"), f"${df_ma['MA20'].iloc[-1]:.2f}")
-                        st.metric(L("ma50"), f"${df_ma['MA50'].iloc[-1]:.2f}")
-                    with c2:
-                        st.metric(L("rsi14"), f"{rsi.iloc[-1]:.2f}")
-                        st.metric(L("annual_vol"), f"{qa.calculate_volatility(hist):.2%}")
-                        st.metric(L("max_dd"), f"{qa.calculate_max_drawdown(hist):.2%}")
-
-                    st.line_chart(df_ma[["Close", "MA20", "MA50"]].tail(100))
-
-                    st.subheader(L("mc_title"))
-                    mc_col1, mc_col2 = st.columns(2)
-                    with mc_col1:
-                        mc_horizon = st.slider(L("mc_horizon_days"), min_value=5, max_value=90, value=20, step=5)
-                    with mc_col2:
-                        mc_simulations = st.selectbox(L("mc_simulations"), [500, 1000, 2000, 5000], index=2)
-                    mc_dist = simulate_return_distribution(
-                        hist,
-                        horizon_days=mc_horizon,
-                        simulations=int(mc_simulations),
-                        seed=42,
-                    )
-                    if mc_dist is None:
-                        st.info(L("mc_unavailable"))
-                    else:
-                        m1, m2, m3, m4 = st.columns(4)
-                        m1.metric(L("mc_expected_return"), f"{mc_dist.expected_return:.2%}")
-                        m2.metric(L("mc_positive_prob"), f"{mc_dist.positive_probability:.1%}")
-                        m3.metric(L("mc_var95"), f"{mc_dist.var_95:.2%}")
-                        m4.metric(L("mc_cvar95"), f"{mc_dist.cvar_95:.2%}")
-                        p1, p2, p3 = st.columns(3)
-                        p1.metric(L("mc_expected_price"), f"${mc_dist.expected_price:.2f}")
-                        p2.metric(L("mc_p05_price"), f"${mc_dist.p05_price:.2f}")
-                        p3.metric(L("mc_p95_price"), f"${mc_dist.p95_price:.2f}")
-
-                    # 当前信号
-                    current_signal = "HOLD"
-                    current_reason = "暂无信号"
-                    try:
-                        current_signal, current_reason = su.get_signal(selected_strategy_tab4_runtime, selected_symbol)
-                        signal_approval = approve_signal(current_signal, risk_gate=market_risk_gate_decision)
-                        current_signal = signal_approval.approved_signal
-                        if signal_approval.blocked and signal_approval.reason:
-                            current_reason = f"{current_reason} | {signal_approval.reason}"
-                        if current_signal in {"BUY", "STRONG_BUY"}:
-                            st.success(f"📈 {L('current_signal')}: {L('buy')} — {current_reason}")
-                        elif current_signal in {"SELL", "STRONG_SELL"}:
-                            st.error(f"📉 {L('current_signal')}: {L('sell')} — {current_reason}")
-                        else:
-                            st.info(f"⏸️ {L('current_signal')}: {L('hold')} — {current_reason}")
-                    except Exception as e:
-                        st.warning(f"无法获取信号: {e}")
-
-                    if selected_strategy_tab4_runtime.get("id") == "deep_tcn":
-                        profile = dl_utils.get_deep_tcn_signal_profile(
-                            selected_symbol,
-                            **selected_strategy_tab4_runtime.get("params", {}),
-                        )
-                        st.subheader(L("tcn_profile_title"))
-                        if profile.probability is not None:
-                            p1, p2, p3, p4 = st.columns(4)
-                            p1.metric(L("tcn_up_prob"), f"{profile.probability:.1%}")
-                            p2.metric(L("tcn_expected_return"), f"{profile.expected_return_pct:.2%}" if profile.expected_return_pct is not None else "—")
-                            p3.metric(L("tcn_confidence"), f"{profile.confidence:.1%}" if profile.confidence is not None else "—")
-                            p4.metric(L("tcn_weight_cap"), f"{profile.recommended_max_weight_pct:.1f}%" if profile.recommended_max_weight_pct is not None else "—")
-
-                            q1, q2, q3 = st.columns(3)
-                            q1.metric(L("tcn_take_profit"), f"${profile.take_profit_price:.2f}" if profile.take_profit_price is not None else "—")
-                            q2.metric(L("tcn_stop_loss"), f"${profile.stop_loss_price:.2f}" if profile.stop_loss_price is not None else "—")
-                            q3.metric(L("tcn_trained_at"), profile.trained_at or "—")
-                        else:
-                            st.info(profile.reason)
-
-                    # 回测按钮
-                    st.subheader(L("backtest_title") + f" (引擎: {engine_option})")
-                    if st.button(L("run_backtest"), key="run_backtest"):
-                        with st.spinner("回测中..."):
-                            try:
-                                strategy_obj = create_strategy(selected_strategy_tab4_runtime)
-
-                                if strategy_obj:
-                                    engine = BacktraderEngine(initial_cash=100000) if use_backtrader else PyBrokerEngine(initial_cash=100000)
-                                    engine.set_data(hist)
-                                    engine.set_strategy(strategy_obj)
-                                    result = engine.run()
-                                    guidance = summarize_backtest_guidance(
-                                        result.trade_log,
-                                        current_price=float(hist["Close"].iloc[-1]),
-                                    )
-
-                                    st.success("回测完成！")
-                                    c1, c2, c3, c4 = st.columns(4)
-                                    c1.metric(L("cum_return"), f"{result.total_return:.2%}")
-                                    c2.metric(L("sharpe"), f"{result.sharpe_ratio:.2f}")
-                                    c3.metric(L("max_drawdown"), f"{result.max_drawdown:.2%}")
-                                    c4.metric(L("win_rate"), f"{result.win_rate:.2%}")
-                                    if result.equity_curve:
-                                        st.line_chart(pd.Series(result.equity_curve))
-
-                                    scoreboard = build_signal_scoreboard(
-                                        result.trade_log,
-                                        equity_curve=result.equity_curve,
-                                        benchmark_history=hist,
-                                    )
-                                    st.subheader(ui_text("信号评分看板", "Signal Scoreboard"))
-                                    s1, s2, s3, s4, s5, s6 = st.columns(6)
-                                    s1.metric(ui_text("完成交易", "Closed Trades"), f"{scoreboard.completed_trades}")
-                                    s2.metric(
-                                        ui_text("信号胜率", "Signal Win Rate"),
-                                        f"{scoreboard.win_rate:.2%}" if scoreboard.win_rate is not None else "—",
-                                    )
-                                    s3.metric(
-                                        ui_text("期望收益/笔", "Expectancy/Trade"),
-                                        f"{scoreboard.expectancy_return_pct:.2%}" if scoreboard.expectancy_return_pct is not None else "—",
-                                    )
-                                    s4.metric(
-                                        ui_text("盈亏比", "Payoff Ratio"),
-                                        f"{scoreboard.payoff_ratio:.2f}" if scoreboard.payoff_ratio is not None else "—",
-                                    )
-                                    s5.metric(
-                                        ui_text("利润因子", "Profit Factor"),
-                                        f"{scoreboard.profit_factor:.2f}" if scoreboard.profit_factor is not None else "—",
-                                    )
-                                    s6.metric(
-                                        ui_text("看板最大回撤", "Scoreboard Max DD"),
-                                        f"{scoreboard.max_drawdown_pct:.2%}" if scoreboard.max_drawdown_pct is not None else "—",
-                                    )
-
-                                    if scoreboard.regime_breakdown:
-                                        regime_df = pd.DataFrame(
-                                            [
-                                                {
-                                                    ui_text("波动状态", "Volatility Regime"): item.regime,
-                                                    ui_text("交易数", "Trades"): item.trades,
-                                                    ui_text("胜率", "Win Rate"): f"{item.win_rate:.2%}" if item.win_rate is not None else "—",
-                                                    ui_text("平均收益", "Avg Return"): f"{item.avg_return_pct:.2%}" if item.avg_return_pct is not None else "—",
-                                                }
-                                                for item in scoreboard.regime_breakdown
-                                            ]
-                                        )
-                                        st.dataframe(regime_df, hide_index=True, width="stretch")
-
-                                    st.subheader("仓位与退出参考")
-                                    if guidance.completed_trades:
-                                        g1, g2, g3, g4 = st.columns(4)
-                                        g1.metric("单笔期望收益", f"{guidance.expected_return_pct:.2%}" if guidance.expected_return_pct is not None else "—")
-                                        g2.metric("平均持有天数", f"{guidance.expected_holding_days} 天" if guidance.expected_holding_days is not None else "—")
-                                        g3.metric("参考卖出价", f"${guidance.suggested_exit_price:.2f}" if guidance.suggested_exit_price is not None else "—")
-                                        g4.metric("完成交易数", f"{guidance.completed_trades}")
-                                    else:
-                                        st.info("当前回测没有形成完整买卖对，暂时无法估计持有周期和参考卖出价。")
-
-                                    current_holding = next((h for h in data["holdings"] if h["symbol"] == selected_symbol), None)
-                                    if current_holding and current_holding.get("current_price") is not None and portfolio_summary.total_value > 0:
-                                        advice = recommend_position_action(
-                                            holding=current_holding,
-                                            portfolio_value=portfolio_summary.total_value,
-                                            signal=current_signal,
-                                            signal_reason=current_reason,
-                                            guidance=guidance,
-                                            risk_gate=market_risk_gate_decision,
-                                            allocation_regime=allocation_regime_decision,
-                                        )
-                                        delta_text = (
-                                            format_share_quantity(abs(advice.delta_shares))
-                                            if advice.delta_shares is not None
-                                            else "—"
-                                        )
-                                        if advice.action == "ADD":
-                                            st.info(
-                                                f"当前持仓建议：加仓约 {delta_text} 股，目标仓位 {advice.target_weight_pct:.1f}%。"
-                                                f" {advice.reason}"
-                                            )
-                                        elif advice.action == "TRIM":
-                                            st.warning(
-                                                f"当前持仓建议：减仓约 {delta_text} 股，目标仓位 {advice.target_weight_pct:.1f}%。"
-                                                f" {advice.reason}"
-                                            )
-                                        elif advice.action == "EXIT":
-                                            st.error(f"当前持仓建议：考虑逐步卖出该仓位。 {advice.reason}")
-                                        else:
-                                            st.success(f"当前持仓建议：继续持有。 {advice.reason}")
-                            except Exception as e:
-                                st.error(f"回测失败: {e}")
-
-                    st.subheader(ui_text("策略比较（同标的）", "Strategy Comparison (Same Symbol)"))
-                    compare_bundle = st.session_state.get("latest_strategy_comparison", {})
-                    if st.button(ui_text("运行策略比较", "Run Strategy Comparison"), key="run_strategy_compare"):
-                        with st.spinner(ui_text("策略比较中...", "Comparing strategies...")):
-                            try:
-                                comparison_rows = compare_strategies_for_symbol(
-                                    symbol=selected_symbol,
-                                    strategies=strategies,
-                                    load_historical_data_fn=load_historical_data_cached,
-                                    create_strategy_fn=create_strategy,
-                                    engine_factory_fn=(
-                                        (lambda: BacktraderEngine(initial_cash=100000))
-                                        if use_backtrader
-                                        else (lambda: PyBrokerEngine(initial_cash=100000))
-                                    ),
-                                    history_period=history_period,
-                                    runtime_param_fn=lambda strategy: rt.apply_runtime_strategy_params(
-                                        strategy,
-                                        history_period=st.session_state.get("history_period", "2y"),
-                                    ),
-                                )
-                                compare_bundle = {
-                                    "symbol": selected_symbol,
-                                    "history_period": history_period,
-                                    "engine": "backtrader" if use_backtrader else "pybroker",
-                                    "rows": comparison_rows,
-                                    "generated_at": datetime.now().isoformat(),
-                                }
-                                st.session_state.latest_strategy_comparison = compare_bundle
-                            except Exception as e:
-                                st.error(f"策略比较失败: {e}")
-
-                    compare_rows = list(compare_bundle.get("rows", []) or [])
-                    if compare_bundle.get("symbol") == selected_symbol and compare_rows:
-                        comparison_df = pd.DataFrame(
-                            [
-                                {
-                                    "策略": row.get("strategy_name", row.get("strategy_id")),
-                                    "综合分": f"{float(row.get('composite_score', 0.0)):.2f}",
-                                    "收益率": f"{float(row.get('total_return', 0.0)):.2%}" if row.get("total_return") is not None else "—",
-                                    "夏普": f"{float(row.get('sharpe_ratio', 0.0)):.2f}" if row.get("sharpe_ratio") is not None else "—",
-                                    "胜率": f"{float(row.get('win_rate', 0.0)):.2%}" if row.get("win_rate") is not None else "—",
-                                    "期望收益/笔": (
-                                        f"{float(row.get('expectancy_return_pct')):.2%}"
-                                        if row.get("expectancy_return_pct") is not None
-                                        else "—"
-                                    ),
-                                    "利润因子": (
-                                        f"{float(row.get('profit_factor')):.2f}"
-                                        if row.get("profit_factor") is not None
-                                        else "—"
-                                    ),
-                                }
-                                for row in compare_rows
-                            ]
-                        )
-                        st.dataframe(comparison_df, hide_index=True, width="stretch")
-                        st.caption(
-                            ui_text(
-                                f"最后比较时间: {compare_bundle.get('generated_at', '—')}",
-                                f"Last comparison at: {compare_bundle.get('generated_at', '—')}",
-                            )
-                        )
-                    elif compare_bundle.get("symbol") == selected_symbol:
-                        st.info(ui_text("策略比较暂无可用结果。", "No strategy comparison result yet."))
-
-                    # MACD 图表
-                    macd, signal_line, hist_macd = qa.calculate_macd(hist)
-                    macd_df = pd.DataFrame({"MACD": macd, "Signal": signal_line, "Histogram": hist_macd}).tail(100)
-                    st.subheader(L("macd_indicator"))
-                    st.line_chart(macd_df[["MACD", "Signal"]])
-                    st.bar_chart(macd_df["Histogram"])
-
-        # 组合风险
-        st.divider()
-        st.subheader(L("portfolio_risk"))
-        if data["holdings"]:
-            if st.button(L("calc_beta")):
-                with st.spinner("计算中..."):
-                    try:
-                        beta, betas = qa.calculate_portfolio_beta(data["holdings"])
-                        st.metric(L("portfolio_beta"), f"{beta:.2f}")
-                        st.dataframe(pd.DataFrame(list(betas.items()), columns=["代码", "Beta"]), hide_index=True)
-                        symbols = list(dict.fromkeys([h["symbol"] for h in data["holdings"] if h.get("current_price")]))
-                        corr = None
-                        if len(symbols) > 1:
-                            corr = load_correlation_matrix_cached(tuple(sorted(symbols)))
-                            st.write(L("corr_matrix"))
-                            st.dataframe(corr.style.format("{:.2f}"))
-
-                        portfolio_advice = analyze_portfolio_risk(
-                            data["holdings"],
-                            correlation_matrix=corr,
-                        )
-                        st.subheader(L("portfolio_advice"))
-                        if portfolio_advice.sector_exposures:
-                            sector_df = pd.DataFrame([
-                                {
-                                    "Sector": exposure.sector,
-                                    "Value": exposure.value,
-                                    "Weight": f"{exposure.weight_pct:.1f}%",
-                                }
-                                for exposure in portfolio_advice.sector_exposures
-                            ])
-                            st.dataframe(sector_df, hide_index=True, width="stretch")
-
-                        if portfolio_advice.recommendations:
-                            for recommendation in portfolio_advice.recommendations:
-                                st.warning(recommendation)
-                        else:
-                            st.success(L("portfolio_advice_ok"))
-                    except Exception as e:
-                        st.error(f"计算失败: {e}")
-        else:
-            st.info("无持仓数据")
+with tab_settings:
+    cached_event_bundle = st.session_state.get("event_fetch_bundle", {})
+    uc.render_settings_page(
+        ui_text=ui_text,
+        data=data,
+        market_events_bootstrapped=market_events_bootstrapped,
+        market_events_file=en.MARKET_EVENTS_FILE,
+        event_sources_config_path=ef.EVENT_SOURCES_CONFIG_PATH,
+        analyst_consensus_cache_file=ac.ANALYST_CONSENSUS_CACHE_FILE,
+        editable_data_file=du.EDITABLE_DATA_FILE,
+        account_config_saver=save_account_config,
+        notification_renderer=unp.render_notification_config_page,
+        ncfg_module=ncfg,
+        nch_module=nch,
+        session_state=st.session_state,
+        history_period_options=HISTORY_PERIOD_OPTIONS,
+        strategies=strategies,
+        run_full_system_refresh_fn=handle_force_full_system_refresh,
+        force_price_refresh_fn=handle_force_market_refresh,
+        refresh_news_fn=handle_refresh_news,
+        reload_editable_data_fn=handle_reload_editable_data,
+        manual_tcn_retrain_fn=(lambda: handle_manual_tcn_retrain(deep_tcn_strategy)) if deep_tcn_strategy else None,
+        nightly_retrain_status=st.session_state.get("nightly_retrain_status"),
+        analyst_consensus_status=st.session_state.get("analyst_consensus_status"),
+        last_price_refresh=data.get("prices_last_updated") or ui_text("尚未刷新", "Not refreshed yet"),
+        last_news_refresh=(cached_event_bundle.get("fetched_at") if isinstance(cached_event_bundle, dict) else None),
+        st_module=st,
+    )
 
 snapshot_alerts = pg.build_snapshot_alerts(active_market_events)
-latest_strategy_comparison = st.session_state.get("latest_strategy_comparison", {})
 st.session_state.latest_system_snapshot = ss.build_system_snapshot(
     data=st.session_state.app_data,
     holding_records=holding_records,
@@ -1125,14 +872,15 @@ st.session_state.latest_system_snapshot = ss.build_system_snapshot(
     data_sources=md.get_market_data_status_snapshot(),
     performance={
         "live_scoreboard": _scoreboard_to_dict(live_scoreboard),
-        "strategy_comparison": dict(latest_strategy_comparison or {}),
     },
     allocation_regime=allocation_regime_decision.to_dict() if allocation_regime_decision is not None else {},
+    trade_plan=latest_trade_plan,
+    execution_review=latest_post_close_review,
+    core_etf_snapshot=core_etf_snapshot,
+    satellite_candidate_snapshot=satellite_candidate_snapshot,
+    discipline_snapshot=discipline_snapshot,
+    monthly_discipline_review=monthly_discipline_review,
+    intraday_event_summary=intraday_event_summary,
+    change_feed=latest_change_feed,
+    nightly_manifest=latest_nightly_manifest,
 )
-
-# ----- Tab5 通知配置 -----
-with tab5:
-    unp.render_notification_config_page(
-        ncfg_module=ncfg,
-        nch_module=nch,
-    )

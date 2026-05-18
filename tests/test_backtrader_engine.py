@@ -5,7 +5,6 @@ import pandas as pd
 from tests.support import (
     clear_modules,
     install_fake_backtrader,
-    install_fake_pybroker,
     reload_module,
 )
 
@@ -27,9 +26,8 @@ class BuySellStrategy:
 
 class BacktraderEquityCurveTests(unittest.TestCase):
     def setUp(self):
-        install_fake_pybroker()
         install_fake_backtrader([100000.0, 101500.0, 99500.0])
-        clear_modules("engine", "engine.base", "engine.pybroker_engine", "engine.backtrader_engine")
+        clear_modules("engine", "engine.base", "engine.backtrader_engine")
         self.engine_module = reload_module("engine.backtrader_engine")
 
     def test_run_returns_recorded_equity_curve_instead_of_repeating_final_value(self):
@@ -54,4 +52,3 @@ class BacktraderEquityCurveTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

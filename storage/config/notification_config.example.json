@@ -15,9 +15,33 @@
       "your_gmail@gmail.com"
     ]
   },
+  "llm": {
+    "enabled": false,
+    "provider": "openai",
+    "base_url": "https://api.openai.com/v1",
+    "api_key": "",
+    "model": "gpt-5-mini",
+    "temperature": 0.2,
+    "max_tokens": 300,
+    "timeout_seconds": 30,
+    "site_url": "",
+    "app_name": "quant-trade-system"
+  },
+  "local_slm": {
+    "enabled": false,
+    "provider": "openai",
+    "base_url": "http://127.0.0.1:8000/v1",
+    "api_key": "EMPTY",
+    "model": "Qwen/Qwen3-0.6B",
+    "temperature": 0.1,
+    "max_tokens": 220,
+    "timeout_seconds": 20
+  },
   "alert_settings": {
     "cooldown_hours": 6,
     "send_daily_summary": true,
+    "send_premarket_brief": true,
+    "send_intraday_alerts": true,
     "send_hourly_market_summary": true,
     "send_hourly_market_summary_market_hours_only": true,
     "send_quant_analysis_change_summary": true,

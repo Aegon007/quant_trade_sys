@@ -237,6 +237,65 @@ def save_data(data):
     with open(DATA_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
 
+
+def build_editable_portfolio_payload(data=None):
+    runtime_data = data or _load_runtime_data()
+    runtime_data["account"] = _normalize_account(runtime_data.get("account"), _default_account())
+    runtime_data["watchlist"] = _sanitize_watchlist_records(runtime_data.get("watchlist") or [])
+    holdings = []
+    for record in list(runtime_data.get("holdings", []) or []):
+        holdings.append(
+            {
+                "symbol": str(record.get("symbol", "")).strip().upper(),
+                "shares": normalize_share_quantity(record.get("shares", 0.0)),
+                "cost": float(record.get("cost", 0.0)),
+                "sector": str(record.get("sector", "") or "").strip(),
+            }
+        )
+    watchlist = []
+    for record in list(runtime_data.get("watchlist", []) or []):
+        watchlist.append(
+            {
+                "symbol": str(record.get("symbol", "")).strip().upper(),
+                "notes": str(record.get("notes", "") or ""),
+            }
+        )
+    account = dict(runtime_data.get("account") or {})
+    return {
+        "account": {
+            "cash_available": account.get("cash_available"),
+            "min_cash_buffer_pct": account.get("min_cash_buffer_pct", 0.05),
+            "max_single_position_pct": account.get("max_single_position_pct", 0.20),
+            "max_total_exposure_pct": account.get("max_total_exposure_pct", 1.0),
+        },
+        "holdings": holdings,
+        "watchlist": watchlist,
+    }
+
+
+def load_editable_data():
+    runtime_data = _load_runtime_data()
+    if editable_data_file_exists():
+        try:
+            editable_payload = _read_json_file(EDITABLE_DATA_FILE)
+            normalized = normalize_editable_data(editable_payload, runtime_data)
+            return build_editable_portfolio_payload(normalized)
+        except Exception:
+            return build_editable_portfolio_payload(runtime_data)
+    return build_editable_portfolio_payload(runtime_data)
+
+
+def save_editable_data(editable_data, *, sync_runtime=True):
+    runtime_data = _load_runtime_data()
+    normalized = normalize_editable_data(editable_data, runtime_data)
+    editable_payload = build_editable_portfolio_payload(normalized)
+    with open(EDITABLE_DATA_FILE, "w", encoding="utf-8") as f:
+        json.dump(editable_payload, f, indent=2, ensure_ascii=False)
+    if sync_runtime:
+        invalidate_market_data_timestamp(normalized)
+        save_data(normalized)
+    return editable_payload
+
 def _tracked_symbols(data):
     symbols = set()
     for holding in data.get("holdings", []):
@@ -511,6 +570,7 @@ def fetch_prices(symbols, use_cache=True, cache_ttl=DEFAULT_PRICE_CACHE_TTL_SECO
     if symbols_to_fetch:
         unresolved = set(symbols_to_fetch)
         provider_chain = _resolve_price_provider_order()
+        md.configure_price_source_order([name for name, _fetcher in provider_chain])
         for provider in provider_chain:
             if not unresolved:
                 break

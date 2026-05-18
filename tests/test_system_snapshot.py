@@ -75,6 +75,12 @@ class SystemSnapshotTests(unittest.TestCase):
             data_sources={"history": {"last_source": "stooq"}},
             daily_recap={"trade_count": 2, "realized_pl": 10.0},
             signal_attribution={"effective_count": 1, "ineffective_count": 0, "pending_count": 1},
+            core_etf_snapshot={"summary": {"accumulate_count": 1}},
+            satellite_candidate_snapshot={"summary": {"top_symbols": ["MU", "ANET"]}},
+            discipline_snapshot={"regime": "LIGHT"},
+            monthly_discipline_review={"status": "ALIGNED", "follow_days": 3, "ignore_days": 0},
+            change_feed={"summary": {"high_count": 1}},
+            nightly_manifest={"run_id": "20260509-nightly", "status": "completed"},
             generated_at=now,
         )
 
@@ -87,6 +93,12 @@ class SystemSnapshotTests(unittest.TestCase):
         self.assertIn("data_sources", snapshot)
         self.assertIn("daily_recap", snapshot)
         self.assertIn("signal_attribution", snapshot)
+        self.assertIn("core_etf_snapshot", snapshot)
+        self.assertIn("satellite_candidate_snapshot", snapshot)
+        self.assertIn("discipline_snapshot", snapshot)
+        self.assertIn("monthly_discipline_review", snapshot)
+        self.assertIn("change_feed", snapshot)
+        self.assertIn("nightly_manifest", snapshot)
         self.assertEqual(snapshot["risk"]["regime"], "CAUTION")
         self.assertEqual(snapshot["data_sources"]["history"]["last_source"], "stooq")
         self.assertEqual(snapshot["daily_recap"]["trade_count"], 2)
@@ -96,6 +108,12 @@ class SystemSnapshotTests(unittest.TestCase):
         self.assertEqual(snapshot["holdings"]["records"][0]["代码"], "AAPL")
         self.assertEqual(snapshot["watchlist"]["records"][0]["代码"], "MSFT")
         self.assertEqual(snapshot["alerts"][0]["title"], "AAPL 强烈买入")
+        self.assertEqual(snapshot["core_etf_snapshot"]["summary"]["accumulate_count"], 1)
+        self.assertEqual(snapshot["satellite_candidate_snapshot"]["summary"]["top_symbols"], ["MU", "ANET"])
+        self.assertEqual(snapshot["discipline_snapshot"]["regime"], "LIGHT")
+        self.assertEqual(snapshot["monthly_discipline_review"]["status"], "ALIGNED")
+        self.assertEqual(snapshot["change_feed"]["summary"]["high_count"], 1)
+        self.assertEqual(snapshot["nightly_manifest"]["status"], "completed")
 
     def test_append_snapshot_journal_writes_jsonl(self):
         from quant_core.snapshots.system_snapshot import append_snapshot_journal
@@ -108,6 +126,21 @@ class SystemSnapshotTests(unittest.TestCase):
             lines = journal_path.read_text(encoding="utf-8").splitlines()
             self.assertEqual(len(lines), 1)
             self.assertEqual(json.loads(lines[0])["generated_at"], "2026-05-10T00:00:00")
+
+    def test_load_snapshot_journal_reads_jsonl_rows(self):
+        from quant_core.snapshots.system_snapshot import load_snapshot_journal
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            journal_path = Path(temp_dir) / "nightly.jsonl"
+            journal_path.write_text(
+                '{"generated_at":"2026-05-10T00:00:00"}\n{"generated_at":"2026-05-11T00:00:00"}\n',
+                encoding="utf-8",
+            )
+
+            rows = load_snapshot_journal(journal_path=str(journal_path), limit=1)
+
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["generated_at"], "2026-05-11T00:00:00")
 
 
 if __name__ == "__main__":

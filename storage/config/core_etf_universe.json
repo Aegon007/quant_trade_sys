@@ -1,0 +1,46 @@
+{
+  "etfs": [
+    {
+      "symbol": "VOO",
+      "enabled": true,
+      "role": "broad_market",
+      "priority": 1,
+      "long_term_core": true
+    },
+    {
+      "symbol": "VTI",
+      "enabled": true,
+      "role": "broad_market",
+      "priority": 2,
+      "long_term_core": true
+    },
+    {
+      "symbol": "QQQ",
+      "enabled": true,
+      "role": "growth",
+      "priority": 3,
+      "long_term_core": true
+    },
+    {
+      "symbol": "SCHD",
+      "enabled": true,
+      "role": "dividend_quality",
+      "priority": 4,
+      "long_term_core": true
+    },
+    {
+      "symbol": "QUAL",
+      "enabled": true,
+      "role": "quality",
+      "priority": 5,
+      "long_term_core": true
+    },
+    {
+      "symbol": "SGOV",
+      "enabled": true,
+      "role": "cash_substitute",
+      "priority": 6,
+      "long_term_core": true
+    }
+  ]
+}

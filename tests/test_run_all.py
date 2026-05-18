@@ -241,6 +241,142 @@ class RunAllTests(unittest.TestCase):
         self.assertTrue(result)
         self.assertEqual(sent, [("hourly summary", "https://hooks.slack.com/services/from-env")])
 
+    def test_maybe_run_market_refresh_sends_discipline_alert_once_per_signature(self):
+        market_hours = datetime.fromisoformat("2026-05-11T10:30:00-04:00")
+        sent = []
+        original_load_change_feed = self.module.cfeed.load_change_feed
+        original_load_snapshot_journal = self.module.ss.load_snapshot_journal
+        self.addCleanup(setattr, self.module.cfeed, "load_change_feed", original_load_change_feed)
+        self.addCleanup(setattr, self.module.ss, "load_snapshot_journal", original_load_snapshot_journal)
+        self.module.cfeed.load_change_feed = lambda path=None: {
+            "generated_at": "2026-05-11T06:00:00",
+            "high_items": [
+                {
+                    "category": "discipline_month",
+                    "title": "月度纪律状态变化",
+                    "message": "月度纪律状态从 MONITOR 变为 CAUTION。",
+                }
+            ],
+        }
+        self.module.ss.load_snapshot_journal = lambda limit=1: [
+            {
+                "monthly_discipline_review": {
+                    "status": "CAUTION",
+                    "summary": "本月纪律偏离天数偏多，系统建议优先减少计划外交易与防守状态下的手动加仓。",
+                }
+            }
+        ]
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_path = Path(temp_dir) / "intraday_alert_state.json"
+            kwargs = dict(
+                now=market_hours,
+                loader=lambda: {"holdings": [{"symbol": "AAPL", "current_price": 100.0}], "watchlist": []},
+                refresher=lambda payload, **kwargs: ({**payload, "prices_last_updated": "2026-05-11T00:00:00"}, True),
+                saver=lambda payload: None,
+                refresh_interval_seconds=3600,
+                config_loader=lambda: {
+                    "slack": {"enabled": True, "webhook_url": "https://hooks.slack.com/services/test"},
+                    "alert_settings": {"send_hourly_market_summary": True},
+                },
+                summary_builder=lambda **kwargs: "hourly summary",
+                slack_sender=lambda text, url: (sent.append((text, url)) or True, "ok"),
+                enable_auto_quant_analysis=False,
+                intraday_alert_state_path=str(state_path),
+            )
+            self.module.maybe_run_market_refresh(**kwargs)
+            self.module.maybe_run_market_refresh(**kwargs)
+
+        self.assertEqual(len(sent), 2)
+        self.assertIn("Discipline alert:", sent[0][0])
+        self.assertNotIn("Discipline alert:", sent[1][0])
+
+    def test_maybe_run_market_refresh_sends_standalone_intraday_alert_when_hourly_summary_disabled(self):
+        market_hours = datetime.fromisoformat("2026-05-11T10:30:00-04:00")
+        sent = []
+        original_load_change_feed = self.module.cfeed.load_change_feed
+        original_load_snapshot_journal = self.module.ss.load_snapshot_journal
+        self.addCleanup(setattr, self.module.cfeed, "load_change_feed", original_load_change_feed)
+        self.addCleanup(setattr, self.module.ss, "load_snapshot_journal", original_load_snapshot_journal)
+        self.module.cfeed.load_change_feed = lambda path=None: {
+            "generated_at": "2026-05-11T06:00:00",
+            "high_items": [
+                {
+                    "category": "discipline_month",
+                    "title": "月度纪律状态变化",
+                    "message": "月度纪律状态从 MONITOR 变为 CAUTION。",
+                }
+            ],
+        }
+        self.module.ss.load_snapshot_journal = lambda limit=1: [
+            {"monthly_discipline_review": {"status": "CAUTION", "summary": "本月纪律偏离天数偏多。"}}
+        ]
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_path = Path(temp_dir) / "intraday_alert_state.json"
+            result = self.module.maybe_run_market_refresh(
+                now=market_hours,
+                loader=lambda: {"holdings": [{"symbol": "AAPL", "current_price": 100.0}], "watchlist": []},
+                refresher=lambda payload, **kwargs: ({**payload, "prices_last_updated": "2026-05-11T00:00:00"}, True),
+                saver=lambda payload: None,
+                refresh_interval_seconds=3600,
+                config_loader=lambda: {
+                    "slack": {"enabled": True, "webhook_url": "https://hooks.slack.com/services/test"},
+                    "alert_settings": {
+                        "send_hourly_market_summary": False,
+                        "send_intraday_alerts": True,
+                    },
+                },
+                slack_sender=lambda text, url: (sent.append((text, url)) or True, "ok"),
+                enable_auto_quant_analysis=False,
+                intraday_alert_state_path=str(state_path),
+            )
+
+        self.assertTrue(result)
+        self.assertEqual(len(sent), 1)
+        self.assertIn("本月纪律偏离天数偏多", sent[0][0])
+
+    def test_maybe_run_market_refresh_skips_discipline_alert_when_intraday_alerts_disabled(self):
+        market_hours = datetime.fromisoformat("2026-05-11T10:30:00-04:00")
+        sent = []
+        original_load_change_feed = self.module.cfeed.load_change_feed
+        original_load_snapshot_journal = self.module.ss.load_snapshot_journal
+        self.addCleanup(setattr, self.module.cfeed, "load_change_feed", original_load_change_feed)
+        self.addCleanup(setattr, self.module.ss, "load_snapshot_journal", original_load_snapshot_journal)
+        self.module.cfeed.load_change_feed = lambda path=None: {
+            "generated_at": "2026-05-11T06:00:00",
+            "high_items": [
+                {
+                    "category": "discipline_month",
+                    "title": "月度纪律状态变化",
+                    "message": "月度纪律状态从 MONITOR 变为 CAUTION。",
+                }
+            ],
+        }
+        self.module.ss.load_snapshot_journal = lambda limit=1: [
+            {"monthly_discipline_review": {"status": "CAUTION", "summary": "本月纪律偏离天数偏多。"}}
+        ]
+
+        result = self.module.maybe_run_market_refresh(
+            now=market_hours,
+            loader=lambda: {"holdings": [{"symbol": "AAPL", "current_price": 100.0}], "watchlist": []},
+            refresher=lambda payload, **kwargs: ({**payload, "prices_last_updated": "2026-05-11T00:00:00"}, True),
+            saver=lambda payload: None,
+            refresh_interval_seconds=3600,
+            config_loader=lambda: {
+                "slack": {"enabled": True, "webhook_url": "https://hooks.slack.com/services/test"},
+                "alert_settings": {
+                    "send_hourly_market_summary": False,
+                    "send_intraday_alerts": False,
+                },
+            },
+            slack_sender=lambda text, url: (sent.append((text, url)) or True, "ok"),
+            enable_auto_quant_analysis=False,
+        )
+
+        self.assertTrue(result)
+        self.assertEqual(sent, [])
+
     def test_maybe_run_market_refresh_auto_runs_quant_analysis_on_price_jump(self):
         now = datetime.fromisoformat("2026-05-11T10:30:00-04:00")
         data_before = {

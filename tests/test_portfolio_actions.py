@@ -306,6 +306,48 @@ class PortfolioActionsTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.actions.reconcile_portfolio_from_robinhood_imports()
 
+    def test_reconcile_portfolio_from_robinhood_imports_moves_closed_symbol_to_watchlist(self):
+        self.data_utils.save_data(
+            {
+                "account": {"cash_available": 0.0},
+                "holdings": [{"symbol": "AAPL", "shares": 1.0, "cost": 100.0, "current_price": 110.0, "sector": "Tech"}],
+                "watchlist": [],
+            }
+        )
+        self.transactions.save_transactions(
+            [
+                {
+                    "record_type": "TRADE",
+                    "event_type": "BUY",
+                    "side": "BUY",
+                    "date": "2026-05-10 09:30:00",
+                    "symbol": "AAPL",
+                    "shares": 1.0,
+                    "price": 100.0,
+                    "cost_basis": 100.0,
+                    "source": "ROBINHOOD_ACCOUNT_ACTIVITY_CSV",
+                },
+                {
+                    "record_type": "TRADE",
+                    "event_type": "SELL",
+                    "side": "SELL",
+                    "date": "2026-05-10 15:45:00",
+                    "symbol": "AAPL",
+                    "shares": 1.0,
+                    "price": 120.0,
+                    "proceeds": 120.0,
+                    "source": "ROBINHOOD_ACCOUNT_ACTIVITY_CSV",
+                },
+            ]
+        )
+
+        self.actions.reconcile_portfolio_from_robinhood_imports()
+        data = self.data_utils.load_data()
+
+        self.assertEqual(data["holdings"], [])
+        self.assertEqual([row["symbol"] for row in data["watchlist"]], ["AAPL"])
+        self.assertEqual(data["watchlist"][0]["last_price"], 110.0)
+
     def test_add_watch_symbol_appends_new_watch_without_cash_change(self):
         self.data_utils.save_data(
             {

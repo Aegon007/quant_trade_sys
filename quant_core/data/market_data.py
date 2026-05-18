@@ -16,6 +16,7 @@ _DEFAULT_STATUS = {
     "history": {
         "primary_requests": 0,
         "fallback_requests": 0,
+        "primary_source": "yfinance",
         "last_source": None,
         "last_symbol": None,
         "last_error": None,
@@ -23,6 +24,8 @@ _DEFAULT_STATUS = {
     "prices": {
         "primary_symbols": 0,
         "fallback_symbols": 0,
+        "primary_source": None,
+        "source_order": [],
         "last_source": None,
         "last_symbols": [],
         "last_error": None,
@@ -40,13 +43,28 @@ def get_market_data_status_snapshot():
     return deepcopy(_MARKET_DATA_STATUS)
 
 
+def configure_price_source_order(source_order):
+    status = _MARKET_DATA_STATUS["prices"]
+    normalized = []
+    seen = set()
+    for source in source_order or []:
+        name = str(source or "").strip().lower()
+        if not name or name in seen:
+            continue
+        normalized.append(name)
+        seen.add(name)
+    status["source_order"] = normalized
+    status["primary_source"] = normalized[0] if normalized else None
+
+
 def record_history_source(symbol: str, source: str, *, error=None):
     status = _MARKET_DATA_STATUS["history"]
     normalized_symbol = _normalize_symbol(symbol)
-    if str(source).lower() == "stooq":
-        status["fallback_requests"] += 1
-    else:
+    primary_source = str(status.get("primary_source") or "yfinance").strip().lower()
+    if str(source).lower() == primary_source:
         status["primary_requests"] += 1
+    else:
+        status["fallback_requests"] += 1
     status["last_source"] = str(source).lower()
     status["last_symbol"] = normalized_symbol
     status["last_error"] = None if error in (None, "") else str(error)
@@ -56,11 +74,17 @@ def record_price_source(symbols, source: str, *, error=None, count=None):
     status = _MARKET_DATA_STATUS["prices"]
     normalized_symbols = [_normalize_symbol(symbol) for symbol in (symbols or []) if str(symbol or "").strip()]
     resolved_count = int(count if count is not None else len(normalized_symbols))
-    if str(source).lower() == "stooq":
+    primary_source = str(status.get("primary_source") or "").strip().lower()
+    source_name = str(source).lower()
+    if primary_source and source_name == primary_source:
+        status["primary_symbols"] += resolved_count
+    elif primary_source:
+        status["fallback_symbols"] += resolved_count
+    elif source_name == "stooq":
         status["fallback_symbols"] += resolved_count
     else:
         status["primary_symbols"] += resolved_count
-    status["last_source"] = str(source).lower()
+    status["last_source"] = source_name
     status["last_symbols"] = normalized_symbols
     status["last_error"] = None if error in (None, "") else str(error)
 

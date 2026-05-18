@@ -1,12 +1,9 @@
-import streamlit as st
 import pandas as pd
-import html
 from datetime import datetime
 from strategies import ui as su
 from quant_core.events import analyst_consensus as ac
 from quant_core.portfolio import allocation as ca
 import deep_learning_strategy as dl_utils
-from quant_core.portfolio.metrics import PortfolioSummary, summarize_holdings
 from share_utils import format_share_quantity
 from quant_core.portfolio.position import recommend_position_action
 from signal_approval import approve_signal
@@ -143,6 +140,177 @@ def build_holdings_analysis_freshness_alert(holdings, analysis_snapshot, *, now=
     }
 
 
+def _friendly_market_source_name(source_name):
+    source = str(source_name or "").strip().lower()
+    if source == "stooq":
+        return "Stooq"
+    if source == "yfinance":
+        return "Yahoo"
+    if not source:
+        return "Unknown"
+    return source
+
+
+def build_manual_refresh_notice(data_source_status, tracked_symbol_count, *, lang="zh"):
+    prices = dict((data_source_status or {}).get("prices", {}) or {})
+    primary_source = _friendly_market_source_name(prices.get("primary_source"))
+    source_order = [
+        _friendly_market_source_name(source)
+        for source in list(prices.get("source_order", []) or [])
+        if str(source or "").strip()
+    ]
+    fallback_source = source_order[1] if len(source_order) > 1 else "备用源"
+    primary_hits = int(prices.get("primary_symbols") or 0)
+    fallback_hits = int(prices.get("fallback_symbols") or 0)
+    total_symbols = max(int(tracked_symbol_count or 0), 0)
+    unresolved = max(total_symbols - primary_hits - fallback_hits, 0)
+    last_error = str(prices.get("last_error") or "").strip()
+
+    if lang == "en":
+        fragments = [
+            f"Manual refresh checked {total_symbols} symbols.",
+            f"Primary {primary_source} resolved {primary_hits}.",
+            f"Fallback {fallback_source} resolved {fallback_hits}.",
+        ]
+        if unresolved > 0:
+            fragments.append(f"{unresolved} symbols still have no fresh price.")
+        if last_error:
+            fragments.append(f"Latest source note: {last_error}")
+    else:
+        fragments = [
+            f"本次强制刷新了 {total_symbols} 个标的。",
+            f"主源 {primary_source} 命中 {primary_hits} 个。",
+            f"回退到 {fallback_source} {fallback_hits} 个。",
+        ]
+        if unresolved > 0:
+            fragments.append(f"仍有 {unresolved} 个标的未拿到最新价格。")
+        if last_error:
+            fragments.append(f"最近一次源返回提示：{last_error}")
+
+    level = "warning" if unresolved > 0 else "success"
+    return {
+        "level": level,
+        "message": " ".join(fragments),
+        "primary_hits": primary_hits,
+        "fallback_hits": fallback_hits,
+        "unresolved_symbols": unresolved,
+        "tracked_symbols": total_symbols,
+        "primary_source": primary_source,
+        "fallback_source": fallback_source,
+    }
+
+
+def build_trade_plan_banner(plan, *, lang="zh"):
+    plan = dict(plan or {})
+    has_actions = bool(plan.get("has_actions"))
+    decision = str(plan.get("decision") or "").strip().upper()
+    action_count = int(plan.get("action_count") or len(list(plan.get("items", []) or [])) or 0)
+    summary_reason = str(plan.get("summary_reason") or "").strip()
+    plan_date = str(plan.get("plan_date") or "").strip()
+
+    if lang == "en":
+        if has_actions:
+            message = f"Tomorrow has {action_count} planned actions."
+            if plan_date:
+                message += f" Plan date: {plan_date}."
+            if summary_reason:
+                message += f" {summary_reason}"
+            return {
+                "level": "success" if action_count <= 3 else "warning",
+                "message": message.strip(),
+            }
+        message = "No trade actions for tomorrow. Hold current positions."
+        if summary_reason:
+            message += f" {summary_reason}"
+        return {"level": "info", "message": message.strip()}
+
+    if has_actions or decision == "ACTION":
+        message = f"明日有 {action_count} 条交易动作。"
+        if plan_date:
+            message += f" 计划日期：{plan_date}。"
+        if summary_reason:
+            message += f" {summary_reason}"
+        return {
+            "level": "success" if action_count <= 3 else "warning",
+            "message": message.strip(),
+        }
+
+    message = "明日无交易动作，建议持仓不动。"
+    if summary_reason:
+        message += f" {summary_reason}"
+    return {"level": "info", "message": message.strip()}
+
+
+def build_trade_plan_records(plan):
+    records = []
+    for item in list((plan or {}).get("items", []) or []):
+        records.append(
+            {
+                "代码": str(item.get("symbol") or "").strip().upper(),
+                "动作": str(item.get("plan_action") or "").strip().upper(),
+                "计划仓位变化": (
+                    f"{float(item.get('plan_weight_delta_pct') or 0.0):+.1f}%"
+                    if item.get("plan_weight_delta_pct") is not None
+                    else "—"
+                ),
+                "参考价": (
+                    f"${float(item.get('reference_price')):,.2f}"
+                    if item.get("reference_price") is not None
+                    else "—"
+                ),
+                "计划区间": _format_price_range(
+                    item.get("buy_zone_low") if item.get("buy_zone_low") is not None else item.get("trim_zone_low"),
+                    item.get("buy_zone_high") if item.get("buy_zone_high") is not None else item.get("trim_zone_high"),
+                ),
+                "追价上限": (
+                    f"${float(item.get('max_chase_price')):,.2f}"
+                    if item.get("max_chase_price") is not None
+                    else "—"
+                ),
+                "风险破坏位": (
+                    f"${float(item.get('risk_break_level')):,.2f}"
+                    if item.get("risk_break_level") is not None
+                    else "—"
+                ),
+                "失效条件": str(item.get("invalid_condition") or "").strip(),
+                "原因": str(item.get("reason") or "").strip(),
+            }
+        )
+    return records
+
+
+def build_execution_review_records(review):
+    records = []
+    for item in list((review or {}).get("items", []) or []):
+        in_zone = item.get("executed_in_plan_zone")
+        if in_zone is True:
+            zone_text = "是"
+        elif in_zone is False:
+            zone_text = "否"
+        else:
+            zone_text = "—"
+        records.append(
+            {
+                "代码": str(item.get("symbol") or "").strip().upper(),
+                "动作": str(item.get("plan_action") or "").strip().upper(),
+                "状态": str(item.get("status") or "").strip().upper(),
+                "成交均价": (
+                    f"${float(item.get('avg_execution_price')):,.2f}"
+                    if item.get("avg_execution_price") is not None
+                    else "—"
+                ),
+                "成交股数": (
+                    format_share_quantity(item.get("executed_shares"))
+                    if item.get("executed_shares") is not None
+                    else "—"
+                ),
+                "区间内执行": zone_text,
+                "匹配笔数": int(item.get("matched_trade_count") or 0),
+            }
+        )
+    return records
+
+
 def _holding_advice_label(advice):
     if not advice:
         return "持有"
@@ -180,6 +348,71 @@ def _watch_priority_score(signal, expected_return, backtest_return):
     except (TypeError, ValueError):
         pass
     return base
+
+
+def _event_summary_for_symbol(symbol, active_events):
+    symbol_text = str(symbol or "").strip().upper()
+    relevant = []
+    macro = []
+    for event in list(active_events or []):
+        event_symbols = [str(item or "").strip().upper() for item in list(getattr(event, "symbols", []) or []) if str(item or "").strip()]
+        if symbol_text and symbol_text in event_symbols:
+            relevant.append(event)
+        elif not event_symbols:
+            macro.append(event)
+    selected = relevant[:2] if relevant else macro[:1]
+    if not selected:
+        return ""
+    parts = []
+    for event in selected:
+        title = str(getattr(event, "title", "") or "").strip()
+        severity = str(getattr(event, "severity", "") or "").strip().lower()
+        sentiment = str(getattr(event, "sentiment", "") or "").strip().lower()
+        fragments = [title] if title else []
+        if severity:
+            fragments.append(severity)
+        if sentiment and sentiment != "neutral":
+            fragments.append(sentiment)
+        if fragments:
+            parts.append("/".join(fragments))
+    return "；".join(parts)
+
+
+def _watch_system_summary(
+    *,
+    signal,
+    reason,
+    allocation_fields,
+    consensus_fields,
+    freshness,
+    active_events=None,
+    symbol=None,
+):
+    fragments = []
+    signal_text = str(signal or "").strip().upper()
+    if signal_text:
+        fragments.append(f"量化信号 {signal_text}")
+    reason_text = str(reason or "").strip()
+    if reason_text:
+        fragments.append(reason_text)
+    allocation_reason = str((allocation_fields or {}).get("资金说明", "") or "").strip()
+    if allocation_reason and allocation_reason != reason_text:
+        fragments.append(allocation_reason)
+    analyst_status = str((consensus_fields or {}).get("分析师意见", "") or "").strip()
+    if analyst_status and analyst_status not in {"无数据", "中性"}:
+        fragments.append(f"分析师 {analyst_status}")
+    event_summary = _event_summary_for_symbol(symbol, active_events)
+    if event_summary:
+        fragments.append(f"事件 {event_summary}")
+    freshness_label = str((freshness or {}).get("label", "") or "").strip()
+    if freshness_label in {"偏旧", "过期", "无数据"}:
+        fragments.append(f"全量分析{freshness_label}")
+    if not fragments:
+        return "暂无动态摘要"
+    summary = " | ".join(fragments)
+    if len(summary) > 220:
+        return summary[:217] + "..."
+    return summary
 
 
 def _allocation_display_fields(
@@ -389,6 +622,7 @@ def build_watchlist_records(
     current_invested_dollars=None,
     analysis_snapshot=None,
     analysis_now=None,
+    active_events=None,
 ):
     analysis_map = _analysis_snapshot_map(analysis_snapshot)
     records = []
@@ -428,12 +662,21 @@ def build_watchlist_records(
             "选择": False,
             "序号": i,
             "代码": w["symbol"],
-            "备注": w.get("notes", ""),
+            "人工备注": w.get("notes", ""),
             "最新价": f"${last_price:,.2f}" if last_price else "—",
             "上涨预期价": _upside_price_range_display(last_price, signal_profile=signal_profile),
             "信号": signal,
             "提示": watch_hint,
             "信号说明": reason,
+            "系统摘要": _watch_system_summary(
+                signal=signal,
+                reason=reason,
+                allocation_fields=allocation_fields,
+                consensus_fields=consensus_fields,
+                freshness=freshness,
+                active_events=active_events,
+                symbol=w["symbol"],
+            ),
             "回测收益": backtest_payload.get("total_return"),
             "MC预期": monte_carlo_payload.get("expected_return"),
             "最近全量分析时间": freshness["display"],
@@ -445,179 +688,6 @@ def build_watchlist_records(
         })
     records.sort(key=lambda row: float(row.get("排序分数") or 0.0), reverse=True)
     return records
-
-def render_holdings_table(
-    data,
-    on_price_change,
-    on_delete,
-    on_buy,
-    on_sell,
-    on_move_to_watch,
-    strategy,
-    risk_gate=None,
-    analyst_consensus_cache=None,
-    allocation_regime=None,
-    analysis_snapshot=None,
-):
-    if not data["holdings"]:
-        st.info("暂无持仓，请在侧边栏添加。")
-        return PortfolioSummary(), []
-
-    summary = summarize_holdings(data["holdings"])
-    records = build_holding_records(
-        data["holdings"],
-        strategy,
-        summary.total_value,
-        risk_gate=risk_gate,
-        analyst_consensus_cache=analyst_consensus_cache,
-        allocation_regime=allocation_regime,
-        analysis_snapshot=analysis_snapshot,
-    )
-    df = pd.DataFrame(records)
-
-    edited_df = st.data_editor(
-        df,
-        column_config={
-            "序号": None,
-            "股数": st.column_config.NumberColumn("股数", min_value=0.0, step=0.001, format="%.3f"),
-            "现价": st.column_config.NumberColumn("现价 (USD)", min_value=0.0, step=0.01, format="%.2f"),
-            "市值": st.column_config.NumberColumn("市值 (USD)", format="%.2f"),
-            "盈亏 ($)": st.column_config.NumberColumn("盈亏 ($)", format="%.2f"),
-            "盈亏 (%)": st.column_config.NumberColumn("盈亏 (%)", format="%.2f"),
-            "数据来源": None,
-            "信号": None,
-            "信号说明": None,
-            "当前仓位": None,
-            "目标仓位": None,
-            "仓位建议": None,
-            "仓位说明": None,
-            "回测收益": None,
-            "回测胜率": None,
-            "MC预期": None,
-            "最近全量分析时间": None,
-            "分析新鲜度": None,
-            "分析新鲜度颜色": None,
-            "退出参考": None,
-            "分析师意见": None,
-            "分析师看多": None,
-            "分析师看空": None,
-            "分析师样本": None,
-            "分析师说明": None,
-        },
-        disabled=[
-            "序号", "代码", "股数", "成本价", "市值", "盈亏 ($)", "盈亏 (%)",
-            "数据来源", "信号", "信号说明", "当前仓位", "目标仓位", "仓位建议", "仓位说明",
-            "回测收益", "回测胜率", "MC预期", "最近全量分析时间", "分析新鲜度", "分析新鲜度颜色", "退出参考",
-            "分析师意见", "分析师看多", "分析师看空", "分析师样本", "分析师说明",
-        ],
-        hide_index=True,
-        width="stretch",
-        key="holdings_editor"
-    )
-
-    price_updated = False
-    for idx, row in edited_df.iterrows():
-        new_price = row["现价"]
-        if not pd.isna(new_price):
-            old_price = data["holdings"][idx].get("current_price")
-            if old_price != new_price:
-                on_price_change(idx, new_price)
-                price_updated = True
-
-    if price_updated:
-        st.rerun()
-
-    # 渲染表格头部
-    cols = st.columns([1.0, 0.85, 0.85, 0.85, 1.05, 1.0, 0.9, 0.9, 0.95, 1.25, 0.85, 0.95, 1.05, 0.7, 0.7, 0.7, 0.7, 1.0])
-    headers = ["代码", "股数", "成本价", "现价", "市值", "盈亏 ($)", "盈亏 (%)", "回测", "MC预期", "全量分析", "退出参考", "仓位建议", "信号", "买入", "卖出", "编辑", "删除", "转到关注"]
-    for col, h in zip(cols, headers):
-        col.markdown(f"**{h}**")
-
-    for i, row in enumerate(records):
-        c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11, c12, c13, c14, c15, c16, c17, c18 = st.columns(
-            [1.0, 0.85, 0.85, 0.85, 1.05, 1.0, 0.9, 0.9, 0.95, 1.25, 0.85, 0.95, 1.05, 0.7, 0.7, 0.7, 0.7, 1.0]
-        )
-        signal_reason = html.escape(str(row["信号说明"]))
-        advice_reason = html.escape(str(row["仓位说明"]))
-        advice_text = html.escape(str(row["仓位建议"]))
-        c1.write(row["代码"])
-        c2.write(format_share_quantity(row["股数"]))
-        c3.write(f"${row['成本价']:,.2f}")
-        c4.write(f"${row['现价']:,.2f}" if row["现价"] is not None else "—")
-        c5.write(f"${row['市值']:,.2f}" if row["市值"] is not None else "—")
-        pl_val = row["盈亏 ($)"]
-        if pl_val is not None:
-            color = "#0b7b44" if pl_val >= 0 else "#c2410c"
-            c6.markdown(f"<span style='color:{color};'>${pl_val:+,.2f}</span>", unsafe_allow_html=True)
-        else:
-            c6.write("—")
-        pl_pct_val = row["盈亏 (%)"]
-        if pl_pct_val is not None:
-            color = "#0b7b44" if pl_pct_val >= 0 else "#c2410c"
-            c7.markdown(f"<span style='color:{color};'>{pl_pct_val:+.2f}%</span>", unsafe_allow_html=True)
-        else:
-            c7.write("—")
-        bt_return = row.get("回测收益")
-        bt_win_rate = row.get("回测胜率")
-        bt_text = "—"
-        if bt_return is not None:
-            bt_text = f"{float(bt_return):+.2%}"
-            if bt_win_rate is not None:
-                bt_text = f"{bt_text} / {float(bt_win_rate):.0%}"
-        c8.write(bt_text)
-        mc_expected = row.get("MC预期")
-        c9.write(f"{float(mc_expected):+.2%}" if mc_expected is not None else "—")
-        freshness_text = html.escape(str(row.get("分析新鲜度", "无数据")))
-        freshness_color = html.escape(str(row.get("分析新鲜度颜色", "#6b7280")))
-        analysis_time_text = html.escape(str(row.get("最近全量分析时间", "—")))
-        c10.markdown(
-            f"<span style='color:{freshness_color};' title='{freshness_text}'>{analysis_time_text}</span>",
-            unsafe_allow_html=True,
-        )
-        exit_price = row.get("退出参考")
-        c11.write(f"${float(exit_price):,.2f}" if exit_price is not None else "—")
-        c12.markdown(
-            f"<span title='{advice_reason}'>{advice_text} ({row['目标仓位']:.1f}%)</span>",
-            unsafe_allow_html=True
-        )
-
-        # 信号列
-        signal = row["信号"]
-        if signal == "BUY":
-            c13.markdown(f"<span style='color:#0b7b44; font-weight:bold;' title='{signal_reason}'>买入</span>", unsafe_allow_html=True)
-        elif signal == "SELL":
-            c13.markdown(f"<span style='color:#c2410c; font-weight:bold;' title='{signal_reason}'>卖出</span>", unsafe_allow_html=True)
-        else:
-            c13.markdown(f"<span style='color:#6b7280;' title='{signal_reason}'>持有</span>", unsafe_allow_html=True)
-
-        if c14.button("🛒", key=f"buy_{i}", help="买入加仓"):
-            result = on_buy(i)
-            if result is not False:
-                st.rerun()
-
-        if c15.button("💰", key=f"sell_{i}", help="卖出"):
-            result = on_sell(i)
-            if result is not False:
-                st.rerun()
-
-        if c16.button("✏️", key=f"edit_{i}", help="编辑"):
-            st.session_state.editing_holding = i
-            st.rerun()
-
-        if c17.button("🗑️", key=f"del_{i}"):
-            result = on_delete(i)
-            if result is not False:
-                st.rerun()
-        if c18.button("转到关注", key=f"to_watch_{i}", help="清仓并转入关注列表"):
-            result = on_move_to_watch(i)
-            if result is not False:
-                st.rerun()
-
-    if summary.missing_price_count:
-        st.caption(f"注：有 {summary.missing_price_count} 个持仓缺少现价，盈亏仅基于已定价持仓计算。")
-    return summary, records
-
-
 def _watch_hint_by_signal(signal):
     normalized = str(signal or "").strip().upper()
     if normalized == "STRONG_BUY":
@@ -629,101 +699,3 @@ def _watch_hint_by_signal(signal):
     if normalized == "SELL":
         return "不可买入", "#c2410c"
     return "观望", "#6b7280"
-
-
-def render_watchlist_table(
-    data,
-    on_delete_batch,
-    on_move_to_holding,
-    strategy=None,
-    analyst_consensus_cache=None,
-    risk_gate=None,
-    allocation_regime=None,
-    analysis_snapshot=None,
-):
-    if not data["watchlist"]:
-        st.info("暂无关注标的，请在侧边栏添加。")
-        return []
-
-    current_invested_dollars = summarize_holdings(data.get("holdings", [])).total_value
-    records = build_watchlist_records(
-        data["watchlist"],
-        strategy=strategy,
-        analyst_consensus_cache=analyst_consensus_cache,
-        account=data.get("account", {}),
-        risk_gate=risk_gate,
-        allocation_regime=allocation_regime,
-        current_invested_dollars=current_invested_dollars,
-        analysis_snapshot=analysis_snapshot,
-    )
-
-    df = pd.DataFrame(records)
-    edited_df = st.data_editor(
-        df,
-        column_config={
-            "选择": st.column_config.CheckboxColumn("选择", default=False),
-            "序号": None,
-            "分析新鲜度颜色": None,
-        },
-        disabled=[
-            "序号", "代码", "备注", "最新价", "上涨预期价",
-            "信号", "提示", "信号说明", "最近全量分析时间", "分析新鲜度", "分析新鲜度颜色",
-            "建议动作", "建议投入", "建议股数", "资金说明",
-            "分析师意见", "分析师看多", "分析师看空", "分析师样本", "分析师说明",
-        ],
-        hide_index=True,
-        width="stretch",
-        key="watchlist_editor"
-    )
-
-    selected_indices = [int(row["序号"]) for _, row in edited_df.iterrows() if row["选择"]]
-    if selected_indices:
-        if st.button(f"🗑️ 批量删除选中 ({len(selected_indices)})", type="secondary"):
-            result = on_delete_batch(selected_indices)
-            if result is not False:
-                st.rerun()
-
-    st.markdown("**单条操作**")
-    header_cols = st.columns([1.0, 0.9, 0.9, 0.9, 1.15, 1.1, 1.0, 0.9, 1.8, 1.1])
-    header_cols[0].markdown("**代码**")
-    header_cols[1].markdown("**提示**")
-    header_cols[2].markdown("**回测**")
-    header_cols[3].markdown("**MC预期**")
-    header_cols[4].markdown("**全量分析**")
-    header_cols[5].markdown("**建议投入**")
-    header_cols[6].markdown("**建议股数**")
-    header_cols[7].markdown("**分析师**")
-    header_cols[8].markdown("**原因**")
-    header_cols[9].markdown("**操作**")
-    for row in records:
-        hint_text, hint_color = _watch_hint_by_signal(row.get("信号"))
-        c1, c2, c3, c4, c5, c6, c7, c8, c9, c10 = st.columns([1.0, 0.9, 0.9, 0.9, 1.15, 1.1, 1.0, 0.9, 1.8, 1.1])
-        c1.write(row["代码"])
-        c2.markdown(
-            f"<span style='color:{hint_color}; font-weight:bold;'>{hint_text}</span>",
-            unsafe_allow_html=True,
-        )
-        bt_return = row.get("回测收益")
-        c3.write(f"{float(bt_return):+.2%}" if bt_return is not None else "—")
-        mc_expected = row.get("MC预期")
-        c4.write(f"{float(mc_expected):+.2%}" if mc_expected is not None else "—")
-        freshness_text = html.escape(str(row.get("分析新鲜度", "无数据")))
-        freshness_color = html.escape(str(row.get("分析新鲜度颜色", "#6b7280")))
-        analysis_time_text = html.escape(str(row.get("最近全量分析时间", "—")))
-        c5.markdown(
-            f"<span style='color:{freshness_color};' title='{freshness_text}'>{analysis_time_text}</span>",
-            unsafe_allow_html=True,
-        )
-        allocation_reason = html.escape(str(row.get("资金说明", "")))
-        c6.markdown(f"<span title='{allocation_reason}'>{row.get('建议投入', '—')}</span>", unsafe_allow_html=True)
-        c7.write(row.get("建议股数", "—"))
-        analyst_status = html.escape(str(row.get("分析师意见", "无数据")))
-        analyst_reason = html.escape(str(row.get("分析师说明", "")))
-        c8.markdown(f"<span title='{analyst_reason}'>{analyst_status}</span>", unsafe_allow_html=True)
-        reason = html.escape(str(row.get("信号说明", "")))
-        c9.markdown(f"<span title='{reason}'>{reason}</span>", unsafe_allow_html=True)
-        if c10.button("转到持仓", key=f"to_holding_{row['序号']}", help="打开窗口输入转入股数"):
-            result = on_move_to_holding(row["序号"])
-            if result is not False:
-                st.rerun()
-    return records

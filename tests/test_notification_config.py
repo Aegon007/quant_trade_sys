@@ -22,9 +22,14 @@ class NotificationConfigTests(unittest.TestCase):
         self.assertFalse(config["slack"]["enabled"])
         self.assertTrue(config["alert_settings"]["send_hourly_market_summary"])
         self.assertTrue(config["alert_settings"]["send_hourly_market_summary_market_hours_only"])
+        self.assertTrue(config["alert_settings"]["send_premarket_brief"])
+        self.assertTrue(config["alert_settings"]["send_intraday_alerts"])
         self.assertTrue(config["alert_settings"]["enable_auto_quant_analysis"])
         self.assertEqual(config["alert_settings"]["auto_quant_analysis_min_interval_seconds"], 7200)
         self.assertEqual(config["alert_settings"]["auto_quant_analysis_price_jump_pct"], 0.03)
+        self.assertEqual(config["llm"]["provider"], "openai")
+        self.assertEqual(config["llm"]["base_url"], "https://api.openai.com/v1")
+        self.assertEqual(config["local_slm"]["model"], "Qwen/Qwen3-0.6B")
 
     def test_save_and_load_normalizes_recipients(self):
         self.module.save_notification_config(
@@ -67,6 +72,22 @@ class NotificationConfigTests(unittest.TestCase):
         self.assertEqual(config["email"]["username"], "sender@outlook.com")
         self.assertEqual(config["email"]["password"], "secret")
 
+    def test_apply_llm_preset_updates_endpoint_and_model(self):
+        config = self.module.apply_llm_preset({}, "openrouter")
+
+        self.assertEqual(config["llm"]["provider"], "openrouter")
+        self.assertEqual(config["llm"]["base_url"], "https://openrouter.ai/api/v1")
+        self.assertEqual(config["llm"]["model"], "openai/gpt-4.1-mini")
+
+    def test_apply_local_slm_preset_sets_qwen_defaults(self):
+        config = self.module.apply_local_slm_preset({})
+
+        self.assertTrue(config["local_slm"]["enabled"])
+        self.assertEqual(config["local_slm"]["provider"], "openai")
+        self.assertEqual(config["local_slm"]["base_url"], "http://127.0.0.1:8000/v1")
+        self.assertEqual(config["local_slm"]["model"], "Qwen/Qwen3-0.6B")
+        self.assertEqual(config["local_slm"]["api_key"], "EMPTY")
+
     def test_redact_secret_keeps_suffix_only(self):
         self.assertEqual(self.module.redact_secret("abcdef123456"), "********3456")
 
@@ -81,6 +102,10 @@ class NotificationConfigTests(unittest.TestCase):
                 "SMTP_PASSWORD": "secret",
                 "ALERT_EMAIL_TO": "target@gmail.com",
                 "SMTP_STARTTLS": "false",
+                "LLM_API_BASE_URL": "https://api.openai.com/v1",
+                "LLM_API_KEY": "llm-secret",
+                "LLM_MODEL": "gpt-5-mini",
+                "LLM_PROVIDER": "openai",
             },
         )
 
@@ -91,6 +116,31 @@ class NotificationConfigTests(unittest.TestCase):
         self.assertEqual(config["email"]["smtp_port"], 2525)
         self.assertFalse(config["email"]["use_starttls"])
         self.assertEqual(config["email"]["to_emails"], ["target@gmail.com"])
+        self.assertTrue(config["llm"]["enabled"])
+        self.assertEqual(config["llm"]["api_key"], "llm-secret")
+        self.assertEqual(config["llm"]["model"], "gpt-5-mini")
+        self.assertEqual(config["llm"]["provider"], "openai")
+        self.assertFalse(config["local_slm"]["enabled"])
+
+    def test_apply_environment_overrides_supports_local_slm(self):
+        config = self.module.apply_environment_overrides(
+            {},
+            environ={
+                "LOCAL_SLM_ENABLED": "true",
+                "LOCAL_SLM_PROVIDER": "openai",
+                "LOCAL_SLM_API_BASE_URL": "http://127.0.0.1:8000/v1",
+                "LOCAL_SLM_API_KEY": "EMPTY",
+                "LOCAL_SLM_MODEL": "Qwen/Qwen3-0.6B",
+                "LOCAL_SLM_TEMPERATURE": "0.2",
+                "LOCAL_SLM_MAX_TOKENS": "180",
+                "LOCAL_SLM_TIMEOUT_SECONDS": "15",
+            },
+        )
+
+        self.assertTrue(config["local_slm"]["enabled"])
+        self.assertEqual(config["local_slm"]["base_url"], "http://127.0.0.1:8000/v1")
+        self.assertEqual(config["local_slm"]["model"], "Qwen/Qwen3-0.6B")
+        self.assertEqual(config["local_slm"]["max_tokens"], 180)
 
     def test_save_and_load_normalizes_auto_quant_analysis_settings(self):
         self.module.save_notification_config(
@@ -99,6 +149,8 @@ class NotificationConfigTests(unittest.TestCase):
                     "enable_auto_quant_analysis": False,
                     "auto_quant_analysis_min_interval_seconds": "5400",
                     "auto_quant_analysis_price_jump_pct": "0.045",
+                    "send_premarket_brief": False,
+                    "send_intraday_alerts": False,
                 }
             },
             self.config_path,
@@ -109,6 +161,39 @@ class NotificationConfigTests(unittest.TestCase):
         self.assertFalse(config["alert_settings"]["enable_auto_quant_analysis"])
         self.assertEqual(config["alert_settings"]["auto_quant_analysis_min_interval_seconds"], 5400)
         self.assertEqual(config["alert_settings"]["auto_quant_analysis_price_jump_pct"], 0.045)
+        self.assertFalse(config["alert_settings"]["send_premarket_brief"])
+        self.assertFalse(config["alert_settings"]["send_intraday_alerts"])
+
+    def test_save_and_load_normalizes_llm_settings(self):
+        self.module.save_notification_config(
+            {
+                "llm": {
+                    "enabled": True,
+                    "provider": "openrouter",
+                    "base_url": " https://openrouter.ai/api/v1 ",
+                    "api_key": "secret",
+                    "model": "openai/gpt-4.1-mini",
+                    "temperature": "0.4",
+                    "max_tokens": "512",
+                    "timeout_seconds": "45",
+                    "site_url": "https://example.com",
+                    "app_name": "quant-test",
+                }
+            },
+            self.config_path,
+        )
+
+        config = self.module.load_notification_config(self.config_path)
+
+        self.assertTrue(config["llm"]["enabled"])
+        self.assertEqual(config["llm"]["provider"], "openrouter")
+        self.assertEqual(config["llm"]["base_url"], "https://openrouter.ai/api/v1")
+        self.assertEqual(config["llm"]["model"], "openai/gpt-4.1-mini")
+        self.assertEqual(config["llm"]["temperature"], 0.4)
+        self.assertEqual(config["llm"]["max_tokens"], 512)
+        self.assertEqual(config["llm"]["timeout_seconds"], 45)
+        self.assertEqual(config["llm"]["site_url"], "https://example.com")
+        self.assertEqual(config["llm"]["app_name"], "quant-test")
 
 
 if __name__ == "__main__":

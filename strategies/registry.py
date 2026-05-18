@@ -1,4 +1,4 @@
-from module_loader import import_from_path
+from importlib import import_module
 
 
 DEFAULT_STRATEGY_CLASSES = {
@@ -6,10 +6,16 @@ DEFAULT_STRATEGY_CLASSES = {
     "bollinger": "strategies.classic_strategies.BollingerStrategy",
     "macd": "strategies.classic_strategies.MACDStrategy",
     "rsi": "strategies.classic_strategies.RSIStrategy",
-    "ml_lightgbm": "strategies.ml_strategy.LightGBMStrategy",
-    "ensemble_voting": "strategies.ensemble_strategy.EnsembleVotingStrategy",
     "deep_tcn": "strategies.deep_learning_strategy.DeepTCNStrategy",
 }
+
+
+def _import_from_path(dotted_path):
+    module_name, _, attr_name = str(dotted_path or "").rpartition(".")
+    if not module_name or not attr_name:
+        raise ValueError(f"Invalid import path: {dotted_path}")
+    module = import_module(module_name)
+    return getattr(module, attr_name)
 
 
 def create_strategy(strategy_config):
@@ -20,7 +26,7 @@ def create_strategy(strategy_config):
     if not class_path:
         raise ValueError(f"未知策略: {strategy_id}")
 
-    strategy_class = import_from_path(class_path)
+    strategy_class = _import_from_path(class_path)
     if strategy_config.get("params_mode") == "dict":
         return strategy_class(params)
     return strategy_class(**params)

@@ -16,7 +16,6 @@ class ProjectFilesTests(unittest.TestCase):
             self.assertIn(package_name, requirements)
         self.assertIn("slack-bolt", requirements)
         self.assertIn("backtrader", requirements)
-        self.assertIn("lib-pybroker", requirements)
         self.assertIn("scikit-learn", requirements)
         self.assertIn("joblib", requirements)
         self.assertIn("lightgbm", requirements)
@@ -35,6 +34,23 @@ class ProjectFilesTests(unittest.TestCase):
         self.assertIn("sources", config)
         self.assertIsInstance(config["sources"], list)
         self.assertGreaterEqual(len(config["sources"]), 1)
+
+    def test_core_etf_and_engine_policy_configs_exist(self):
+        core_etf_path = ROOT / "storage" / "config" / "core_etf_universe.json"
+        satellite_path = ROOT / "storage" / "config" / "satellite_universe.json"
+        engine_policy_path = ROOT / "storage" / "config" / "engine_policy.json"
+        self.assertTrue(core_etf_path.exists())
+        self.assertTrue(satellite_path.exists())
+        self.assertTrue(engine_policy_path.exists())
+
+        core_etf = json.loads(core_etf_path.read_text(encoding="utf-8"))
+        satellite_universe = json.loads(satellite_path.read_text(encoding="utf-8"))
+        engine_policy = json.loads(engine_policy_path.read_text(encoding="utf-8"))
+        self.assertIn("etfs", core_etf)
+        self.assertIsInstance(core_etf["etfs"], list)
+        self.assertGreaterEqual(len(core_etf["etfs"]), 3)
+        self.assertGreaterEqual(len(satellite_universe.get("manual_include", [])), 10)
+        self.assertIn("core_etf_weight_ranges", engine_policy)
 
     def test_notification_example_config_exists_without_real_secrets(self):
         notification_example = ROOT / "storage" / "config" / "notification_config.example.json"

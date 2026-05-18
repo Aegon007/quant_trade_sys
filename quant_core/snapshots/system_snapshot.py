@@ -53,6 +53,15 @@ def build_system_snapshot(
     allocation_regime: Optional[Mapping] = None,
     daily_recap: Optional[Mapping] = None,
     signal_attribution: Optional[Mapping] = None,
+    trade_plan: Optional[Mapping] = None,
+    execution_review: Optional[Mapping] = None,
+    core_etf_snapshot: Optional[Mapping] = None,
+    satellite_candidate_snapshot: Optional[Mapping] = None,
+    discipline_snapshot: Optional[Mapping] = None,
+    monthly_discipline_review: Optional[Mapping] = None,
+    intraday_event_summary: Optional[Mapping] = None,
+    change_feed: Optional[Mapping] = None,
+    nightly_manifest: Optional[Mapping] = None,
     generated_at: Optional[datetime] = None,
 ) -> dict:
     generated_at = generated_at or datetime.now()
@@ -88,6 +97,15 @@ def build_system_snapshot(
         "allocation_regime": dict(allocation_regime or {}),
         "daily_recap": dict(daily_recap or {}),
         "signal_attribution": dict(signal_attribution or {}),
+        "trade_plan": dict(trade_plan or {}),
+        "execution_review": dict(execution_review or {}),
+        "core_etf_snapshot": dict(core_etf_snapshot or {}),
+        "satellite_candidate_snapshot": dict(satellite_candidate_snapshot or {}),
+        "discipline_snapshot": dict(discipline_snapshot or {}),
+        "monthly_discipline_review": dict(monthly_discipline_review or {}),
+        "intraday_event_summary": dict(intraday_event_summary or {}),
+        "change_feed": dict(change_feed or {}),
+        "nightly_manifest": dict(nightly_manifest or {}),
     }
 
 
@@ -98,3 +116,21 @@ def append_snapshot_journal(snapshot, journal_path=DEFAULT_NIGHTLY_JOURNAL_FILE)
     with open(journal_path, "a", encoding="utf-8") as f:
         f.write(json.dumps(snapshot, ensure_ascii=False) + "\n")
     return journal_path
+
+
+def load_snapshot_journal(*, journal_path=DEFAULT_NIGHTLY_JOURNAL_FILE, limit=None):
+    if not os.path.exists(journal_path):
+        return []
+    rows = []
+    with open(journal_path, "r", encoding="utf-8") as f:
+        for line in f:
+            text = str(line or "").strip()
+            if not text:
+                continue
+            try:
+                rows.append(json.loads(text))
+            except Exception:
+                continue
+    if limit is not None:
+        return rows[-max(0, int(limit or 0)) :]
+    return rows

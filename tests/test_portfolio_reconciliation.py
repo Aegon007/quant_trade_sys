@@ -114,6 +114,47 @@ class PortfolioReconciliationTests(unittest.TestCase):
         self.assertTrue(any("AAPL" in issue for issue in result["issues"]))
         self.assertEqual(result["holdings"], [])
 
+    def test_build_robinhood_reconciled_portfolio_moves_fully_sold_symbol_back_to_watchlist(self):
+        from quant_core.portfolio.reconciliation import build_robinhood_reconciled_portfolio
+
+        records = [
+            {
+                "record_type": "TRADE",
+                "event_type": "BUY",
+                "side": "BUY",
+                "date": "2026-05-10 09:30:00",
+                "symbol": "AAPL",
+                "shares": 1.0,
+                "price": 100.0,
+                "cost_basis": 100.0,
+                "source": "ROBINHOOD_ACCOUNT_ACTIVITY_CSV",
+            },
+            {
+                "record_type": "TRADE",
+                "event_type": "SELL",
+                "side": "SELL",
+                "date": "2026-05-10 15:45:00",
+                "symbol": "AAPL",
+                "shares": 1.0,
+                "price": 120.0,
+                "proceeds": 120.0,
+                "source": "ROBINHOOD_ACCOUNT_ACTIVITY_CSV",
+            },
+        ]
+
+        result = build_robinhood_reconciled_portfolio(
+            records,
+            existing_data={
+                "account": {},
+                "holdings": [{"symbol": "AAPL", "shares": 1.0, "cost": 90.0, "current_price": 118.0, "sector": "Tech"}],
+                "watchlist": [],
+            },
+        )
+
+        self.assertEqual(result["holdings"], [])
+        self.assertEqual([row["symbol"] for row in result["watchlist"]], ["AAPL"])
+        self.assertEqual(result["watchlist"][0]["last_price"], 118.0)
+
 
 if __name__ == "__main__":
     unittest.main()

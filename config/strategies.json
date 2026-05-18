@@ -55,47 +55,6 @@
       }
     },
     {
-      "id": "ml_lightgbm",
-      "name": "🤖 LightGBM ML 策略",
-      "enabled": false,
-      "description": "**🤖 LightGBM 机器学习策略 (仅做多)**\n- **逻辑**：使用 LightGBM 梯度提升树模型，通过滚动训练预测未来5日收益率方向。\n- **交易规则**：\n    - **买入信号**：模型预测上涨概率 > 0.55。\n    - **卖出信号**：模型预测上涨概率 < 0.45，或持仓超过 20 个交易日。",
-      "function": "backtest_ml_lightgbm",
-      "strategy_class": "strategies.ml_strategy.LightGBMStrategy",
-      "signal_function": "ml_strategy.get_ml_signal",
-      "params_mode": "dict",
-      "params": {
-        "lookback": 252,
-        "train_window": 60,
-        "retrain_freq": 20,
-        "target_horizon": 5,
-        "buy_threshold": 0.55,
-        "sell_threshold": 0.45,
-        "max_holding_days": 20,
-        "n_trials": 30,
-        "period": "2y"
-      }
-    },
-    {
-      "id": "ensemble_voting",
-      "name": "🤝 集成投票 (LightGBM+CatBoost+XGBoost)",
-      "enabled": false,
-      "description": "**🤝 集成学习投票策略 (仅做多)**\n- **逻辑**：同时使用 LightGBM、CatBoost、XGBoost 三个模型预测，取概率平均值作为最终信号，降低单一模型过拟合风险。\n- **交易规则**：\n    - **买入信号**：平均预测上涨概率 > 0.55。\n    - **卖出信号**：平均预测上涨概率 < 0.45，或持仓超过 20 个交易日。",
-      "function": "backtest_ensemble_voting",
-      "strategy_class": "strategies.ensemble_strategy.EnsembleVotingStrategy",
-      "signal_function": "ml_strategy.get_ensemble_signal",
-      "params_mode": "dict",
-      "params": {
-        "lookback": 252,
-        "train_window": 60,
-        "retrain_freq": 20,
-        "target_horizon": 5,
-        "buy_threshold": 0.55,
-        "sell_threshold": 0.45,
-        "max_holding_days": 20,
-        "period": "2y"
-      }
-    },
-    {
       "id": "deep_tcn",
       "name": "🧠 TCN 深度学习策略",
       "enabled": true,

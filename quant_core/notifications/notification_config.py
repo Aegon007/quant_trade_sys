@@ -9,6 +9,39 @@ qpaths.bootstrap_storage_paths()
 NOTIFICATION_CONFIG_FILE = qpaths.NOTIFICATION_CONFIG_FILE
 DEFAULT_AUTO_QUANT_ANALYSIS_MIN_INTERVAL_SECONDS = 7200
 DEFAULT_AUTO_QUANT_ANALYSIS_PRICE_JUMP_PCT = 0.03
+DEFAULT_LLM_TIMEOUT_SECONDS = 30
+DEFAULT_LLM_MAX_TOKENS = 300
+DEFAULT_LLM_TEMPERATURE = 0.2
+DEFAULT_LOCAL_SLM_TIMEOUT_SECONDS = 20
+DEFAULT_LOCAL_SLM_MAX_TOKENS = 220
+DEFAULT_LOCAL_SLM_TEMPERATURE = 0.1
+
+LLM_PRESETS = {
+    "openai": {
+        "provider": "openai",
+        "base_url": "https://api.openai.com/v1",
+        "model": "gpt-5-mini",
+        "site_url": "",
+        "app_name": "quant-trade-system",
+    },
+    "openrouter": {
+        "provider": "openrouter",
+        "base_url": "https://openrouter.ai/api/v1",
+        "model": "openai/gpt-4.1-mini",
+        "site_url": "",
+        "app_name": "quant-trade-system",
+    },
+}
+
+LOCAL_SLM_PRESET = {
+    "provider": "openai",
+    "base_url": "http://127.0.0.1:8000/v1",
+    "api_key": "EMPTY",
+    "model": "Qwen/Qwen3-0.6B",
+    "temperature": DEFAULT_LOCAL_SLM_TEMPERATURE,
+    "max_tokens": DEFAULT_LOCAL_SLM_MAX_TOKENS,
+    "timeout_seconds": DEFAULT_LOCAL_SLM_TIMEOUT_SECONDS,
+}
 
 OUTLOOK_SMTP_PRESET = {
     "smtp_host": "smtp-mail.outlook.com",
@@ -29,9 +62,27 @@ DEFAULT_NOTIFICATION_CONFIG = {
         "from_email": "",
         "to_emails": [],
     },
+    "llm": {
+        "enabled": False,
+        "provider": "openai",
+        "base_url": LLM_PRESETS["openai"]["base_url"],
+        "api_key": "",
+        "model": LLM_PRESETS["openai"]["model"],
+        "temperature": DEFAULT_LLM_TEMPERATURE,
+        "max_tokens": DEFAULT_LLM_MAX_TOKENS,
+        "timeout_seconds": DEFAULT_LLM_TIMEOUT_SECONDS,
+        "site_url": "",
+        "app_name": "quant-trade-system",
+    },
+    "local_slm": {
+        "enabled": False,
+        **LOCAL_SLM_PRESET,
+    },
     "alert_settings": {
         "cooldown_hours": 6,
         "send_daily_summary": True,
+        "send_premarket_brief": True,
+        "send_intraday_alerts": True,
         "send_hourly_market_summary": True,
         "send_hourly_market_summary_market_hours_only": True,
         "send_quant_analysis_change_summary": True,
@@ -97,6 +148,50 @@ def normalize_notification_config(config):
         normalized["email"]["from_email"] = str(email.get("from_email") or email.get("username") or "").strip()
         normalized["email"]["to_emails"] = _parse_recipients(email.get("to_emails"))
 
+    llm = config.get("llm", {})
+    if isinstance(llm, dict):
+        normalized["llm"]["enabled"] = bool(llm.get("enabled", False))
+        normalized["llm"]["provider"] = str(llm.get("provider") or "openai").strip().lower() or "openai"
+        normalized["llm"]["base_url"] = str(
+            llm.get("base_url") or LLM_PRESETS["openai"]["base_url"]
+        ).strip()
+        normalized["llm"]["api_key"] = str(llm.get("api_key") or "")
+        normalized["llm"]["model"] = str(llm.get("model") or LLM_PRESETS["openai"]["model"]).strip()
+        normalized["llm"]["temperature"] = max(
+            0.0,
+            _coerce_float(llm.get("temperature", DEFAULT_LLM_TEMPERATURE), DEFAULT_LLM_TEMPERATURE),
+        )
+        normalized["llm"]["max_tokens"] = max(
+            1,
+            _coerce_int(llm.get("max_tokens", DEFAULT_LLM_MAX_TOKENS), DEFAULT_LLM_MAX_TOKENS),
+        )
+        normalized["llm"]["timeout_seconds"] = max(
+            1,
+            _coerce_int(llm.get("timeout_seconds", DEFAULT_LLM_TIMEOUT_SECONDS), DEFAULT_LLM_TIMEOUT_SECONDS),
+        )
+        normalized["llm"]["site_url"] = str(llm.get("site_url") or "").strip()
+        normalized["llm"]["app_name"] = str(llm.get("app_name") or "quant-trade-system").strip()
+
+    local_slm = config.get("local_slm", {})
+    if isinstance(local_slm, dict):
+        normalized["local_slm"]["enabled"] = bool(local_slm.get("enabled", False))
+        normalized["local_slm"]["provider"] = str(local_slm.get("provider") or LOCAL_SLM_PRESET["provider"]).strip().lower() or LOCAL_SLM_PRESET["provider"]
+        normalized["local_slm"]["base_url"] = str(local_slm.get("base_url") or LOCAL_SLM_PRESET["base_url"]).strip()
+        normalized["local_slm"]["api_key"] = str(local_slm.get("api_key") or LOCAL_SLM_PRESET["api_key"])
+        normalized["local_slm"]["model"] = str(local_slm.get("model") or LOCAL_SLM_PRESET["model"]).strip()
+        normalized["local_slm"]["temperature"] = max(
+            0.0,
+            _coerce_float(local_slm.get("temperature", DEFAULT_LOCAL_SLM_TEMPERATURE), DEFAULT_LOCAL_SLM_TEMPERATURE),
+        )
+        normalized["local_slm"]["max_tokens"] = max(
+            1,
+            _coerce_int(local_slm.get("max_tokens", DEFAULT_LOCAL_SLM_MAX_TOKENS), DEFAULT_LOCAL_SLM_MAX_TOKENS),
+        )
+        normalized["local_slm"]["timeout_seconds"] = max(
+            1,
+            _coerce_int(local_slm.get("timeout_seconds", DEFAULT_LOCAL_SLM_TIMEOUT_SECONDS), DEFAULT_LOCAL_SLM_TIMEOUT_SECONDS),
+        )
+
     alert_settings = config.get("alert_settings", {})
     if isinstance(alert_settings, dict):
         try:
@@ -104,6 +199,12 @@ def normalize_notification_config(config):
         except (TypeError, ValueError):
             normalized["alert_settings"]["cooldown_hours"] = 6
         normalized["alert_settings"]["send_daily_summary"] = bool(alert_settings.get("send_daily_summary", True))
+        normalized["alert_settings"]["send_premarket_brief"] = bool(
+            alert_settings.get("send_premarket_brief", True)
+        )
+        normalized["alert_settings"]["send_intraday_alerts"] = bool(
+            alert_settings.get("send_intraday_alerts", True)
+        )
         normalized["alert_settings"]["send_hourly_market_summary"] = bool(
             alert_settings.get("send_hourly_market_summary", True)
         )
@@ -164,6 +265,22 @@ def apply_outlook_smtp_preset(config):
     return normalized
 
 
+def apply_llm_preset(config, preset_name):
+    normalized = normalize_notification_config(config)
+    preset = dict(LLM_PRESETS.get(str(preset_name or "").strip().lower()) or {})
+    if not preset:
+        return normalized
+    normalized["llm"].update(preset)
+    return normalized
+
+
+def apply_local_slm_preset(config):
+    normalized = normalize_notification_config(config)
+    normalized["local_slm"].update(LOCAL_SLM_PRESET)
+    normalized["local_slm"]["enabled"] = True
+    return normalized
+
+
 def _env_bool(value, default=True):
     if value is None:
         return default
@@ -210,6 +327,83 @@ def apply_environment_overrides(config, environ=None):
     if normalized["email"].get("smtp_host") and normalized["email"].get("to_emails"):
         normalized["email"]["enabled"] = True
 
+    llm_enabled = environ.get("LLM_ENABLED")
+    llm_provider = str(environ.get("LLM_PROVIDER") or "").strip()
+    llm_base_url = str(environ.get("LLM_API_BASE_URL") or "").strip()
+    llm_api_key = str(environ.get("LLM_API_KEY") or "")
+    llm_model = str(environ.get("LLM_MODEL") or "").strip()
+    llm_temperature = environ.get("LLM_TEMPERATURE")
+    llm_max_tokens = environ.get("LLM_MAX_TOKENS")
+    llm_timeout = environ.get("LLM_TIMEOUT_SECONDS")
+    llm_site_url = str(environ.get("LLM_SITE_URL") or "").strip()
+    llm_app_name = str(environ.get("LLM_APP_NAME") or "").strip()
+    local_slm_enabled = environ.get("LOCAL_SLM_ENABLED")
+    local_slm_provider = str(environ.get("LOCAL_SLM_PROVIDER") or "").strip()
+    local_slm_base_url = str(environ.get("LOCAL_SLM_API_BASE_URL") or "").strip()
+    local_slm_api_key = str(environ.get("LOCAL_SLM_API_KEY") or "")
+    local_slm_model = str(environ.get("LOCAL_SLM_MODEL") or "").strip()
+    local_slm_temperature = environ.get("LOCAL_SLM_TEMPERATURE")
+    local_slm_max_tokens = environ.get("LOCAL_SLM_MAX_TOKENS")
+    local_slm_timeout = environ.get("LOCAL_SLM_TIMEOUT_SECONDS")
+
+    if llm_enabled is not None:
+        normalized["llm"]["enabled"] = _env_bool(llm_enabled, default=True)
+    if llm_provider:
+        normalized["llm"]["provider"] = llm_provider.lower()
+    if llm_base_url:
+        normalized["llm"]["base_url"] = llm_base_url
+    if llm_api_key:
+        normalized["llm"]["api_key"] = llm_api_key
+    if llm_model:
+        normalized["llm"]["model"] = llm_model
+    if llm_temperature is not None:
+        normalized["llm"]["temperature"] = max(
+            0.0,
+            _coerce_float(llm_temperature, DEFAULT_LLM_TEMPERATURE),
+        )
+    if llm_max_tokens is not None:
+        normalized["llm"]["max_tokens"] = max(
+            1,
+            _coerce_int(llm_max_tokens, DEFAULT_LLM_MAX_TOKENS),
+        )
+    if llm_timeout is not None:
+        normalized["llm"]["timeout_seconds"] = max(
+            1,
+            _coerce_int(llm_timeout, DEFAULT_LLM_TIMEOUT_SECONDS),
+        )
+    if llm_site_url:
+        normalized["llm"]["site_url"] = llm_site_url
+    if llm_app_name:
+        normalized["llm"]["app_name"] = llm_app_name
+
+    if llm_enabled is None and normalized["llm"].get("api_key") and normalized["llm"].get("model"):
+        normalized["llm"]["enabled"] = True
+
+    if local_slm_enabled is not None:
+        normalized["local_slm"]["enabled"] = _env_bool(local_slm_enabled, default=True)
+    if local_slm_provider:
+        normalized["local_slm"]["provider"] = local_slm_provider.lower()
+    if local_slm_base_url:
+        normalized["local_slm"]["base_url"] = local_slm_base_url
+    if local_slm_api_key:
+        normalized["local_slm"]["api_key"] = local_slm_api_key
+    if local_slm_model:
+        normalized["local_slm"]["model"] = local_slm_model
+    if local_slm_temperature is not None:
+        normalized["local_slm"]["temperature"] = max(
+            0.0,
+            _coerce_float(local_slm_temperature, DEFAULT_LOCAL_SLM_TEMPERATURE),
+        )
+    if local_slm_max_tokens is not None:
+        normalized["local_slm"]["max_tokens"] = max(
+            1,
+            _coerce_int(local_slm_max_tokens, DEFAULT_LOCAL_SLM_MAX_TOKENS),
+        )
+    if local_slm_timeout is not None:
+        normalized["local_slm"]["timeout_seconds"] = max(
+            1,
+            _coerce_int(local_slm_timeout, DEFAULT_LOCAL_SLM_TIMEOUT_SECONDS),
+        )
     return normalized
 
 

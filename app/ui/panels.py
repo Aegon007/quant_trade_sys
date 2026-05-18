@@ -2,6 +2,8 @@ import pandas as pd
 import streamlit as st
 
 from quant_core.events import news_summary as ns
+from quant_core.notifications import change_feed as cfeed
+from quant_core.portfolio import discipline as qdisc
 
 
 def render_account_snapshot_panel(account_snapshot, *, ui_text, st_module=None):
@@ -53,16 +55,32 @@ def render_data_source_status_panel(data_source_status, *, ui_text, st_module=No
     history = dict(data_source_status.get("history", {}) or {})
     prices = dict(data_source_status.get("prices", {}) or {})
 
-    def _source_label(source_value):
+    def _friendly_source_name(source_value):
         source = str(source_value or "").strip().lower()
         if source == "yfinance":
-            return ui_text("主源 Yahoo", "Primary Yahoo")
+            return "Yahoo"
         if source == "stooq":
-            return ui_text("备用源 Stooq", "Fallback Stooq")
-        return ui_text("未知", "Unknown")
+            return "Stooq"
+        if not source:
+            return ui_text("未知", "Unknown")
+        return source
 
-    history_source = _source_label(history.get("last_source")) if history.get("last_source") else ui_text("暂无请求", "No requests yet")
-    price_source = _source_label(prices.get("last_source")) if prices.get("last_source") else ui_text("暂无请求", "No requests yet")
+    def _source_label(source_value, *, primary_source=None):
+        source = str(source_value or "").strip().lower()
+        primary = str(primary_source or "").strip().lower()
+        friendly = _friendly_source_name(source_value)
+        if not source:
+            return ui_text("暂无请求", "No requests yet")
+        if primary and source == primary:
+            return ui_text(f"主源 {friendly}", f"Primary {friendly}")
+        if primary:
+            return ui_text(f"备用源 {friendly}", f"Fallback {friendly}")
+        return friendly
+
+    history_primary = str(history.get("primary_source") or "yfinance").strip().lower()
+    price_primary = str(prices.get("primary_source") or "").strip().lower()
+    history_source = _source_label(history.get("last_source"), primary_source=history_primary)
+    price_source = _source_label(prices.get("last_source"), primary_source=price_primary)
     history_fallbacks = int(history.get("fallback_requests") or 0)
     price_fallbacks = int(prices.get("fallback_symbols") or 0)
 
@@ -94,6 +112,10 @@ def render_data_source_status_panel(data_source_status, *, ui_text, st_module=No
         )
 
     fallback_used = history_fallbacks > 0 or price_fallbacks > 0
+    if not fallback_used and price_primary and str(prices.get("last_source") or "").strip().lower() not in {"", price_primary}:
+        fallback_used = True
+    if not fallback_used and history_primary and str(history.get("last_source") or "").strip().lower() not in {"", history_primary}:
+        fallback_used = True
     if fallback_used:
         st_module.warning(
             ui_text(
@@ -245,6 +267,277 @@ def render_allocation_regime_panel(decision, *, ui_text, st_module=None):
         st_module.success(f"{header}\n{details}")
     else:
         st_module.info(f"{header}\n{details}")
+
+
+def render_discipline_snapshot_panel(snapshot, *, ui_text, st_module=None):
+    st_module = st_module or st
+    snapshot = dict(snapshot or {})
+    if not snapshot:
+        st_module.info(ui_text("暂无纪律层快照。", "Discipline snapshot is not available yet."))
+        return
+
+    st_module.subheader(ui_text("纪律与风险总控", "Risk & Discipline"))
+    cols = st_module.columns(4)
+    cols[0].metric(ui_text("纪律状态", "Discipline"), snapshot.get("regime", "UNKNOWN"))
+    cols[1].metric(ui_text("风险状态", "Risk Regime"), snapshot.get("risk_regime", "UNKNOWN"))
+    cols[2].metric(
+        ui_text("可开核心仓", "Core New"),
+        ui_text("是", "Yes") if snapshot.get("can_open_new_core_positions") else ui_text("否", "No"),
+    )
+    cols[3].metric(
+        ui_text("可开卫星仓", "Satellite New"),
+        ui_text("是", "Yes") if snapshot.get("can_open_new_satellite_positions") else ui_text("否", "No"),
+    )
+
+    summary = str(snapshot.get("summary") or "").strip()
+    if summary:
+        regime = str(snapshot.get("regime") or "").upper()
+        if regime == "STOP":
+            st_module.error(summary)
+        elif regime == "LIGHT":
+            st_module.warning(summary)
+        elif regime == "HEAVY":
+            st_module.success(summary)
+        else:
+            st_module.info(summary)
+
+    warnings = list(snapshot.get("warnings", []) or [])
+    reasons = list(snapshot.get("reasons", []) or [])
+    if warnings:
+        st_module.warning(" | ".join(warnings[:3]))
+    if reasons:
+        st_module.caption(" | ".join(reasons[:3]))
+
+
+def render_monthly_discipline_review_panel(
+    *,
+    discipline_snapshot,
+    scoreboard,
+    latest_post_close_review=None,
+    review=None,
+    review_narration=None,
+    review_explanation=None,
+    narrate_review_fn=None,
+    explain_review_fn=None,
+    key_prefix="discipline_review",
+    ui_text,
+    st_module=None,
+    snapshot_journal=None,
+    now=None,
+):
+    st_module = st_module or st
+    review = dict(review or {})
+    if not review:
+        review = qdisc.build_monthly_discipline_review(
+            discipline_snapshot=discipline_snapshot,
+            scoreboard=scoreboard,
+            latest_post_close_review=latest_post_close_review,
+            snapshot_journal=snapshot_journal,
+            now=now,
+        )
+
+    st_module.subheader(ui_text("纪律层月度自评", "Monthly Discipline Review"))
+    cols = st_module.columns(4)
+    cols[0].metric(ui_text("复盘月份", "Review Month"), review["month"])
+    cols[1].metric(ui_text("FOLLOW / IGNORE", "FOLLOW / IGNORE"), f"{review['follow_days']} / {review['ignore_days']}")
+    cols[2].metric(ui_text("FOLLOW 组盈亏", "FOLLOW P/L"), f"${float(review['follow_realized_pl']):+,.2f}")
+    cols[3].metric(ui_text("纪律状态", "Discipline Check"), review["status"])
+
+    if review["status"] == "ALIGNED":
+        st_module.success(review["summary"])
+    elif review["status"] == "CAUTION":
+        st_module.warning(review["summary"])
+    else:
+        st_module.info(review["summary"])
+
+    if review["notes"]:
+        st_module.caption(" | ".join(review["notes"][:3]))
+    show_actions = callable(narrate_review_fn) or callable(explain_review_fn)
+    if show_actions:
+        action_cols = st_module.columns(2)
+        if callable(narrate_review_fn) and hasattr(action_cols[0], "button"):
+            result = action_cols[0].button(
+                ui_text("本地转述", "Local Narration"),
+                key=f"{key_prefix}_narrate",
+            )
+            if result:
+                ok, message, _meta = narrate_review_fn()
+                if ok:
+                    review_narration = str(message or "").strip()
+                else:
+                    st_module.error(message)
+        if callable(explain_review_fn) and hasattr(action_cols[1], "button"):
+            result = action_cols[1].button(
+                ui_text("远程解释", "Remote Explanation"),
+                key=f"{key_prefix}_explain",
+            )
+            if result:
+                ok, message, _meta = explain_review_fn()
+                if ok:
+                    review_explanation = str(message or "").strip()
+                else:
+                    st_module.error(message)
+    if str(review_narration or "").strip():
+        st_module.info(str(review_narration or "").strip())
+    if str(review_explanation or "").strip():
+        st_module.caption(str(review_explanation or "").strip())
+    st_module.dataframe(pd.DataFrame(review["rows"]), hide_index=True, width="stretch")
+
+
+def render_change_feed_panel(
+    change_feed,
+    *,
+    change_feed_narration=None,
+    change_feed_explanation=None,
+    narrate_change_feed_fn=None,
+    explain_change_feed_fn=None,
+    key_prefix="change_feed",
+    ui_text,
+    st_module=None,
+):
+    st_module = st_module or st
+    change_feed = dict(change_feed or {})
+    summary = dict(change_feed.get("summary", {}) or {})
+    high_items = list(change_feed.get("high_items", []) or [])
+    medium_items = list(change_feed.get("medium_items", []) or [])
+    if not (high_items or medium_items):
+        st_module.info(ui_text("当前没有高优先级变化。", "There are no high-priority changes right now."))
+        return
+
+    st_module.subheader(ui_text("变化总览", "Change Feed"))
+    cols = st_module.columns(3)
+    cols[0].metric(ui_text("高优先级", "High"), f"{int(summary.get('high_count', 0) or 0)}")
+    cols[1].metric(ui_text("中优先级", "Medium"), f"{int(summary.get('medium_count', 0) or 0)}")
+    cols[2].metric(ui_text("低优先级", "Low"), f"{int(summary.get('low_count', 0) or 0)}")
+    show_actions = callable(narrate_change_feed_fn) or callable(explain_change_feed_fn)
+    if show_actions:
+        action_cols = st_module.columns(2)
+        if callable(narrate_change_feed_fn) and hasattr(action_cols[0], "button"):
+            result = action_cols[0].button(
+                ui_text("本地转述", "Local Narration"),
+                key=f"{key_prefix}_narrate",
+            )
+            if result:
+                ok, message, _meta = narrate_change_feed_fn()
+                if ok:
+                    change_feed_narration = str(message or "").strip()
+                else:
+                    st_module.error(message)
+        if callable(explain_change_feed_fn) and hasattr(action_cols[1], "button"):
+            result = action_cols[1].button(
+                ui_text("远程解释", "Remote Explanation"),
+                key=f"{key_prefix}_explain",
+            )
+            if result:
+                ok, message, _meta = explain_change_feed_fn()
+                if ok:
+                    change_feed_explanation = str(message or "").strip()
+                else:
+                    st_module.error(message)
+    if str(change_feed_narration or "").strip():
+        st_module.info(str(change_feed_narration or "").strip())
+    if str(change_feed_explanation or "").strip():
+        st_module.caption(str(change_feed_explanation or "").strip())
+
+    for item in high_items[:6]:
+        symbol_prefix = f"[{item.get('symbol')}] " if item.get("symbol") else ""
+        st_module.warning(f"{symbol_prefix}{item.get('title', '')}: {item.get('explanation_summary') or item.get('message', '')}")
+        bullets = list(item.get("explanation_bullets", []) or [])
+        details = dict(item.get("details", {}) or {})
+        if bullets or any(value not in (None, "", []) for value in details.values()):
+            with st_module.expander(ui_text("查看变化原因", "View Change Reasons")):
+                if bullets:
+                    for bullet in bullets[:4]:
+                        st_module.caption(f"- {bullet}")
+                detail_rows = []
+                if details.get("before_value") not in (None, ""):
+                    detail_rows.append({ui_text("字段", "Field"): ui_text("昨日", "Yesterday"), ui_text("值", "Value"): details.get("before_value")})
+                if details.get("after_value") not in (None, ""):
+                    detail_rows.append({ui_text("字段", "Field"): ui_text("今日", "Today"), ui_text("值", "Value"): details.get("after_value")})
+                if detail_rows:
+                    st_module.dataframe(pd.DataFrame(detail_rows), hide_index=True, width="stretch")
+
+    if medium_items:
+        with st_module.expander(ui_text("查看中优先级变化", "Show Medium-Priority Changes")):
+            for item in medium_items[:12]:
+                symbol_prefix = f"[{item.get('symbol')}] " if item.get("symbol") else ""
+                st_module.caption(f"{symbol_prefix}{item.get('title', '')}: {item.get('explanation_summary') or item.get('message', '')}")
+
+
+def render_change_feed_priority_banner(change_feed, *, st_module=None):
+    st_module = st_module or st
+    change_feed = dict(change_feed or {})
+    high_items = cfeed.select_priority_items(change_feed, priority="HIGH", limit=2)
+    if not high_items:
+        return
+
+    message = cfeed.build_priority_summary_text(change_feed, priority="HIGH", limit=2)
+    categories = {str(row.get("category") or "").strip().lower() for row in high_items}
+    if categories & {"discipline_month", "discipline", "risk"}:
+        st_module.error(message)
+    else:
+        st_module.warning(message)
+
+
+def render_nightly_manifest_panel(manifest, *, ui_text, st_module=None):
+    st_module = st_module or st
+    manifest = dict(manifest or {})
+    if not manifest:
+        st_module.info(ui_text("尚未生成 nightly manifest。", "No nightly manifest is available yet."))
+        return
+
+    st_module.subheader(ui_text("夜间运行状态", "Nightly Run Status"))
+    cols = st_module.columns(4)
+    cols[0].metric(ui_text("运行 ID", "Run ID"), str(manifest.get("run_id") or "—"))
+    cols[1].metric(ui_text("状态", "Status"), str(manifest.get("status") or "unknown"))
+    cols[2].metric(ui_text("步骤数", "Steps"), f"{len(dict(manifest.get('steps', {}) or {}))}")
+    cols[3].metric(ui_text("恢复时间", "Resumed At"), str(manifest.get("resumed_at") or "—"))
+    steps = dict(manifest.get("steps", {}) or {})
+    if steps:
+        rows = []
+        for step_name, step in steps.items():
+            rows.append(
+                {
+                    ui_text("步骤", "Step"): step_name,
+                    ui_text("状态", "Status"): step.get("status"),
+                    ui_text("是否复用", "Reused"): ui_text("是", "Yes") if step.get("reused") else ui_text("否", "No"),
+                    ui_text("输出文件", "Output"): step.get("output_file") or "—",
+                    ui_text("错误", "Error"): step.get("error_message") or "—",
+                }
+            )
+        st_module.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
+
+
+def render_intraday_event_panel(summary, *, ui_text, st_module=None):
+    st_module = st_module or st
+    summary = dict(summary or {})
+    if not summary:
+        st_module.info(ui_text("暂无盘中事件样本。", "No intraday event samples are available yet."))
+        return
+
+    st_module.subheader(ui_text("盘中事件监控", "Intraday Event Monitor"))
+    cols = st_module.columns(5)
+    cols[0].metric(ui_text("事件数", "Events"), f"{int(summary.get('total_count', 0) or 0)}")
+    cols[1].metric(ui_text("已发送", "Alerts Sent"), f"{int(summary.get('sent_count', 0) or 0)}")
+    cols[2].metric(ui_text("有利结果", "Favorable"), f"{int(summary.get('favorable_count', 0) or 0)}")
+    cols[3].metric(ui_text("不利结果", "Unfavorable"), f"{int(summary.get('unfavorable_count', 0) or 0)}")
+    cols[4].metric(ui_text("最新时间", "Latest"), str(summary.get("latest_timestamp") or "—").replace("T", " ")[:16])
+
+    recent_rows = list(summary.get("recent_rows", []) or [])
+    if recent_rows:
+        display_rows = []
+        for row in recent_rows[-6:]:
+            payload = dict(row.get("payload", {}) or {})
+            display_rows.append(
+                {
+                    ui_text("时间", "Time"): str(row.get("timestamp") or "").replace("T", " ")[:16],
+                    ui_text("代码", "Symbol"): row.get("symbol") or "ALL",
+                    ui_text("事件", "Event"): row.get("event_type"),
+                    ui_text("结果", "Outcome"): row.get("outcome_label") or "—",
+                    ui_text("说明", "Reason"): row.get("trigger_reason") or payload.get("alert_message") or "—",
+                }
+            )
+        st_module.dataframe(pd.DataFrame(display_rows), hide_index=True, width="stretch")
 
 
 def render_active_events_panel(

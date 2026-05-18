@@ -48,6 +48,8 @@ class UIComponentsTests(unittest.TestCase):
         self.assertEqual(records[0]["建议股数"], "8.000")
         self.assertEqual(records[0]["上涨预期价"], "$101.00 ~ $105.68")
         self.assertIn("上涨概率", records[0]["资金说明"])
+        self.assertEqual(records[0]["人工备注"], "watch")
+        self.assertIn("量化信号 BUY", records[0]["系统摘要"])
 
     def test_build_holding_records_prefers_quant_analysis_snapshot_fields_when_available(self):
         records = self.ui.build_holding_records(
@@ -118,6 +120,7 @@ class UIComponentsTests(unittest.TestCase):
         self.assertAlmostEqual(records[0]["MC预期"], 0.05)
         self.assertEqual(records[0]["最近全量分析时间"], "2026-05-11 23:15")
         self.assertEqual(records[0]["分析新鲜度"], "过期")
+        self.assertIn("全量分析过期", records[0]["系统摘要"])
 
     def test_build_holding_records_marks_analysis_stale_after_24_hours(self):
         records = self.ui.build_holding_records(
@@ -161,6 +164,94 @@ class UIComponentsTests(unittest.TestCase):
         self.assertEqual(alert["expired_symbols"], ["AAPL"])
         self.assertEqual(alert["missing_symbols"], ["MSFT"])
         self.assertTrue(alert["needs_warning"])
+
+    def test_build_manual_refresh_notice_summarizes_primary_fallback_and_unresolved(self):
+        notice = self.ui.build_manual_refresh_notice(
+            {
+                "prices": {
+                    "primary_source": "stooq",
+                    "source_order": ["stooq", "yfinance"],
+                    "primary_symbols": 7,
+                    "fallback_symbols": 4,
+                    "last_error": "quota exceeded",
+                }
+            },
+            tracked_symbol_count=12,
+            lang="zh",
+        )
+
+        self.assertEqual(notice["level"], "warning")
+        self.assertEqual(notice["primary_hits"], 7)
+        self.assertEqual(notice["fallback_hits"], 4)
+        self.assertEqual(notice["unresolved_symbols"], 1)
+        self.assertIn("主源 Stooq 命中 7 个", notice["message"])
+        self.assertIn("回退到 Yahoo 4 个", notice["message"])
+        self.assertIn("仍有 1 个标的未拿到最新价格", notice["message"])
+
+    def test_build_manual_refresh_notice_reports_success_when_all_symbols_resolved(self):
+        notice = self.ui.build_manual_refresh_notice(
+            {
+                "prices": {
+                    "primary_source": "stooq",
+                    "source_order": ["stooq", "yfinance"],
+                    "primary_symbols": 5,
+                    "fallback_symbols": 0,
+                }
+            },
+            tracked_symbol_count=5,
+            lang="zh",
+        )
+
+        self.assertEqual(notice["level"], "success")
+        self.assertEqual(notice["unresolved_symbols"], 0)
+        self.assertIn("本次强制刷新了 5 个标的", notice["message"])
+
+    def test_build_trade_plan_banner_reports_no_action(self):
+        banner = self.ui.build_trade_plan_banner(
+            {
+                "decision": "NO_ACTION",
+                "has_actions": False,
+                "summary_reason": "当前无强信号，建议持仓不动。",
+            },
+            lang="zh",
+        )
+
+        self.assertEqual(banner["level"], "info")
+        self.assertIn("无交易动作", banner["message"])
+
+    def test_build_trade_plan_records_and_execution_review_records(self):
+        plan_records = self.ui.build_trade_plan_records(
+            {
+                "items": [
+                    {
+                        "symbol": "VOO",
+                        "plan_action": "ACCUMULATE",
+                        "plan_weight_delta_pct": 3.0,
+                        "buy_zone_low": 495.0,
+                        "buy_zone_high": 505.0,
+                        "invalid_condition": "若高开过多则作废",
+                    }
+                ]
+            }
+        )
+        review_records = self.ui.build_execution_review_records(
+            {
+                "items": [
+                    {
+                        "symbol": "VOO",
+                        "plan_action": "ACCUMULATE",
+                        "status": "EXECUTED",
+                        "avg_execution_price": 500.5,
+                        "executed_in_plan_zone": True,
+                    }
+                ]
+            }
+        )
+
+        self.assertEqual(plan_records[0]["代码"], "VOO")
+        self.assertIn("495.00", plan_records[0]["计划区间"])
+        self.assertEqual(review_records[0]["状态"], "EXECUTED")
+        self.assertEqual(review_records[0]["区间内执行"], "是")
 
 
 if __name__ == "__main__":

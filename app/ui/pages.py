@@ -145,6 +145,143 @@ def format_robinhood_reconcile_result_message(result):
     )
 
 
+def _format_optional_pct(value):
+    return f"{float(value):.2f}%" if value is not None else "—"
+
+
+def _format_optional_return(value):
+    return f"{float(value):+.2%}" if value is not None else "—"
+
+
+def build_core_etf_display_dataframe(snapshot):
+    rows = []
+    for row in list((snapshot or {}).get("symbols", []) or []):
+        backtest = dict(row.get("rotation_backtest", {}) or {})
+        rows.append(
+            {
+                "代码": row.get("symbol"),
+                "角色": row.get("role"),
+                "动作": row.get("action"),
+                "当前仓位": _format_optional_pct(row.get("current_weight_pct")),
+                "目标仓位": _format_optional_pct(row.get("target_weight_pct")),
+                "目标区间": (
+                    f"{float(row.get('target_weight_range_low_pct', 0.0)):.1f}% ~ "
+                    f"{float(row.get('target_weight_range_high_pct', 0.0)):.1f}%"
+                ),
+                "轮动评分": f"{float(row.get('rotation_score', 0.0)):.1f}",
+                "3M预期": _format_optional_return(row.get("expected_return_3m")),
+                "12M预期": _format_optional_return(row.get("expected_return_12m")),
+                "回测辅助": _format_optional_return(backtest.get("excess_return")),
+                "Regime对齐": row.get("regime_alignment"),
+                "买入区间": (
+                    f"${float(row.get('recommended_buy_zone_low')):,.2f} ~ ${float(row.get('recommended_buy_zone_high')):,.2f}"
+                    if row.get("recommended_buy_zone_low") is not None and row.get("recommended_buy_zone_high") is not None
+                    else "—"
+                ),
+                "减仓区间": (
+                    f"${float(row.get('trim_zone_low')):,.2f} ~ ${float(row.get('trim_zone_high')):,.2f}"
+                    if row.get("trim_zone_low") is not None and row.get("trim_zone_high") is not None
+                    else "—"
+                ),
+                "信号说明": row.get("signal_reason", ""),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def build_holdings_focus_dataframe(holding_records, *, include_symbols=None, exclude_symbols=None):
+    include = {str(symbol).strip().upper() for symbol in list(include_symbols or []) if str(symbol).strip()}
+    exclude = {str(symbol).strip().upper() for symbol in list(exclude_symbols or []) if str(symbol).strip()}
+    rows = []
+    for row in list(holding_records or []):
+        symbol = str(row.get("代码") or "").strip().upper()
+        if include and symbol not in include:
+            continue
+        if exclude and symbol in exclude:
+            continue
+        rows.append(
+            {
+                "代码": symbol,
+                "信号": row.get("信号"),
+                "仓位建议": row.get("仓位建议"),
+                "当前仓位": _format_optional_pct(row.get("当前仓位")),
+                "目标仓位": _format_optional_pct(row.get("目标仓位")),
+                "回测收益": _format_optional_return(row.get("回测收益")),
+                "MC预期": _format_optional_return(row.get("MC预期")),
+                "退出参考": _format_money(row.get("退出参考")) if row.get("退出参考") is not None else "—",
+                "分析新鲜度": row.get("分析新鲜度"),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def build_satellite_candidate_dataframe(snapshot, *, limit=None, top_only=False):
+    snapshot = dict(snapshot or {})
+    source_rows = (
+        list(snapshot.get("top_recommendations", []) or [])
+        if top_only
+        else list(snapshot.get("symbols", []) or [])
+    )
+    rows = []
+    generated_at = str(snapshot.get("generated_at") or "").strip()
+    display_time = generated_at.replace("T", " ")[:16] if generated_at else "—"
+    for row in source_rows:
+        backtest = dict((row or {}).get("backtest", {}) or {})
+        monte_carlo = dict((row or {}).get("monte_carlo", {}) or {})
+        rows.append(
+            {
+                "代码": row.get("symbol"),
+                "状态": row.get("recommendation_status") or row.get("candidate_state"),
+                "动作": row.get("plan_action") or "WATCH",
+                "建议仓位": _format_optional_pct(row.get("suggested_weight_pct")),
+                "轻量分": f"{float(row.get('light_score') or 0.0):.1f}",
+                "综合分": f"{float(row.get('satellite_score') or 0.0):.1f}",
+                "信号": row.get("signal") or "HOLD",
+                "回测收益": _format_optional_return(backtest.get("total_return")),
+                "MC预期": _format_optional_return(monte_carlo.get("expected_return")),
+                "系统摘要": row.get("recommendation_reason") or row.get("signal_reason") or "",
+                "来源": ", ".join(list((row or {}).get("sources", []) or [])) or "—",
+                "更新时间": display_time,
+            }
+        )
+    if limit is not None:
+        rows = rows[: max(0, int(limit or 0))]
+    return pd.DataFrame(rows)
+
+
+def build_discipline_constraints_dataframe(snapshot):
+    snapshot = dict(snapshot or {})
+    rows = [
+        {"约束": "纪律状态", "当前值": snapshot.get("regime", "UNKNOWN")},
+        {"约束": "风险状态", "当前值": snapshot.get("risk_regime", "UNKNOWN")},
+        {"约束": "仓位节奏", "当前值": snapshot.get("allocation_regime", "UNKNOWN")},
+        {
+            "约束": "可开核心仓",
+            "当前值": "是" if snapshot.get("can_open_new_core_positions") else "否",
+        },
+        {
+            "约束": "可开卫星仓",
+            "当前值": "是" if snapshot.get("can_open_new_satellite_positions") else "否",
+        },
+        {
+            "约束": "卫星仓总上限",
+            "当前值": f"{float(snapshot.get('satellite_max_total_weight_pct', 0.0)):.1f}%",
+        },
+        {
+            "约束": "卫星仓单仓上限",
+            "当前值": f"{float(snapshot.get('satellite_max_single_weight_pct', 0.0)):.1f}%",
+        },
+        {
+            "约束": "目标总暴露",
+            "当前值": (
+                f"{float(snapshot.get('target_exposure_min_pct', 0.0)):.0f}% ~ "
+                f"{float(snapshot.get('target_exposure_max_pct', 0.0)):.0f}%"
+            ),
+        },
+    ]
+    return pd.DataFrame(rows)
+
+
 def render_transactions_tab(
     *,
     tx_module,

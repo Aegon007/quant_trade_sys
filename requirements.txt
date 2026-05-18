@@ -7,7 +7,6 @@ slack-bolt>=1.20,<2
 
 # Backtesting engines
 backtrader==1.9.78.123
-lib-pybroker==1.2.12
 
 # Traditional ML strategies
 scikit-learn==1.6.1

@@ -15,15 +15,6 @@ def bootstrap_app_data(session_state, data_utils_module, *, refresh_interval_sec
         data_utils_module.save_data(refreshed_data)
     return session_state["app_data"]
 
-
-def ensure_dialog_state_defaults(session_state):
-    session_state.setdefault("sell_dialog_index", None)
-    session_state.setdefault("buy_dialog_index", None)
-    session_state.setdefault("editing_holding", None)
-    session_state.setdefault("move_watch_dialog_index", None)
-    session_state.setdefault("move_watch_dialog_shares", 1.0)
-
-
 def apply_runtime_strategy_params(strategy, *, history_period: str):
     runtime_strategy = dict(strategy)
     runtime_params = dict(strategy.get("params", {}))

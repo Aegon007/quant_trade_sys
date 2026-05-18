@@ -25,7 +25,7 @@ class ReportingTests(unittest.TestCase):
             account_snapshot={"total_capital": 10000.0, "cash_available": 3000.0, "exposure_pct": 70.0},
             risk_gate={"regime": "CAUTION", "block_new_buys": False, "reasons": ["VIX elevated"]},
             allocation_regime={"regime": "LIGHT", "reasons": ["drawdown elevated"]},
-            data_sources={"prices": {"last_source": "stooq", "fallback_symbols": 1}},
+            data_sources={"prices": {"primary_source": "stooq", "last_source": "stooq", "fallback_symbols": 0}},
             now=datetime(2026, 5, 11, 10, 0, 0),
         )
 
@@ -34,7 +34,7 @@ class ReportingTests(unittest.TestCase):
         self.assertIn("LIGHT", text)
         self.assertIn("AAPL", text)
         self.assertIn("MSFT", text)
-        self.assertIn("stooq", text.lower())
+        self.assertIn("stooq (primary)", text.lower())
 
     def test_build_signal_attribution_groups_effective_ineffective_and_pending(self):
         from quant_core.notifications.reporting import build_signal_attribution
@@ -102,6 +102,50 @@ class ReportingTests(unittest.TestCase):
                     "ineffective_symbols": ["TSLA"],
                     "pending_symbols": ["MSFT"],
                 },
+                "core_etf_snapshot": {
+                    "summary": {
+                        "accumulate_count": 1,
+                        "trim_count": 0,
+                        "focus_symbols": ["VOO"],
+                    }
+                },
+                "satellite_candidate_snapshot": {
+                    "summary": {
+                        "scanned_symbols": 44,
+                        "candidate_count": 20,
+                        "deep_analysis_count": 10,
+                        "top_symbols": ["MU", "ANET", "VRT"],
+                        "confirmed_count": 2,
+                        "probe_count": 1,
+                        "watch_count": 7,
+                        "overheated_count": 1,
+                    }
+                },
+                "discipline_snapshot": {
+                    "regime": "NORMAL",
+                    "can_open_new_core_positions": True,
+                    "can_open_new_satellite_positions": False,
+                    "summary": "当前可正常执行计划，但不建议无计划追价。",
+                },
+                "monthly_discipline_review": {
+                    "status": "ALIGNED",
+                    "follow_days": 6,
+                    "ignore_days": 1,
+                    "follow_realized_pl": 220.0,
+                    "ignore_realized_pl": -45.0,
+                    "summary": "本月已有的计划执行整体保持纪律，没有检测到明显的偏离日。",
+                },
+                "change_feed": {
+                    "summary": {"high_count": 2, "medium_count": 1, "low_count": 0},
+                },
+                "nightly_manifest": {
+                    "run_id": "20260511-nightly",
+                    "status": "completed",
+                    "steps": {
+                        "quant_analysis_snapshot": {"status": "completed"},
+                        "trade_plan": {"status": "completed"},
+                    },
+                },
             }
         )
 
@@ -112,6 +156,15 @@ class ReportingTests(unittest.TestCase):
         self.assertIn("AAPL, MSFT", text)
         self.assertIn("Signal attribution", text)
         self.assertIn("effective=1", text.lower())
+        self.assertIn("Core ETF engine", text)
+        self.assertIn("Satellite radar", text)
+        self.assertIn("MU, ANET, VRT", text)
+        self.assertIn("Change feed", text)
+        self.assertIn("Nightly manifest", text)
+        self.assertIn("Discipline:", text)
+        self.assertIn("Discipline month:", text)
+        self.assertIn("follow=6", text.lower())
+        self.assertIn("ignore=1", text.lower())
 
     def test_build_quant_analysis_report_includes_summary_and_symbols(self):
         from quant_core.notifications.reporting import build_quant_analysis_report

@@ -14,7 +14,7 @@
 - ETF 代理意见：当 ETF 本身没有分析师评级时，系统会自动读取前十大持仓，并按权重聚合成分股分析师共识，生成 ETF 的代理买卖意见。
 - 仓位建议：结合当前持仓、目标仓位和回测结果，给出加仓、减仓、退出或观望建议。
 - 组合级建议：分析行业集中度和高相关股票组合，避免只看单只股票信号而忽略整体风险。
-- 策略回测：支持 Backtrader 和 PyBroker 两个回测引擎，输出收益、夏普比率、最大回撤、胜率和资金曲线。
+- 策略回测：当前统一使用 Backtrader 引擎，输出收益、夏普比率、最大回撤、胜率和资金曲线。
 - 策略插件化：新增策略时优先通过 `config/strategies.json` 配置类路径和信号函数路径，减少修改注册代码。
 - 深度学习模型：内置 TCN 深度学习策略，当前为默认策略，可自动适配 CUDA、Apple Silicon MPS 或纯 CPU 环境。
 - 新闻/事件系统：支持本地 `storage/state/market_events.json` 事件输入，并可通过事件源适配层自动抓取外部新闻事件。
@@ -145,7 +145,7 @@ PYTHONPYCACHEPREFIX=/tmp/pycache ~/venv/bin/python -m unittest discover -s tests
 回测流程：
 
 1. 在“量化分析”页选择股票。
-2. 选择策略和回测引擎，默认推荐 Backtrader。
+2. 选择策略并运行 Backtrader 回测。
 3. 运行回测，查看累计收益、夏普比率、最大回撤、胜率和资金曲线。
 4. 系统会结合回测结果和当前持仓，生成更偏仓位管理的建议。
 
@@ -248,6 +248,45 @@ pip install "torch>=2.2.0"
 ```bash
 pip install "transformers>=4.40.0"
 ```
+
+## 本地 SLM 接入方案
+
+当前推荐用 `LM Studio` 作为本地 SLM server，而不是让项目自己托管模型服务。
+
+默认预设模型：
+
+- `Qwen/Qwen3-0.6B`
+
+默认用途：
+
+- 只负责把结构化原因引擎的输出转述得更自然
+- 不负责复杂解释、调研或综合分析
+
+默认服务地址：
+
+- `http://127.0.0.1:8000/v1`
+
+### 在 LM Studio 中启动
+
+1. 在 LM Studio 下载并加载 `Qwen/Qwen3-0.6B`
+2. 打开 `Developer` / `Local Server`
+3. 启动 OpenAI-compatible server
+4. 记下 server 地址，默认可用 `http://127.0.0.1:8000/v1`
+
+### 在系统里怎么接入
+
+1. 打开 `Settings`
+2. 点击 `写入本地 SLM 默认配置 (LM Studio / Qwen3-0.6B)`
+3. 保持默认：
+   - `Local Base URL = http://127.0.0.1:8000/v1`
+   - `Local Model = Qwen/Qwen3-0.6B`
+4. 在 `Settings` 里点击 `测试本地 SLM`
+
+如果以后切换本地小模型，通常只需要：
+
+- 在 LM Studio 里换模型
+- 在 `Settings` 中调整 `Local Model`
+- 如果端口或地址不同，再改 `Local Base URL`
 
 ## 组合级建议
 
@@ -455,7 +494,7 @@ export SLACK_APP_TOKEN="xapp-..."
 ├── quant_core/                            # 核心业务（数据/风控/组合/通知/快照）
 ├── integrations/                          # 外部集成（Slack 命令与 Bot）
 ├── strategies/                            # 策略配置加载与策略类
-├── engine/                                # Backtrader / PyBroker 回测适配器
+├── engine/                                # Backtrader 回测适配器
 ├── jobs/                                  # run_all / nightly_alerts / slack_bot
 ├── config/strategies.json                 # 策略配置
 ├── storage/config/*.example.json          # 示例配置

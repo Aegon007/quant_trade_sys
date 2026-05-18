@@ -51,6 +51,7 @@ def build_robinhood_reconciled_portfolio(records, *, existing_data=None):
     cash_balance = 0.0
     saw_cash_event = False
     imported_rows = _normalize_source_records(records)
+    imported_trade_symbols = set()
 
     for row in imported_rows:
         record_type = str(row.get("record_type", "") or "").strip().upper()
@@ -79,6 +80,7 @@ def build_robinhood_reconciled_portfolio(records, *, existing_data=None):
             issues.append(f"Incomplete trade row for {symbol or 'UNKNOWN'} on {row.get('date')}.")
             continue
 
+        imported_trade_symbols.add(symbol)
         state = positions.setdefault(
             symbol,
             {
@@ -144,6 +146,29 @@ def build_robinhood_reconciled_portfolio(records, *, existing_data=None):
         if symbol in held_symbols:
             continue
         watchlist.append(row)
+
+    watch_symbols = {str(row.get("symbol", "")).strip().upper() for row in watchlist if row.get("symbol")}
+    for symbol in sorted(imported_trade_symbols):
+        if symbol in held_symbols or symbol in watch_symbols:
+            continue
+        state = positions.get(symbol, {})
+        existing_holding = existing_holdings.get(symbol, {})
+        existing_watch = existing_watchlist.get(symbol, {})
+        last_price = existing_watch.get("last_price")
+        if last_price is None:
+            last_price = existing_holding.get("current_price")
+        if last_price is None:
+            last_price = state.get("last_trade_price")
+        watchlist.append(
+            {
+                "symbol": symbol,
+                "notes": str(existing_watch.get("notes", "") or ""),
+                "last_price": last_price,
+            }
+        )
+        watch_symbols.add(symbol)
+
+    watchlist.sort(key=lambda row: str(row.get("symbol", "")).strip().upper())
 
     cash_mode = "imported_cash_events" if saw_cash_event else "trade_flows_only"
     account = {

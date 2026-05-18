@@ -156,6 +156,78 @@ class UIPagesHelpersTests(unittest.TestCase):
         self.assertIn("imported_cash_events", message)
         self.assertIn("history may be incomplete", message)
 
+    def test_build_core_etf_display_dataframe_and_discipline_constraints(self):
+        core_df = self.pages.build_core_etf_display_dataframe(
+            {
+                "symbols": [
+                    {
+                        "symbol": "VOO",
+                        "role": "broad_market",
+                        "action": "ACCUMULATE",
+                        "current_weight_pct": 20.0,
+                        "target_weight_pct": 25.0,
+                        "target_weight_range_low_pct": 20.0,
+                        "target_weight_range_high_pct": 40.0,
+                        "rotation_score": 78.0,
+                        "expected_return_3m": 0.04,
+                        "expected_return_12m": 0.10,
+                        "regime_alignment": "POSITIVE",
+                        "recommended_buy_zone_low": 495.0,
+                        "recommended_buy_zone_high": 505.0,
+                        "rotation_backtest": {"excess_return": 0.03},
+                        "signal_reason": "trend confirmed",
+                    }
+                ]
+            }
+        )
+        discipline_df = self.pages.build_discipline_constraints_dataframe(
+            {
+                "regime": "LIGHT",
+                "risk_regime": "CAUTION",
+                "allocation_regime": "LIGHT",
+                "can_open_new_core_positions": True,
+                "can_open_new_satellite_positions": False,
+                "satellite_max_total_weight_pct": 15.0,
+                "satellite_max_single_weight_pct": 5.0,
+                "target_exposure_min_pct": 20.0,
+                "target_exposure_max_pct": 65.0,
+            }
+        )
+
+        self.assertEqual(core_df.iloc[0]["代码"], "VOO")
+        self.assertIn("20.0% ~ 40.0%", core_df.iloc[0]["目标区间"])
+        self.assertEqual(discipline_df.iloc[0]["当前值"], "LIGHT")
+        self.assertEqual(discipline_df.iloc[4]["当前值"], "否")
+
+    def test_build_satellite_candidate_dataframe_formats_snapshot_rows(self):
+        candidate_df = self.pages.build_satellite_candidate_dataframe(
+            {
+                "generated_at": "2026-05-13T23:10:00",
+                "top_recommendations": [
+                    {
+                        "symbol": "MU",
+                        "recommendation_status": "CONFIRMED",
+                        "plan_action": "ACCUMULATE",
+                        "suggested_weight_pct": 4.0,
+                        "light_score": 74.5,
+                        "satellite_score": 82.3,
+                        "signal": "BUY",
+                        "backtest": {"total_return": 0.18},
+                        "monte_carlo": {"expected_return": 0.06},
+                        "recommendation_reason": "趋势确认",
+                        "sources": ["manual_include"],
+                    }
+                ],
+            },
+            top_only=True,
+        )
+
+        self.assertEqual(candidate_df.iloc[0]["代码"], "MU")
+        self.assertEqual(candidate_df.iloc[0]["状态"], "CONFIRMED")
+        self.assertEqual(candidate_df.iloc[0]["动作"], "ACCUMULATE")
+        self.assertEqual(candidate_df.iloc[0]["建议仓位"], "4.00%")
+        self.assertIn("manual_include", candidate_df.iloc[0]["来源"])
+
 
 if __name__ == "__main__":
     unittest.main()

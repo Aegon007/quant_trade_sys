@@ -39,11 +39,15 @@ class NightlyAlertsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             journal_path = Path(temp_dir) / "nightly_snapshot_journal.jsonl"
             report_dir = Path(temp_dir) / "reports"
+            manifest_path = Path(temp_dir) / "nightly_run_manifest.json"
+            change_feed_path = Path(temp_dir) / "change_feed_latest.json"
             result = self.module.run_nightly_alerts(
                 now=datetime(2026, 5, 10, 23, 30, 0),
                 dry_run=False,
                 snapshot_journal_path=str(journal_path),
                 report_output_dir=str(report_dir),
+                manifest_path=str(manifest_path),
+                change_feed_path=str(change_feed_path),
                 quant_analysis_snapshot_builder=lambda **kwargs: {
                     "generated_at": "2026-05-10T23:30:00",
                     "strategy": {"id": "deep_tcn", "name": "TCN"},
@@ -67,14 +71,29 @@ class NightlyAlertsTests(unittest.TestCase):
             self.assertIn("allocation_regime", payload)
             self.assertIn("daily_recap", payload)
             self.assertIn("signal_attribution", payload)
+            self.assertIn("trade_plan", payload)
+            self.assertIn("execution_review", payload)
+            self.assertIn("monthly_discipline_review", payload)
             self.assertIn("quant_analysis_summary", payload["performance"])
+            self.assertIn("change_feed", payload)
+            self.assertIn("nightly_manifest", payload)
             self.assertEqual(payload["data_sources"]["history"]["last_source"], "stooq")
-            self.assertEqual(len(result["report_results"]), 1)
+            self.assertEqual(len(result["report_results"]), 2)
             self.assertEqual(result["report_results"][0]["channel"], "slack")
+            self.assertEqual(len(result["premarket_brief_results"]), 2)
             self.assertEqual(sent_reports[0][1], "https://hooks.slack.com/services/test")
+            self.assertIn("Discipline month:", sent_reports[0][0])
+            self.assertIn("盘前简报", result["premarket_brief_text"])
+            self.assertTrue(manifest_path.exists())
+            self.assertTrue(change_feed_path.exists())
             self.assertTrue(Path(result["report_files"]["markdown_path"]).exists())
             self.assertTrue(Path(result["report_files"]["json_path"]).exists())
             self.assertTrue(Path(result["quant_analysis_report_files"]["pdf_path"]).exists())
+            self.assertIn("execution_review", payload["nightly_manifest"]["steps"])
+            self.assertIn("change_feed", payload["nightly_manifest"]["steps"])
+            self.assertIn("snapshot_journal", payload["nightly_manifest"]["steps"])
+            self.assertIn("report_files", payload["nightly_manifest"]["steps"])
+            self.assertIn("notifications", payload["nightly_manifest"]["steps"])
 
     def test_run_nightly_alerts_applies_env_webhook_overrides_for_report_delivery(self):
         self.module.du.load_data = lambda: {"account": {}, "holdings": [], "watchlist": []}
@@ -88,7 +107,10 @@ class NightlyAlertsTests(unittest.TestCase):
         self.module.ncfg.load_notification_config = lambda _path: {
             "slack": {"enabled": False, "webhook_url": ""},
             "email": {"enabled": False},
-            "alert_settings": {"send_daily_summary": True},
+            "alert_settings": {
+                "send_daily_summary": True,
+                "send_quant_analysis_change_summary": False,
+            },
         }
         self.module.tx.load_transactions = lambda: []
         self.module.tx.normalize_transactions = lambda rows: rows
@@ -104,7 +126,12 @@ class NightlyAlertsTests(unittest.TestCase):
             )
 
             self.assertFalse(result["dry_run"])
-            self.assertEqual(sent_reports, [(self.module.nr.build_nightly_report(result["snapshot"]), "https://hooks.slack.com/services/from-env")])
+            self.assertEqual(len(sent_reports), 2)
+            self.assertIn("Nightly Portfolio Report", sent_reports[0][0])
+            self.assertIn("Discipline month:", sent_reports[0][0])
+            self.assertEqual(sent_reports[0][1], "https://hooks.slack.com/services/from-env")
+            self.assertIn("盘前简报", sent_reports[1][0])
+            self.assertEqual(sent_reports[1][1], "https://hooks.slack.com/services/from-env")
 
     def test_run_nightly_alerts_sends_quant_change_summary_only_when_snapshot_changes(self):
         self.module.du.load_data = lambda: {"account": {}, "holdings": [], "watchlist": []}
@@ -143,19 +170,23 @@ class NightlyAlertsTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temp_dir:
             snapshot_path = Path(temp_dir) / "quant_analysis_snapshot.json"
+            manifest_path = Path(temp_dir) / "nightly_run_manifest.json"
+            change_feed_path = Path(temp_dir) / "change_feed_latest.json"
             snapshot_path.write_text(json.dumps(previous_snapshot), encoding="utf-8")
             result = self.module.run_nightly_alerts(
                 now=datetime(2026, 5, 10, 23, 30, 0),
                 dry_run=False,
                 report_output_dir=temp_dir,
                 quant_analysis_snapshot_path=str(snapshot_path),
+                manifest_path=str(manifest_path),
+                change_feed_path=str(change_feed_path),
                 quant_analysis_snapshot_builder=lambda **kwargs: changed_snapshot,
                 slack_sender=lambda text, url: (sent_messages.append((text, url)) or True, "ok"),
             )
 
             self.assertFalse(result["dry_run"])
-            self.assertEqual(len(result["quant_analysis_change_results"]), 1)
-            self.assertTrue(result["quant_analysis_change_results"][0]["ok"])
+            self.assertGreaterEqual(len(result["quant_analysis_change_results"]), 1)
+            self.assertTrue(any(row["ok"] for row in result["quant_analysis_change_results"]))
             self.assertEqual(sent_messages[-1][1], "https://hooks.slack.com/services/test")
             self.assertIn("AAPL", sent_messages[-1][0])
 

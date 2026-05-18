@@ -174,6 +174,58 @@ class DataUtilsFractionalShareTests(unittest.TestCase):
         self.assertEqual(data["holdings"][0]["symbol"], "NVDA")
         self.assertEqual(data["watchlist"][0]["symbol"], "AAPL")
 
+    def test_load_editable_data_builds_clean_template_from_runtime_data(self):
+        self.data_utils.save_data({
+            "account": {
+                "cash_available": 3200.0,
+                "min_cash_buffer_pct": 0.07,
+                "max_single_position_pct": 0.18,
+                "max_total_exposure_pct": 0.92,
+            },
+            "holdings": [
+                {"symbol": "NVDA", "shares": 1.25, "cost": 190.0, "current_price": 205.0, "sector": "Tech"}
+            ],
+            "watchlist": [
+                {"symbol": "MSFT", "notes": "watch", "last_price": 410.5}
+            ],
+        })
+
+        editable = self.data_utils.load_editable_data()
+
+        self.assertEqual(editable["account"]["cash_available"], 3200.0)
+        self.assertEqual(editable["holdings"][0]["symbol"], "NVDA")
+        self.assertEqual(editable["holdings"][0]["shares"], 1.25)
+        self.assertNotIn("current_price", editable["holdings"][0])
+        self.assertEqual(editable["watchlist"][0]["symbol"], "MSFT")
+        self.assertNotIn("last_price", editable["watchlist"][0])
+
+    def test_save_editable_data_writes_clean_template_and_syncs_runtime(self):
+        payload = {
+            "account": {
+                "cash_available": 4500.0,
+                "min_cash_buffer_pct": 0.08,
+                "max_single_position_pct": 0.15,
+                "max_total_exposure_pct": 0.90,
+            },
+            "holdings": [
+                {"symbol": "aapl", "shares": 0.75, "cost": 180.0, "sector": "Tech"}
+            ],
+            "watchlist": [
+                {"symbol": "msft", "notes": "watch"}
+            ],
+        }
+
+        saved_payload = self.data_utils.save_editable_data(payload, sync_runtime=True)
+        editable_file_payload = json.loads(Path(self.data_utils.EDITABLE_DATA_FILE).read_text(encoding="utf-8"))
+        runtime_data = self.data_utils.load_data()
+
+        self.assertEqual(saved_payload, editable_file_payload)
+        self.assertEqual(editable_file_payload["holdings"][0]["symbol"], "AAPL")
+        self.assertNotIn("current_price", editable_file_payload["holdings"][0])
+        self.assertEqual(runtime_data["holdings"][0]["symbol"], "AAPL")
+        self.assertEqual(runtime_data["holdings"][0]["shares"], 0.75)
+        self.assertEqual(runtime_data["watchlist"][0]["symbol"], "MSFT")
+
     def test_auto_refresh_market_data_updates_missing_prices_and_timestamp(self):
         now = datetime(2026, 5, 8, 12, 0, 0)
         data = {
@@ -238,11 +290,16 @@ class DataUtilsFractionalShareTests(unittest.TestCase):
         self.assertEqual(refreshed_data["prices_last_updated"], now.isoformat())
 
     def test_fetch_prices_falls_back_when_yfinance_has_no_price(self):
+        self.data_utils.md.reset_market_data_status()
         self.data_utils.md.fetch_latest_prices_from_stooq = lambda symbols: {"AAPL": 321.5}
 
         prices = self.data_utils.fetch_prices(["AAPL"], use_cache=False)
+        status = self.data_utils.md.get_market_data_status_snapshot()
 
         self.assertEqual(prices["AAPL"], 321.5)
+        self.assertEqual(status["prices"]["primary_source"], "stooq")
+        self.assertEqual(status["prices"]["last_source"], "stooq")
+        self.assertEqual(status["prices"]["fallback_symbols"], 0)
 
     def test_fetch_prices_uses_cache_when_ttl_not_expired(self):
         prices_first = self.data_utils.fetch_prices(["AAPL"], use_cache=True, cache_ttl=3600)
@@ -313,6 +370,7 @@ class DataUtilsFractionalShareTests(unittest.TestCase):
         self.assertEqual(third["AAPL"], 105.0)
 
     def test_fetch_prices_uses_source_order_and_falls_back_on_error(self):
+        self.data_utils.md.reset_market_data_status()
         self.data_utils.DEFAULT_PRICE_SOURCE_ORDER = ("primary_mock", "secondary_mock")
 
         def provider_primary(symbols):
@@ -330,8 +388,27 @@ class DataUtilsFractionalShareTests(unittest.TestCase):
 
         self.assertEqual(prices["AAPL"], 456.78)
         status = self.data_utils.md.get_market_data_status_snapshot()
+        self.assertEqual(status["prices"]["primary_source"], "primary_mock")
         self.assertEqual(status["prices"]["last_source"], "secondary_mock")
+        self.assertEqual(status["prices"]["fallback_symbols"], 1)
         self.assertIn("quota exceeded", str(status["prices"]["last_error"]))
+
+    def test_fetch_prices_tracks_dynamic_primary_source_when_primary_succeeds(self):
+        self.data_utils.md.reset_market_data_status()
+        self.data_utils.DEFAULT_PRICE_SOURCE_ORDER = ("primary_mock", "secondary_mock")
+        self.data_utils.CUSTOM_PRICE_PROVIDERS = {
+            "primary_mock": lambda symbols: {"AAPL": 222.0},
+            "secondary_mock": lambda symbols: {"AAPL": 333.0},
+        }
+
+        prices = self.data_utils.fetch_prices(["AAPL"], use_cache=False)
+        status = self.data_utils.md.get_market_data_status_snapshot()
+
+        self.assertEqual(prices["AAPL"], 222.0)
+        self.assertEqual(status["prices"]["primary_source"], "primary_mock")
+        self.assertEqual(status["prices"]["last_source"], "primary_mock")
+        self.assertEqual(status["prices"]["primary_symbols"], 1)
+        self.assertEqual(status["prices"]["fallback_symbols"], 0)
 
     def test_move_holding_to_watchlist_moves_position_and_uses_latest_price(self):
         self.data_utils.save_data({

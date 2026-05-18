@@ -2,7 +2,6 @@ _EXPORTS = {
     "BaseBacktestEngine": ("engine.base", "BaseBacktestEngine"),
     "BaseStrategy": ("engine.base", "BaseStrategy"),
     "BacktestResult": ("engine.base", "BacktestResult"),
-    "PyBrokerEngine": ("engine.pybroker_engine", "PyBrokerEngine"),
     "BacktraderEngine": ("engine.backtrader_engine", "BacktraderEngine"),
 }
 

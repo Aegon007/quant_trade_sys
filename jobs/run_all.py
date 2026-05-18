@@ -21,10 +21,16 @@ from quant_core.data import market_data as md
 from quant_core.data import storage as data_storage
 from quant_core.events.analyst_consensus import should_run_nightly_consensus_update
 from quant_core.events import event_news as en
+from quant_core.execution import nightly_planner as np
 from quant_core.ledger import transactions as tx
+from quant_core.monitoring import intraday_journal as ij
+from quant_core.monitoring import intraday_monitor as im
+from quant_core.notifications import change_feed as cfeed
 from quant_core.notifications import notification_channels as nch
 from quant_core.notifications import notification_config as ncfg
+from quant_core.notifications import delivery_router as dr
 from quant_core.notifications import reporting as nr
+from quant_core.portfolio import discipline as qdisc
 from quant_core.portfolio.control_loop import evaluate_allocation_regime
 from quant_core.snapshots import system_snapshot as ss
 from jobs.nightly_alerts import evaluate_current_market_risk, run_nightly_alerts
@@ -130,6 +136,149 @@ def maybe_run_nightly_alerts(
     return True
 
 
+def _load_notification_config(config_loader, *, environ=None):
+    try:
+        base_config = config_loader()
+    except TypeError:
+        base_config = config_loader(ncfg.NOTIFICATION_CONFIG_FILE)
+    return ncfg.apply_environment_overrides(base_config, environ=environ)
+
+
+def _has_enabled_delivery_channel(config) -> bool:
+    config = dict(config or {})
+    slack = dict(config.get("slack", {}) or {})
+    email = dict(config.get("email", {}) or {})
+    return bool(
+        (slack.get("enabled") and str(slack.get("webhook_url") or "").strip())
+        or (email.get("enabled") and list(email.get("to_emails", []) or []))
+    )
+
+
+def _latest_monthly_discipline_review_from_journal(*, journal_entries):
+    entries = list(journal_entries or [])
+    if not entries:
+        return {}
+    latest_entry = dict(entries[-1] or {})
+    return dict(latest_entry.get("monthly_discipline_review", {}) or {})
+
+
+def _build_pending_intraday_discipline_alert(*, change_feed, monthly_discipline_review, state_path):
+    alert = cfeed.build_intraday_discipline_month_alert(
+        change_feed,
+        monthly_discipline_review=monthly_discipline_review,
+    )
+    if not alert:
+        return None
+    previous_state = dict(cfeed.load_intraday_alert_state(path=state_path) or {})
+    if str(previous_state.get("last_signature") or "").strip() == str(alert.get("signature") or "").strip():
+        return None
+    return alert
+
+
+def _mark_intraday_discipline_alert_sent(*, alert, state_path, now):
+    if not isinstance(alert, dict) or not str(alert.get("signature") or "").strip():
+        return
+    cfeed.save_intraday_alert_state(
+        {
+            "last_signature": str(alert.get("signature") or "").strip(),
+            "last_sent_at": now.isoformat(),
+            "last_title": str((list(alert.get("items", []) or [{}])[0] or {}).get("title") or "").strip(),
+        },
+        path=state_path,
+    )
+
+
+def _record_intraday_discipline_event(
+    *,
+    alert,
+    monthly_discipline_review,
+    discipline_snapshot,
+    risk_decision,
+    account_snapshot,
+    now,
+    was_alert_sent,
+    send_context,
+    skip_reason,
+    journal_path,
+):
+    if not isinstance(alert, dict):
+        return
+    first_item = dict((list(alert.get("items", []) or [{}])[0]) or {})
+    entry = ij.build_intraday_event_entry(
+        event_type="DISCIPLINE_MONTH_DETERIORATION",
+        priority="high",
+        now=now,
+        trigger_reason=str(first_item.get("title") or "discipline_month_alert").strip(),
+        was_alert_sent=bool(was_alert_sent),
+        send_context=send_context,
+        skip_reason=skip_reason,
+        payload={
+            "alert_signature": str(alert.get("signature") or "").strip(),
+            "alert_message": str(alert.get("message") or "").strip(),
+            "discipline_regime": str(dict(discipline_snapshot or {}).get("regime") or "").strip(),
+            "risk_regime": str(getattr(risk_decision, "regime", "") or dict(risk_decision or {}).get("regime") or "").strip(),
+            "monthly_status": str(dict(monthly_discipline_review or {}).get("status") or "").strip(),
+            "follow_days": int(dict(monthly_discipline_review or {}).get("follow_days") or 0),
+            "ignore_days": int(dict(monthly_discipline_review or {}).get("ignore_days") or 0),
+            "defensive_override_days": int(dict(monthly_discipline_review or {}).get("defensive_override_days") or 0),
+            "cash_available": float(dict(account_snapshot or {}).get("cash_available") or 0.0),
+            "exposure_pct": float(dict(account_snapshot or {}).get("exposure_pct") or 0.0),
+        },
+    )
+    ij.append_intraday_event(entry, journal_path=journal_path)
+
+
+def _build_pending_intraday_classifier_alert(*, events, now, state_path):
+    alert = im.build_intraday_alert(events, now=now)
+    if not alert:
+        return None
+    if not im.should_send_intraday_alert_signature(
+        str(alert.get("signature") or "").strip(),
+        now=now,
+        path=state_path,
+    ):
+        return None
+    return alert
+
+
+def _record_intraday_classifier_events(
+    *,
+    alert,
+    now,
+    was_alert_sent,
+    send_context,
+    skip_reason,
+    journal_path,
+):
+    if not isinstance(alert, dict):
+        return
+    for event in list(alert.get("events", []) or []):
+        payload = dict(event.get("payload", {}) or {})
+        payload.update(
+            {
+                "alert_signature": str(alert.get("signature") or "").strip(),
+                "alert_message": str(alert.get("message") or "").strip(),
+                "plan_action": event.get("plan_action"),
+                "action_side": event.get("action_side"),
+                "reason_codes": list(event.get("reason_codes", []) or []),
+                "explanation_summary": event.get("explanation_summary"),
+                "title": event.get("title"),
+            }
+        )
+        entry = ij.build_intraday_event_entry(
+            event_type=event.get("event_type"),
+            priority=event.get("priority") or "high",
+            now=now,
+            symbol=event.get("symbol"),
+            trigger_reason=event.get("trigger_reason") or event.get("title") or event.get("event_type"),
+            was_alert_sent=bool(was_alert_sent),
+            send_context=send_context,
+            skip_reason=skip_reason,
+            payload=payload,
+        )
+        ij.append_intraday_event(entry, journal_path=journal_path)
+
+
 def maybe_run_market_refresh(
     *,
     now: Optional[datetime] = None,
@@ -140,8 +289,13 @@ def maybe_run_market_refresh(
     config_loader: Callable[[], dict] = ncfg.load_notification_config,
     summary_builder: Callable[..., str] = nr.build_market_refresh_report,
     slack_sender: Callable[..., tuple] = nch.send_slack_message,
+    email_sender: Callable[..., tuple] = nch.send_email_message,
+    message_router: Callable[..., list] = dr.deliver_message,
     quant_analysis_snapshot_path: str = qpa.DEFAULT_QUANT_ANALYSIS_SNAPSHOT_FILE,
     report_output_dir: str = nr.DEFAULT_REPORTS_DIR,
+    intraday_alert_state_path: str = cfeed.DEFAULT_INTRADAY_ALERT_STATE_FILE,
+    intraday_event_journal_path: str = ij.DEFAULT_INTRADAY_EVENT_JOURNAL_FILE,
+    intraday_event_alert_state_path: str = im.DEFAULT_INTRADAY_EVENT_ALERT_STATE_FILE,
     auto_quant_analysis_min_interval_seconds: Optional[int] = None,
     auto_quant_analysis_price_jump_pct: Optional[float] = None,
     enable_auto_quant_analysis: Optional[bool] = None,
@@ -161,9 +315,27 @@ def maybe_run_market_refresh(
     if not refreshed:
         return False
     saver(refreshed_data)
-    config = ncfg.apply_environment_overrides(config_loader(), environ=environ)
+    config = _load_notification_config(config_loader, environ=environ)
     alert_settings = config.get("alert_settings", {}) if isinstance(config, dict) else {}
     slack_config = config.get("slack", {}) if isinstance(config, dict) else {}
+    latest_change_feed = cfeed.load_change_feed() or {}
+    latest_snapshot_journal = ss.load_snapshot_journal(limit=1)
+    latest_trade_plan = np.load_next_day_trade_plan()
+    latest_monthly_discipline_review = _latest_monthly_discipline_review_from_journal(
+        journal_entries=latest_snapshot_journal
+    )
+    latest_discipline_snapshot = qdisc.load_discipline_snapshot() or {}
+    intraday_alerts_enabled = bool(alert_settings.get("send_intraday_alerts", True))
+    pending_intraday_discipline_alert = (
+        _build_pending_intraday_discipline_alert(
+            change_feed=latest_change_feed,
+            monthly_discipline_review=latest_monthly_discipline_review,
+            state_path=intraday_alert_state_path,
+        )
+        if intraday_alerts_enabled
+        else None
+    )
+    notifications_enabled = _has_enabled_delivery_channel(config)
     try:
         resolved_auto_quant_analysis_min_interval_seconds = int(
             auto_quant_analysis_min_interval_seconds
@@ -234,6 +406,24 @@ def maybe_run_market_refresh(
         )
     except Exception:
         allocation_regime = None
+    intraday_classifier_events = im.classify_intraday_events(
+        data=refreshed_data,
+        trade_plan=latest_trade_plan,
+        risk_gate=risk_decision,
+        discipline_snapshot=latest_discipline_snapshot,
+        active_events=active_events,
+        event_decision=event_decision,
+        now=now,
+    )
+    pending_intraday_classifier_alert = (
+        _build_pending_intraday_classifier_alert(
+            events=intraday_classifier_events,
+            now=now,
+            state_path=intraday_event_alert_state_path,
+        )
+        if intraday_alerts_enabled
+        else None
+    )
 
     previous_snapshot = None
     auto_trigger = {"should_run": False, "message": "Auto quant analysis disabled."}
@@ -288,19 +478,23 @@ def maybe_run_market_refresh(
                             message = auto_trigger.get("message", "")
                             if change_summary.get("message"):
                                 message = f"{message}\n\n{change_summary['message']}".strip()
-                            ok, message_text = slack_sender(message, slack_config.get("webhook_url"))
-                            if ok:
+                            delivery_results = message_router(
+                                "quant_analysis_change_summary",
+                                subject=f"Quant Analysis Change Summary {now.strftime('%Y-%m-%d %H:%M')}",
+                                body=message,
+                                config=config,
+                                environ=environ,
+                                slack_sender=slack_sender,
+                                email_sender=email_sender,
+                            )
+                            if dr.any_success(delivery_results):
                                 logger.info("Auto full-analysis change summary sent to Slack.")
                             else:
-                                logger.warning("Auto full-analysis change summary failed: %s", message_text)
+                                logger.warning("Auto full-analysis change summary failed: %s", delivery_results)
             except Exception:
                 logger.exception("Auto full-analysis refresh failed.")
 
-    if (
-        slack_config.get("enabled")
-        and slack_config.get("webhook_url")
-        and bool(alert_settings.get("send_hourly_market_summary", True))
-    ):
+    if notifications_enabled and bool(alert_settings.get("send_hourly_market_summary", True)):
         market_hours_only = bool(alert_settings.get("send_hourly_market_summary_market_hours_only", True))
         if market_hours_only and not nr.is_us_market_session(now):
             logger.info("Skipping hourly market summary outside regular US market hours.")
@@ -315,15 +509,144 @@ def maybe_run_market_refresh(
                     data_sources=md.get_market_data_status_snapshot(),
                     now=now,
                 )
-                ok, message = slack_sender(summary_text, slack_config.get("webhook_url"))
-                if ok:
-                    logger.info("Hourly market refresh summary sent to Slack.")
+                if pending_intraday_discipline_alert and pending_intraday_discipline_alert.get("message"):
+                    summary_text = (
+                        f"{summary_text}\n"
+                        f"Discipline alert: {pending_intraday_discipline_alert['message']}"
+                    ).strip()
+                if pending_intraday_classifier_alert and pending_intraday_classifier_alert.get("message"):
+                    summary_text = (
+                        f"{summary_text}\n"
+                        f"Intraday alert: {pending_intraday_classifier_alert['message']}"
+                    ).strip()
+                delivery_results = message_router(
+                    "hourly_market_summary",
+                    subject=f"Hourly Market Refresh {now.strftime('%Y-%m-%d %H:%M')}",
+                    body=summary_text,
+                    config=config,
+                    environ=environ,
+                    slack_sender=slack_sender,
+                    email_sender=email_sender,
+                )
+                if dr.any_success(delivery_results):
+                    if pending_intraday_discipline_alert:
+                        _record_intraday_discipline_event(
+                            alert=pending_intraday_discipline_alert,
+                            monthly_discipline_review=latest_monthly_discipline_review,
+                            discipline_snapshot=latest_discipline_snapshot,
+                            risk_decision=risk_decision,
+                            account_snapshot=account_snapshot,
+                            now=now,
+                            was_alert_sent=True,
+                            send_context="hourly_market_summary",
+                            skip_reason="",
+                            journal_path=intraday_event_journal_path,
+                        )
+                        _mark_intraday_discipline_alert_sent(
+                            alert=pending_intraday_discipline_alert,
+                            state_path=intraday_alert_state_path,
+                            now=now,
+                        )
+                    if pending_intraday_classifier_alert:
+                        _record_intraday_classifier_events(
+                            alert=pending_intraday_classifier_alert,
+                            now=now,
+                            was_alert_sent=True,
+                            send_context="hourly_market_summary",
+                            skip_reason="",
+                            journal_path=intraday_event_journal_path,
+                        )
+                        im.mark_intraday_alert_sent(
+                            str(pending_intraday_classifier_alert.get("signature") or "").strip(),
+                            now=now,
+                            path=intraday_event_alert_state_path,
+                        )
+                    logger.info("Hourly market refresh summary sent via notification channels.")
                 else:
-                    logger.warning("Hourly market refresh summary failed: %s", message)
+                    logger.warning("Hourly market refresh summary failed: %s", delivery_results)
+                    if pending_intraday_discipline_alert:
+                        _record_intraday_discipline_event(
+                            alert=pending_intraday_discipline_alert,
+                            monthly_discipline_review=latest_monthly_discipline_review,
+                            discipline_snapshot=latest_discipline_snapshot,
+                            risk_decision=risk_decision,
+                            account_snapshot=account_snapshot,
+                            now=now,
+                            was_alert_sent=False,
+                            send_context="hourly_market_summary",
+                            skip_reason="delivery_failed",
+                            journal_path=intraday_event_journal_path,
+                        )
+                    if pending_intraday_classifier_alert:
+                        _record_intraday_classifier_events(
+                            alert=pending_intraday_classifier_alert,
+                            now=now,
+                            was_alert_sent=False,
+                            send_context="hourly_market_summary",
+                            skip_reason="delivery_failed",
+                            journal_path=intraday_event_journal_path,
+                        )
             except Exception:
                 logger.exception("Hourly market refresh summary failed.")
+    elif notifications_enabled and nr.is_us_market_session(now) and (pending_intraday_discipline_alert or pending_intraday_classifier_alert):
+        bodies = []
+        if pending_intraday_discipline_alert and pending_intraday_discipline_alert.get("message"):
+            bodies.append(f"Discipline alert: {pending_intraday_discipline_alert['message']}")
+        if pending_intraday_classifier_alert and pending_intraday_classifier_alert.get("message"):
+            bodies.append(f"Market alert: {pending_intraday_classifier_alert['message']}")
+        try:
+            delivery_results = message_router(
+                "intraday_alert",
+                subject=f"Intraday Market Alert {now.strftime('%Y-%m-%d %H:%M')}",
+                body="\n\n".join(bodies),
+                config=config,
+                environ=environ,
+                slack_sender=slack_sender,
+                email_sender=email_sender,
+            )
+            delivered = dr.any_success(delivery_results)
+            if pending_intraday_discipline_alert:
+                _record_intraday_discipline_event(
+                    alert=pending_intraday_discipline_alert,
+                    monthly_discipline_review=latest_monthly_discipline_review,
+                    discipline_snapshot=latest_discipline_snapshot,
+                    risk_decision=risk_decision,
+                    account_snapshot=account_snapshot,
+                    now=now,
+                    was_alert_sent=delivered,
+                    send_context="intraday_alert",
+                    skip_reason="" if delivered else "delivery_failed",
+                    journal_path=intraday_event_journal_path,
+                )
+                if delivered:
+                    _mark_intraday_discipline_alert_sent(
+                        alert=pending_intraday_discipline_alert,
+                        state_path=intraday_alert_state_path,
+                        now=now,
+                    )
+            if pending_intraday_classifier_alert:
+                _record_intraday_classifier_events(
+                    alert=pending_intraday_classifier_alert,
+                    now=now,
+                    was_alert_sent=delivered,
+                    send_context="intraday_alert",
+                    skip_reason="" if delivered else "delivery_failed",
+                    journal_path=intraday_event_journal_path,
+                )
+                if delivered:
+                    im.mark_intraday_alert_sent(
+                        str(pending_intraday_classifier_alert.get("signature") or "").strip(),
+                        now=now,
+                        path=intraday_event_alert_state_path,
+                    )
+            if delivered:
+                logger.info("Intraday alert bundle sent via notification channels.")
+            else:
+                logger.warning("Intraday alert bundle failed: %s", delivery_results)
+        except Exception:
+            logger.exception("Intraday alert bundle failed.")
     else:
-        logger.info("Hourly market summary skipped because Slack webhook notifications are not enabled.")
+        logger.info("Hourly market summary skipped because no delivery channel is enabled.")
     logger.info("Market cache refresh completed.")
     return True
 
