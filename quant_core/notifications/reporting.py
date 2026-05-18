@@ -14,16 +14,19 @@ _MPL_CONFIG_DIR = qpaths.STATE_DIR / "matplotlib"
 os.environ["MPLCONFIGDIR"] = str(_MPL_CONFIG_DIR)
 _MPL_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
 
-import matplotlib
-
-matplotlib.use("Agg")
-
-from matplotlib import pyplot as plt
-from matplotlib.backends.backend_pdf import PdfPages
-
 
 US_MARKET_TZ = ZoneInfo("America/New_York")
 DEFAULT_REPORTS_DIR = str(qpaths.PROJECT_ROOT / "reports")
+
+
+def _load_matplotlib():
+    import matplotlib
+
+    matplotlib.use("Agg")
+    from matplotlib import pyplot as plt
+    from matplotlib.backends.backend_pdf import PdfPages
+
+    return plt, PdfPages
 
 
 def _mapping_value(payload, key, default=None):
@@ -504,6 +507,7 @@ def build_quant_analysis_report(snapshot: Mapping) -> str:
 
 
 def _draw_quant_analysis_pdf(snapshot: Mapping, pdf_path: Path):
+    plt, PdfPages = _load_matplotlib()
     snapshot = dict(snapshot or {})
     summary = dict(snapshot.get("summary", {}) or {})
     symbol_rows = list(snapshot.get("symbols", []) or [])
