@@ -11,6 +11,41 @@ class SlackCommandParserTests(unittest.TestCase):
         self.assertIsNone(command.symbol)
         self.assertIsNone(command.shares)
 
+    def test_parse_plan_command(self):
+        from integrations.slack.command_parser import parse_slack_command
+
+        command = parse_slack_command("今日计划")
+
+        self.assertEqual(command.name, "SHOW_PLAN")
+
+    def test_parse_risk_command(self):
+        from integrations.slack.command_parser import parse_slack_command
+
+        command = parse_slack_command("风险状态")
+
+        self.assertEqual(command.name, "SHOW_RISK")
+
+    def test_parse_core_etf_command(self):
+        from integrations.slack.command_parser import parse_slack_command
+
+        command = parse_slack_command("核心ETF")
+
+        self.assertEqual(command.name, "SHOW_CORE")
+
+    def test_parse_satellite_command(self):
+        from integrations.slack.command_parser import parse_slack_command
+
+        command = parse_slack_command("卫星雷达")
+
+        self.assertEqual(command.name, "SHOW_SATELLITE")
+
+    def test_parse_overview_command(self):
+        from integrations.slack.command_parser import parse_slack_command
+
+        command = parse_slack_command("系统概览")
+
+        self.assertEqual(command.name, "SHOW_OVERVIEW")
+
     def test_parse_buy_command_supports_fractional_shares(self):
         from integrations.slack.command_parser import parse_slack_command
 

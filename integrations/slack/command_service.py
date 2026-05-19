@@ -1,12 +1,15 @@
 import json
-import os
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional
 
 from quant_core import paths as qpaths
+from quant_core.analytics import candidate_pool as cpool
 from quant_core.portfolio import actions as pactions
+from quant_core.portfolio import core_etf_engine as cee
+from quant_core.portfolio import discipline as qdisc
 from quant_core.data import storage as du
+from quant_core.execution import nightly_planner as nplanner
 from quant_core.snapshots import system_snapshot as ss
 from share_utils import format_share_quantity, validate_share_quantity
 from integrations.slack.command_parser import ParsedSlackCommand, parse_slack_command
@@ -14,6 +17,11 @@ from integrations.slack.command_parser import ParsedSlackCommand, parse_slack_co
 qpaths.bootstrap_storage_paths()
 
 COMMAND_AUDIT_FILE = qpaths.COMMAND_AUDIT_FILE
+TRADE_PLAN_FILE = qpaths.NEXT_DAY_TRADE_PLAN_FILE
+DISCIPLINE_SNAPSHOT_FILE = qpaths.DISCIPLINE_SNAPSHOT_FILE
+CORE_ETF_SNAPSHOT_FILE = qpaths.CORE_ETF_SNAPSHOT_FILE
+SATELLITE_CANDIDATE_POOL_FILE = qpaths.SATELLITE_CANDIDATE_POOL_FILE
+NIGHTLY_JOURNAL_FILE = ss.DEFAULT_NIGHTLY_JOURNAL_FILE
 
 
 @dataclass(frozen=True)
@@ -28,11 +36,18 @@ class CommandExecutionResult:
 def supported_commands_text() -> str:
     return "\n".join(
         [
-            "可用命令:",
+            "驾驶舱查询:",
             "- 可用命令 / help",
+            "- 系统概览",
+            "- 今日计划 / 明日计划",
+            "- 风险状态 / 纪律状态",
+            "- 核心ETF",
+            "- 卫星雷达 / top3",
             "- 当前持仓",
             "- 当前关注",
             "- 状态 <代码>",
+            "",
+            "同步与维护:",
             "- 买入 <代码> <股数>",
             "- 卖出 <代码> <股数>",
             "- 全部卖出 <代码>",
@@ -57,6 +72,24 @@ def _find_record(records, symbol: str):
         if str(record.get("symbol", "")).strip().upper() == normalized:
             return record
     return None
+
+
+def _format_pct(value, *, scale=1.0) -> str:
+    if value is None:
+        return "—"
+    return f"{float(value) * scale:.1f}%"
+
+
+def _format_price(value) -> str:
+    if value is None:
+        return "—"
+    return f"${float(value):,.2f}"
+
+
+def _format_price_range(low, high) -> str:
+    if low is None or high is None:
+        return "—"
+    return f"{_format_price(low)} - {_format_price(high)}"
 
 
 def _load_snapshot(data=None):
@@ -147,6 +180,188 @@ def _format_status_message(data, symbol: str) -> str:
     return f"未找到 {symbol}，对应标的不在持仓或关注列表中。"
 
 
+def _load_trade_plan():
+    return nplanner.load_next_day_trade_plan(path=TRADE_PLAN_FILE)
+
+
+def _load_discipline_snapshot():
+    return qdisc.load_discipline_snapshot(path=DISCIPLINE_SNAPSHOT_FILE)
+
+
+def _load_core_etf_snapshot():
+    return cee.load_core_etf_snapshot(path=CORE_ETF_SNAPSHOT_FILE)
+
+
+def _load_satellite_snapshot():
+    return cpool.load_satellite_candidate_pool_snapshot(path=SATELLITE_CANDIDATE_POOL_FILE)
+
+
+def _load_latest_monthly_review():
+    rows = ss.load_snapshot_journal(journal_path=NIGHTLY_JOURNAL_FILE, limit=1)
+    if not rows:
+        return None
+    return dict((rows[-1] or {}).get("monthly_discipline_review", {}) or {})
+
+
+def _format_trade_plan_message(plan) -> str:
+    plan = dict(plan or {})
+    if not plan:
+        return "尚未生成次日计划。请先运行 nightly 或执行一次强制补齐。"
+    lines = [
+        "次日交易计划",
+        f"- 计划日: {plan.get('plan_date') or '—'}",
+        f"- 模式: {plan.get('decision') or '—'}",
+        f"- 结论: {plan.get('summary_reason') or '—'}",
+    ]
+    items = list(plan.get("items", []) or [])
+    if not items:
+        lines.append("- 当前无强信号，建议按计划不动。")
+        return "\n".join(lines)
+    lines.append("- 计划单:")
+    for item in items[:5]:
+        symbol = str(item.get("symbol") or "").strip().upper() or "—"
+        action = str(item.get("plan_action") or "").strip().upper() or "HOLD"
+        lines.append(
+            "  "
+            f"{symbol} | {action} | 仓位变化 {_format_pct(item.get('plan_weight_delta_pct'))}"
+        )
+        buy_zone = _format_price_range(item.get("buy_zone_low"), item.get("buy_zone_high"))
+        trim_zone = _format_price_range(item.get("trim_zone_low"), item.get("trim_zone_high"))
+        if buy_zone != "—":
+            lines.append(f"    买入区间: {buy_zone}")
+        if trim_zone != "—":
+            lines.append(f"    减仓区间: {trim_zone}")
+        if item.get("invalid_condition"):
+            lines.append(f"    作废条件: {item.get('invalid_condition')}")
+    if len(items) > 5:
+        lines.append(f"- 其余 {len(items) - 5} 条动作请在 WebUI 查看。")
+    return "\n".join(lines)
+
+
+def _format_risk_message(snapshot, monthly_review=None) -> str:
+    snapshot = dict(snapshot or {})
+    if not snapshot:
+        return "尚未生成纪律与风险快照。请先运行 nightly 或执行一次强制补齐。"
+    monthly_review = dict(monthly_review or {})
+    lines = [
+        "纪律与风险状态",
+        f"- 纪律状态: {snapshot.get('regime') or '—'}",
+        f"- 风险状态: {snapshot.get('risk_regime') or '—'}",
+        f"- 配置状态: {snapshot.get('allocation_regime') or '—'}",
+        f"- 可开核心仓: {'是' if snapshot.get('can_open_new_core_positions') else '否'}",
+        f"- 可开卫星仓: {'是' if snapshot.get('can_open_new_satellite_positions') else '否'}",
+        f"- 可部署现金: {_format_currency(snapshot.get('deployable_cash'))}",
+        f"- 暴露率: {_format_pct(snapshot.get('exposure_pct'))}",
+    ]
+    summary = str(snapshot.get("summary") or "").strip()
+    if summary:
+        lines.append(f"- 总结: {summary}")
+    warnings = list(snapshot.get("warnings", []) or [])
+    if warnings:
+        lines.append(f"- 预警: {'；'.join(str(item).strip() for item in warnings[:2] if str(item).strip())}")
+    if monthly_review:
+        lines.append(
+            f"- 月度纪律: {monthly_review.get('status') or '—'} | "
+            f"FOLLOW {int(monthly_review.get('follow_days') or 0)} | "
+            f"IGNORE {int(monthly_review.get('ignore_days') or 0)}"
+        )
+    return "\n".join(lines)
+
+
+def _format_core_etf_message(snapshot) -> str:
+    snapshot = dict(snapshot or {})
+    if not snapshot:
+        return "尚未生成核心 ETF 快照。请先运行 nightly 或执行一次强制补齐。"
+    summary = dict(snapshot.get("summary", {}) or {})
+    symbols = list(snapshot.get("symbols", []) or [])
+    ranked = sorted(
+        symbols,
+        key=lambda row: (
+            {"ACCUMULATE": 0, "TRIM": 1, "PAUSE_BUY": 2, "RISK_EXIT": 3, "HOLD": 4}.get(
+                str((row or {}).get("action") or "HOLD").strip().upper(),
+                9,
+            ),
+            -float((row or {}).get("target_weight_pct") or 0.0),
+            str((row or {}).get("symbol") or ""),
+        ),
+    )
+    lines = [
+        "核心 ETF 引擎",
+        f"- 风险状态: {snapshot.get('risk_regime') or '—'} | 配置状态: {snapshot.get('allocation_regime') or '—'}",
+        f"- 动作汇总: 加仓 {int(summary.get('accumulate_count') or 0)} / 减仓 {int(summary.get('trim_count') or 0)} / 总数 {int(summary.get('total_symbols') or 0)}",
+    ]
+    if not ranked:
+        lines.append("- 当前没有核心 ETF 快照明细。")
+        return "\n".join(lines)
+    lines.append("- 重点 ETF:")
+    for row in ranked[:5]:
+        symbol = str(row.get("symbol") or "").strip().upper() or "—"
+        action = str(row.get("action") or "HOLD").strip().upper()
+        lines.append(
+            "  "
+            f"{symbol} | {action} | 当前 {_format_pct(row.get('current_weight_pct'))} | "
+            f"目标 {_format_pct(row.get('target_weight_pct'))} | 分数 {float(row.get('rotation_score') or 0.0):.1f}"
+        )
+        lines.append(
+            "    "
+            f"买 {_format_price_range(row.get('recommended_buy_zone_low'), row.get('recommended_buy_zone_high'))} | "
+            f"减 {_format_price_range(row.get('trim_zone_low'), row.get('trim_zone_high'))} | "
+            f"破位 {_format_price(row.get('risk_break_level'))}"
+        )
+    return "\n".join(lines)
+
+
+def _format_satellite_message(snapshot) -> str:
+    snapshot = dict(snapshot or {})
+    if not snapshot:
+        return "尚未生成卫星雷达快照。请先运行 nightly 或执行一次强制补齐。"
+    summary = dict(snapshot.get("summary", {}) or {})
+    top_rows = list(snapshot.get("top_recommendations", []) or [])
+    lines = [
+        "卫星仓雷达",
+        f"- 候选池: {int(summary.get('candidate_count') or 0)} | 深分析: {int(summary.get('deep_analysis_count') or 0)} | Top3: {int(summary.get('top_recommendation_count') or 0)}",
+        f"- 状态汇总: CONFIRMED {int(summary.get('confirmed_count') or 0)} / PROBE {int(summary.get('probe_count') or 0)} / WATCH {int(summary.get('watch_count') or 0)}",
+    ]
+    if not top_rows:
+        lines.append("- 当前没有进入 Top 推荐的卫星仓候选。")
+        return "\n".join(lines)
+    lines.append("- Top 推荐:")
+    for row in top_rows[:3]:
+        symbol = str(row.get("symbol") or "").strip().upper() or "—"
+        status = str(row.get("recommendation_status") or "WATCH").strip().upper()
+        action = str(row.get("plan_action") or "HOLD").strip().upper()
+        lines.append(
+            "  "
+            f"{symbol} | {status} / {action} | 仓位 {_format_pct(row.get('suggested_weight_pct'))} | 总分 {float(row.get('satellite_score') or 0.0):.1f}"
+        )
+        reason = str(row.get("recommendation_reason") or row.get("signal_reason") or "").strip()
+        if reason:
+            lines.append(f"    原因: {reason}")
+    return "\n".join(lines)
+
+
+def _format_overview_message(data, snapshot, plan, discipline_snapshot, core_snapshot, satellite_snapshot, monthly_review=None) -> str:
+    account = dict((snapshot or {}).get("account", {}) or {})
+    lines = [
+        "系统概览",
+        f"- 计划: {(plan or {}).get('decision') or '—'} | {(plan or {}).get('summary_reason') or '尚未生成计划'}",
+        f"- 纪律/风险: {(discipline_snapshot or {}).get('regime') or '—'} / {(discipline_snapshot or {}).get('risk_regime') or '—'}",
+        f"- 账户: 现金 {_format_currency(account.get('cash_available'))} | 可部署 {_format_currency(account.get('deployable_cash'))} | 暴露 {_format_pct(account.get('exposure_pct'))}",
+        f"- 持仓/关注: {len((data or {}).get('holdings', []) or [])} / {len((data or {}).get('watchlist', []) or [])}",
+    ]
+    core_summary = dict((core_snapshot or {}).get("summary", {}) or {})
+    lines.append(
+        f"- 核心 ETF: 加仓 {int(core_summary.get('accumulate_count') or 0)} / 减仓 {int(core_summary.get('trim_count') or 0)}"
+    )
+    top_symbols = list(dict((satellite_snapshot or {}).get("summary", {}) or {}).get("top_symbols", []) or [])
+    lines.append(f"- 卫星雷达 Top: {', '.join(top_symbols[:3]) if top_symbols else '当前无 Top 推荐'}")
+    if monthly_review:
+        lines.append(
+            f"- 月度纪律: {monthly_review.get('status') or '—'} | FOLLOW {int(monthly_review.get('follow_days') or 0)} / IGNORE {int(monthly_review.get('ignore_days') or 0)}"
+        )
+    return "\n".join(lines)
+
+
 def _append_command_audit_log(command: ParsedSlackCommand, ok: bool, message: str, action_payload=None, path=None):
     path = path or COMMAND_AUDIT_FILE
     row = {
@@ -196,6 +411,40 @@ def execute_slack_command(text) -> CommandExecutionResult:
     try:
         if command.name == "HELP":
             return _result(True, command, supported_commands_text())
+
+        if command.name == "SHOW_PLAN":
+            return _result(True, command, _format_trade_plan_message(_load_trade_plan()))
+
+        if command.name == "SHOW_RISK":
+            return _result(
+                True,
+                command,
+                _format_risk_message(_load_discipline_snapshot(), monthly_review=_load_latest_monthly_review()),
+            )
+
+        if command.name == "SHOW_CORE":
+            return _result(True, command, _format_core_etf_message(_load_core_etf_snapshot()))
+
+        if command.name == "SHOW_SATELLITE":
+            return _result(True, command, _format_satellite_message(_load_satellite_snapshot()))
+
+        if command.name == "SHOW_OVERVIEW":
+            data = du.load_data()
+            snapshot = _load_snapshot(data=data)
+            return _result(
+                True,
+                command,
+                _format_overview_message(
+                    data,
+                    snapshot,
+                    _load_trade_plan(),
+                    _load_discipline_snapshot(),
+                    _load_core_etf_snapshot(),
+                    _load_satellite_snapshot(),
+                    monthly_review=_load_latest_monthly_review(),
+                ),
+                data=data,
+            )
 
         if command.name == "SHOW_HOLDINGS":
             data = du.load_data()

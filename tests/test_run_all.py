@@ -39,6 +39,17 @@ class RunAllTests(unittest.TestCase):
 
         self.assertEqual(specs, [])
 
+    def test_build_service_specs_can_enable_verbose_ui_startup(self):
+        specs = self.module.build_service_specs(
+            with_ui=True,
+            with_slack=False,
+            verbose_ui_startup=True,
+            python_executable="/opt/python",
+            project_root=Path("/repo"),
+        )
+
+        self.assertEqual(specs[0].env["QUANT_VERBOSE_UI_STARTUP"], "1")
+
     def test_emit_startup_summary_formats_each_service(self):
         statuses = [
             self.module.ServiceStartupStatus(

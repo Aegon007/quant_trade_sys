@@ -80,6 +80,7 @@ def build_service_specs(
     *,
     with_ui: bool = True,
     with_slack: bool = True,
+    verbose_ui_startup: bool = False,
     python_executable: Optional[str] = None,
     project_root: Optional[Path] = None,
 ) -> List[ServiceSpec]:
@@ -88,16 +89,19 @@ def build_service_specs(
     specs: List[ServiceSpec] = []
 
     if with_ui:
+        ui_env = {
+            "QUANT_UI_SKIP_STARTUP_REFRESH": "1",
+            "QUANT_UI_DEFER_INITIAL_EVENT_FETCH": "1",
+            "QUANT_RUN_ALL_MODE": "1",
+        }
+        if verbose_ui_startup:
+            ui_env["QUANT_VERBOSE_UI_STARTUP"] = "1"
         specs.append(
             ServiceSpec(
                 name="streamlit-ui",
                 command=[python_executable, "-m", "streamlit", "run", str(project_root / "main.py")],
                 cwd=str(project_root),
-                env={
-                    "QUANT_UI_SKIP_STARTUP_REFRESH": "1",
-                    "QUANT_UI_DEFER_INITIAL_EVENT_FETCH": "1",
-                    "QUANT_RUN_ALL_MODE": "1",
-                },
+                env=ui_env,
             )
         )
 
@@ -734,6 +738,7 @@ def run_supervisor(
     with_slack: bool = True,
     with_nightly: bool = True,
     with_market_refresh: bool = True,
+    verbose_ui_startup: bool = False,
     monitor_seconds: int = DEFAULT_MONITOR_SECONDS,
     nightly_poll_seconds: int = DEFAULT_NIGHTLY_POLL_SECONDS,
     market_refresh_poll_seconds: int = DEFAULT_MARKET_REFRESH_POLL_SECONDS,
@@ -784,6 +789,7 @@ def run_supervisor(
         service_specs = build_service_specs(
             with_ui=with_ui,
             with_slack=effective_with_slack,
+            verbose_ui_startup=verbose_ui_startup,
             python_executable=python_executable,
             project_root=project_root,
         )
@@ -915,6 +921,7 @@ def main(argv=None):
     parser.add_argument("--no-slack", action="store_true", help="Do not start the Slack bot.")
     parser.add_argument("--no-nightly", action="store_true", help="Do not start the nightly scheduler.")
     parser.add_argument("--no-market-refresh", action="store_true", help="Do not start the hourly market cache refresher.")
+    parser.add_argument("--verbose-ui-startup", action="store_true", help="Print detailed UI startup stages from the Streamlit process.")
     parser.add_argument("--monitor-seconds", type=int, default=DEFAULT_MONITOR_SECONDS, help="How often to check child processes.")
     parser.add_argument("--nightly-poll-seconds", type=int, default=DEFAULT_NIGHTLY_POLL_SECONDS, help="How often to check whether nightly alerts are due.")
     parser.add_argument("--market-refresh-poll-seconds", type=int, default=DEFAULT_MARKET_REFRESH_POLL_SECONDS, help="How often to check whether market cache refresh is due.")
@@ -930,6 +937,7 @@ def main(argv=None):
         with_slack=not args.no_slack,
         with_nightly=not args.no_nightly,
         with_market_refresh=not args.no_market_refresh,
+        verbose_ui_startup=args.verbose_ui_startup,
         monitor_seconds=args.monitor_seconds,
         nightly_poll_seconds=args.nightly_poll_seconds,
         market_refresh_poll_seconds=args.market_refresh_poll_seconds,

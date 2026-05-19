@@ -39,6 +39,16 @@ def parse_slack_command(text) -> ParsedSlackCommand:
 
     if lowered in {"可用命令", "帮助", "help", "commands"}:
         return _command("HELP", raw_text, normalized)
+    if lowered in {"系统概览", "overview"}:
+        return _command("SHOW_OVERVIEW", raw_text, normalized)
+    if lowered in {"今日计划", "明日计划", "plan"}:
+        return _command("SHOW_PLAN", raw_text, normalized)
+    if lowered in {"风险状态", "纪律状态", "risk"}:
+        return _command("SHOW_RISK", raw_text, normalized)
+    if lowered in {"核心etf", "核心 etf", "core"}:
+        return _command("SHOW_CORE", raw_text, normalized)
+    if lowered in {"卫星雷达", "top3", "satellite"}:
+        return _command("SHOW_SATELLITE", raw_text, normalized)
     if lowered in {"当前持仓", "holdings"}:
         return _command("SHOW_HOLDINGS", raw_text, normalized)
     if lowered in {"当前关注", "watchlist", "watch list"}:

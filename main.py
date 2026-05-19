@@ -1,4 +1,5 @@
 import os
+import sys
 import time
 from datetime import datetime
 
@@ -56,6 +57,7 @@ NEWS_AUTO_REFRESH_INTERVAL_SECONDS = 600
 DEFER_STARTUP_REFRESH = str(os.environ.get("QUANT_UI_SKIP_STARTUP_REFRESH") or "").strip().lower() in {"1", "true", "yes", "on"}
 DEFER_INITIAL_EVENT_FETCH = str(os.environ.get("QUANT_UI_DEFER_INITIAL_EVENT_FETCH") or "").strip().lower() in {"1", "true", "yes", "on"}
 RUN_ALL_MODE = str(os.environ.get("QUANT_RUN_ALL_MODE") or "").strip().lower() in {"1", "true", "yes", "on"}
+VERBOSE_UI_STARTUP = str(os.environ.get("QUANT_VERBOSE_UI_STARTUP") or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 @st.cache_data(ttl=AUTO_REFRESH_INTERVAL_SECONDS, show_spinner=False)
@@ -308,6 +310,14 @@ def _record_ui_perf(*, page, bootstrap_ms, context_ms, page_render_ms, total_ms)
         history,
         current_page=page,
     )
+
+
+def _trace_ui_startup(stage, *, detail=""):
+    if not VERBOSE_UI_STARTUP:
+        return
+    timestamp = datetime.now().strftime("%H:%M:%S")
+    suffix = f" | {detail}" if str(detail or "").strip() else ""
+    print(f"[quant-ui-startup {timestamp}] {stage}{suffix}", file=sys.stderr, flush=True)
 
 
 def render_flash_notice(session_key):
@@ -632,7 +642,12 @@ def get_or_build_derived_ui_context(
     allow_expensive_rebuilds=True,
 ):
     now = datetime.now()
+    _trace_ui_startup(
+        "derived_context:start",
+        detail=f"page={st.session_state.get('active_page', '')} expensive={bool(allow_expensive_rebuilds)}",
+    )
     tracked_symbols = rt.collect_tracked_symbols(data)
+    _trace_ui_startup("derived_context:tracked_symbols", detail=f"count={len(tracked_symbols)}")
     fetched_events, fetched_reports, _ = rt.fetch_news_events_with_cache(
         session_state=st.session_state,
         fetcher_module=ef,
@@ -640,6 +655,10 @@ def get_or_build_derived_ui_context(
         interval_seconds=NEWS_AUTO_REFRESH_INTERVAL_SECONDS,
         allow_initial_fetch=not DEFER_INITIAL_EVENT_FETCH,
         now=now,
+    )
+    _trace_ui_startup(
+        "derived_context:events_ready",
+        detail=f"events={len(fetched_events)} reports={len(fetched_reports)}",
     )
     state_signature = _state_payload_signature()
     cache_key = (
@@ -663,8 +682,10 @@ def get_or_build_derived_ui_context(
     )
     cached = st.session_state.get("_derived_ui_context_cache")
     if isinstance(cached, dict) and cached.get("key") == cache_key:
+        _trace_ui_startup("derived_context:cache_hit")
         return cached.get("context", {})
 
+    _trace_ui_startup("derived_context:state_payloads")
     state_payloads = load_cached_state_payloads(state_signature)
     analyst_consensus_cache = state_payloads.get("analyst_consensus_cache") or {}
     quant_analysis_snapshot = state_payloads.get("quant_analysis_snapshot")
@@ -684,6 +705,7 @@ def get_or_build_derived_ui_context(
     event_risk_decision = None
     event_source_reports = []
     if data.get("holdings"):
+        _trace_ui_startup("derived_context:market_risk:start", detail=f"holdings={len(data.get('holdings', []))}")
         try:
             (
                 market_risk_gate_decision,
@@ -718,8 +740,13 @@ def get_or_build_derived_ui_context(
             active_market_events = []
             event_risk_decision = None
             event_source_reports = []
+        _trace_ui_startup(
+            "derived_context:market_risk:done",
+            detail=f"active_events={len(active_market_events)}",
+        )
 
     transaction_rows = tx.normalize_transactions(tx.load_transactions())
+    _trace_ui_startup("derived_context:transactions", detail=f"rows={len(transaction_rows)}")
     try:
         scoreboard_benchmark_history = load_historical_data_cached("SPY", period=history_period)
     except Exception:
@@ -728,11 +755,16 @@ def get_or_build_derived_ui_context(
         transaction_rows,
         benchmark_history=scoreboard_benchmark_history,
     )
+    _trace_ui_startup("derived_context:scoreboard_ready")
     account_snapshot = ss.build_account_snapshot(data)
     allocation_regime_decision = evaluate_allocation_regime(
         live_scoreboard,
         risk_gate=market_risk_gate_decision,
         account_snapshot=account_snapshot,
+    )
+    _trace_ui_startup(
+        "derived_context:allocation_ready",
+        detail=f"regime={str(getattr(allocation_regime_decision, 'regime', '') or '')}",
     )
     current_risk_regime = str(getattr(market_risk_gate_decision, "regime", "NORMAL") or "NORMAL").upper() if market_risk_gate_decision is not None else "NORMAL"
     current_allocation_regime = str(getattr(allocation_regime_decision, "regime", "NORMAL") or "NORMAL").upper() if allocation_regime_decision is not None else "NORMAL"
@@ -750,18 +782,24 @@ def get_or_build_derived_ui_context(
     ]
 
     loaded_core_etf_snapshot = state_payloads.get("core_etf_snapshot")
-    if loaded_core_etf_snapshot and (
-        _snapshot_is_current(
-            loaded_core_etf_snapshot,
-            data=data,
-            risk_regime=current_risk_regime,
-            allocation_regime=current_allocation_regime,
+    if not allow_expensive_rebuilds:
+        core_etf_rotation_snapshot = None
+        core_etf_snapshot = loaded_core_etf_snapshot
+        _trace_ui_startup(
+            "derived_context:core_snapshot:deferred",
+            detail=f"loaded={bool(loaded_core_etf_snapshot)}",
         )
-        or not allow_expensive_rebuilds
+    elif loaded_core_etf_snapshot and _snapshot_is_current(
+        loaded_core_etf_snapshot,
+        data=data,
+        risk_regime=current_risk_regime,
+        allocation_regime=current_allocation_regime,
     ):
         core_etf_rotation_snapshot = None
         core_etf_snapshot = loaded_core_etf_snapshot
+        _trace_ui_startup("derived_context:core_snapshot:cache_hit")
     else:
+        _trace_ui_startup("derived_context:core_snapshot:rebuild")
         core_etf_rotation_snapshot = cer.build_core_etf_rotation_snapshot(
             data=data,
             history_period=history_period,
@@ -780,6 +818,7 @@ def get_or_build_derived_ui_context(
             previous_snapshot=loaded_core_etf_snapshot,
             now=now,
         )
+        _trace_ui_startup("derived_context:core_snapshot:done")
 
     loaded_discipline_snapshot = state_payloads.get("discipline_snapshot")
     if loaded_discipline_snapshot and (
@@ -792,7 +831,9 @@ def get_or_build_derived_ui_context(
         or not allow_expensive_rebuilds
     ):
         discipline_snapshot = loaded_discipline_snapshot
+        _trace_ui_startup("derived_context:discipline_snapshot:cache_hit")
     else:
+        _trace_ui_startup("derived_context:discipline_snapshot:rebuild")
         discipline_snapshot = qdisc.build_discipline_snapshot(
             account_snapshot=account_snapshot,
             risk_gate=market_risk_gate_decision,
@@ -801,6 +842,7 @@ def get_or_build_derived_ui_context(
             core_etf_snapshot=core_etf_snapshot,
             now=now,
         )
+        _trace_ui_startup("derived_context:discipline_snapshot:done")
 
     monthly_discipline_review = qdisc.build_monthly_discipline_review(
         discipline_snapshot=discipline_snapshot,
@@ -828,7 +870,15 @@ def get_or_build_derived_ui_context(
     )
     if use_saved_satellite_snapshot:
         satellite_candidate_snapshot = loaded_satellite_candidate_snapshot
+        _trace_ui_startup("derived_context:satellite_snapshot:cache_hit")
+    elif not allow_expensive_rebuilds:
+        satellite_candidate_snapshot = loaded_satellite_candidate_snapshot
+        _trace_ui_startup(
+            "derived_context:satellite_snapshot:deferred",
+            detail=f"loaded={bool(loaded_satellite_candidate_snapshot)}",
+        )
     elif dashboard_strategy_runtime:
+        _trace_ui_startup("derived_context:satellite_snapshot:rebuild")
         satellite_candidate_snapshot = cpool.build_satellite_candidate_pool_snapshot(
             data=data,
             strategy=dashboard_strategy_runtime,
@@ -842,6 +892,7 @@ def get_or_build_derived_ui_context(
             allocation_regime=allocation_regime_decision,
             now=now,
         )
+        _trace_ui_startup("derived_context:satellite_snapshot:done")
     else:
         satellite_candidate_snapshot = loaded_satellite_candidate_snapshot
 
@@ -947,12 +998,18 @@ def get_or_build_derived_ui_context(
         "key": cache_key,
         "context": context,
     }
+    _trace_ui_startup("derived_context:done")
     return context
 
 
 script_started_at = time.perf_counter()
 bootstrap_started_at = time.perf_counter()
+_trace_ui_startup(
+    "startup:begin",
+    detail=f"defer_prices={DEFER_STARTUP_REFRESH} defer_events={DEFER_INITIAL_EVENT_FETCH} run_all={RUN_ALL_MODE}",
+)
 try:
+    _trace_ui_startup("startup:bootstrap_app_data")
     rt.bootstrap_app_data(
         st.session_state,
         du,
@@ -963,6 +1020,7 @@ except ValueError as exc:
     st.error(f"数据文件加载失败: {exc}")
     st.stop()
 bootstrap_elapsed_ms = (time.perf_counter() - bootstrap_started_at) * 1000.0
+_trace_ui_startup("startup:bootstrap_done", detail=f"{bootstrap_elapsed_ms:.0f}ms")
 
 data = st.session_state.app_data
 market_events_bootstrapped = en.ensure_market_events_file()
@@ -971,6 +1029,7 @@ strategies = su.load_strategies()
 if not strategies:
     st.error("策略配置文件加载失败，请检查 config/strategies.json")
     st.stop()
+_trace_ui_startup("startup:strategies_loaded", detail=f"count={len(strategies)}")
 
 HISTORY_PERIOD_OPTIONS = ["6mo", "1y", "2y", "3y", "5y", "10y"]
 deep_tcn_strategy = next((strategy for strategy in strategies if strategy.get("id") == "deep_tcn"), None)
@@ -1018,6 +1077,7 @@ rt.enable_auto_news_rerun(
     interval_seconds=news_rerun_interval_seconds,
     st_module=st,
 )
+_trace_ui_startup("startup:auto_news_rerun_ready", detail=f"interval={news_rerun_interval_seconds}s")
 
 uc.inject_cockpit_styles(st_module=st)
 st.title(ui_text("量化交易驾驶舱", "Quant Trading Cockpit"))
@@ -1050,8 +1110,10 @@ active_page = next(
     "dashboard",
 )
 st.session_state.active_page = active_page
+_trace_ui_startup("startup:active_page", detail=active_page)
 
 context_started_at = time.perf_counter()
+_trace_ui_startup("startup:derived_context")
 derived_context = get_or_build_derived_ui_context(
     data=data,
     history_period=st.session_state.history_period,
@@ -1066,6 +1128,7 @@ derived_context = get_or_build_derived_ui_context(
     allow_expensive_rebuilds=active_page in {"core", "satellite", "risk"},
 )
 context_elapsed_ms = (time.perf_counter() - context_started_at) * 1000.0
+_trace_ui_startup("startup:derived_context_done", detail=f"{context_elapsed_ms:.0f}ms")
 analyst_consensus_cache = derived_context["analyst_consensus_cache"]
 quant_analysis_snapshot = derived_context["quant_analysis_snapshot"]
 latest_trade_plan = derived_context["latest_trade_plan"]
@@ -1105,6 +1168,7 @@ refresh_runtime_status = _background_refresh_status(
 )
 
 page_render_started_at = time.perf_counter()
+_trace_ui_startup("startup:page_render", detail=active_page)
 if active_page == "dashboard":
     uc.render_dashboard_page(
         ui_text=ui_text,
@@ -1299,6 +1363,10 @@ else:
 
 page_render_elapsed_ms = (time.perf_counter() - page_render_started_at) * 1000.0
 total_elapsed_ms = (time.perf_counter() - script_started_at) * 1000.0
+_trace_ui_startup(
+    "startup:page_render_done",
+    detail=f"page={active_page} render={page_render_elapsed_ms:.0f}ms total={total_elapsed_ms:.0f}ms",
+)
 _record_ui_perf(
     page=active_page,
     bootstrap_ms=bootstrap_elapsed_ms,

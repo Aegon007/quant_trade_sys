@@ -42,15 +42,33 @@ class SlackCommandServiceTests(unittest.TestCase):
         self.service.pactions.tx.TRANS_FILE = self.transactions.TRANS_FILE
         self.audit_path = root / "command_audit.jsonl"
         self.service.COMMAND_AUDIT_FILE = str(self.audit_path)
+        self.plan_path = root / "next_day_trade_plan.json"
+        self.discipline_path = root / "discipline_snapshot.json"
+        self.core_etf_path = root / "core_etf_snapshot.json"
+        self.satellite_path = root / "satellite_candidate_pool.json"
+        self.journal_path = root / "nightly_snapshot_journal.jsonl"
+        self.service.TRADE_PLAN_FILE = str(self.plan_path)
+        self.service.DISCIPLINE_SNAPSHOT_FILE = str(self.discipline_path)
+        self.service.CORE_ETF_SNAPSHOT_FILE = str(self.core_etf_path)
+        self.service.SATELLITE_CANDIDATE_POOL_FILE = str(self.satellite_path)
+        self.service.NIGHTLY_JOURNAL_FILE = str(self.journal_path)
+
+    def _write_json(self, path: Path, payload):
+        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def _append_journal(self, payload):
+        with self.journal_path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
 
     def test_help_command_lists_supported_commands(self):
         result = self.service.execute_slack_command("可用命令")
 
         self.assertTrue(result.ok)
+        self.assertIn("系统概览", result.message)
+        self.assertIn("今日计划 / 明日计划", result.message)
+        self.assertIn("核心ETF", result.message)
+        self.assertIn("卫星雷达 / top3", result.message)
         self.assertIn("买入 <代码> <股数>", result.message)
-        self.assertIn("全部卖出 <代码>", result.message)
-        self.assertIn("关注 <代码>", result.message)
-        self.assertIn("取消关注 <代码>", result.message)
 
     def test_current_holdings_command_formats_positions_and_cash(self):
         self.data_utils.save_data(
@@ -76,6 +94,187 @@ class SlackCommandServiceTests(unittest.TestCase):
         self.assertIn("AAPL", result.message)
         self.assertIn("1.500 股", result.message)
         self.assertIn("可用现金", result.message)
+
+    def test_plan_command_reads_next_day_trade_plan_snapshot(self):
+        self._write_json(
+            self.plan_path,
+            {
+                "plan_date": "2026-05-18",
+                "decision": "ACTION",
+                "summary_reason": "明日有 2 条可执行计划。",
+                "items": [
+                    {
+                        "symbol": "VOO",
+                        "plan_action": "ACCUMULATE",
+                        "plan_weight_delta_pct": 3.0,
+                        "buy_zone_low": 501.0,
+                        "buy_zone_high": 506.0,
+                        "invalid_condition": "若跳空高开过多则作废。",
+                    }
+                ],
+            },
+        )
+
+        result = self.service.execute_slack_command("今日计划")
+
+        self.assertTrue(result.ok)
+        self.assertIn("次日交易计划", result.message)
+        self.assertIn("VOO | ACCUMULATE", result.message)
+        self.assertIn("买入区间", result.message)
+
+    def test_risk_command_reads_discipline_snapshot_and_monthly_review(self):
+        self._write_json(
+            self.discipline_path,
+            {
+                "regime": "LIGHT",
+                "risk_regime": "CAUTION",
+                "allocation_regime": "LIGHT",
+                "summary": "当前以轻仓与防守为主。",
+                "can_open_new_core_positions": True,
+                "can_open_new_satellite_positions": False,
+                "deployable_cash": 1200.0,
+                "exposure_pct": 42.5,
+                "warnings": ["波动抬升。"],
+            },
+        )
+        self._append_journal(
+            {
+                "monthly_discipline_review": {
+                    "status": "CAUTION",
+                    "follow_days": 8,
+                    "ignore_days": 3,
+                }
+            }
+        )
+
+        result = self.service.execute_slack_command("风险状态")
+
+        self.assertTrue(result.ok)
+        self.assertIn("纪律与风险状态", result.message)
+        self.assertIn("纪律状态: LIGHT", result.message)
+        self.assertIn("月度纪律: CAUTION", result.message)
+
+    def test_core_command_reads_core_etf_snapshot(self):
+        self._write_json(
+            self.core_etf_path,
+            {
+                "risk_regime": "NORMAL",
+                "allocation_regime": "LIGHT",
+                "summary": {
+                    "total_symbols": 3,
+                    "accumulate_count": 1,
+                    "trim_count": 1,
+                },
+                "symbols": [
+                    {
+                        "symbol": "VOO",
+                        "action": "ACCUMULATE",
+                        "current_weight_pct": 40.0,
+                        "target_weight_pct": 45.0,
+                        "rotation_score": 77.0,
+                        "recommended_buy_zone_low": 500.0,
+                        "recommended_buy_zone_high": 505.0,
+                        "trim_zone_low": None,
+                        "trim_zone_high": None,
+                        "risk_break_level": 490.0,
+                    }
+                ],
+            },
+        )
+
+        result = self.service.execute_slack_command("核心ETF")
+
+        self.assertTrue(result.ok)
+        self.assertIn("核心 ETF 引擎", result.message)
+        self.assertIn("VOO | ACCUMULATE", result.message)
+        self.assertIn("目标 45.0%", result.message)
+
+    def test_satellite_command_reads_satellite_snapshot(self):
+        self._write_json(
+            self.satellite_path,
+            {
+                "summary": {
+                    "candidate_count": 12,
+                    "deep_analysis_count": 6,
+                    "top_recommendation_count": 2,
+                    "confirmed_count": 1,
+                    "probe_count": 1,
+                    "watch_count": 4,
+                },
+                "top_recommendations": [
+                    {
+                        "symbol": "MU",
+                        "recommendation_status": "CONFIRMED",
+                        "plan_action": "ACCUMULATE",
+                        "suggested_weight_pct": 4.0,
+                        "satellite_score": 81.0,
+                        "recommendation_reason": "趋势与模型共振。",
+                    }
+                ],
+            },
+        )
+
+        result = self.service.execute_slack_command("卫星雷达")
+
+        self.assertTrue(result.ok)
+        self.assertIn("卫星仓雷达", result.message)
+        self.assertIn("MU | CONFIRMED / ACCUMULATE", result.message)
+        self.assertIn("趋势与模型共振", result.message)
+
+    def test_overview_command_combines_plan_risk_core_and_satellite(self):
+        self.data_utils.save_data(
+            {
+                "account": {
+                    "cash_available": 2500.0,
+                    "min_cash_buffer_pct": 0.10,
+                },
+                "holdings": [{"symbol": "VOO", "shares": 2.0, "cost": 400.0, "current_price": 500.0}],
+                "watchlist": [{"symbol": "MU", "last_price": 120.0, "notes": "radar"}],
+            }
+        )
+        self._write_json(
+            self.plan_path,
+            {
+                "decision": "ACTION",
+                "summary_reason": "明日有 1 条可执行计划。",
+            },
+        )
+        self._write_json(
+            self.discipline_path,
+            {
+                "regime": "LIGHT",
+                "risk_regime": "NORMAL",
+            },
+        )
+        self._write_json(
+            self.core_etf_path,
+            {
+                "summary": {"accumulate_count": 1, "trim_count": 0},
+            },
+        )
+        self._write_json(
+            self.satellite_path,
+            {
+                "summary": {"top_symbols": ["MU", "NVDA"]},
+            },
+        )
+        self._append_journal(
+            {
+                "monthly_discipline_review": {
+                    "status": "ALIGNED",
+                    "follow_days": 5,
+                    "ignore_days": 0,
+                }
+            }
+        )
+
+        result = self.service.execute_slack_command("系统概览")
+
+        self.assertTrue(result.ok)
+        self.assertIn("系统概览", result.message)
+        self.assertIn("计划: ACTION", result.message)
+        self.assertIn("卫星雷达 Top: MU, NVDA", result.message)
+        self.assertIn("月度纪律: ALIGNED", result.message)
 
     def test_buy_command_moves_watchlist_to_holdings_and_writes_audit_log(self):
         self.data_utils.save_data(
