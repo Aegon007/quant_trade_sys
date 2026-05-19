@@ -40,6 +40,19 @@ def inject_cockpit_styles(*, st_module=None):
             border-radius: 16px;
             padding: 0.8rem 0.95rem;
         }
+        div[data-testid="stMetricLabel"] {
+            white-space: normal !important;
+            line-height: 1.2;
+        }
+        div[data-testid="stMetricValue"] {
+            line-height: 1.15;
+        }
+        div[data-testid="stCaptionContainer"] {
+            line-height: 1.35;
+        }
+        .qt-card-tight p {
+            margin-bottom: 0.35rem;
+        }
         .qt-shell-note {
             border-left: 4px solid #0f766e;
             padding: 0.8rem 1rem;
@@ -66,6 +79,7 @@ def render_shell_header(
     discipline_snapshot,
     monthly_discipline_review,
     data_source_status,
+    refresh_runtime_status,
     ui_text,
     st_module=None,
 ):
@@ -81,33 +95,47 @@ def render_shell_header(
             f"{ui_text('主界面现在聚焦夜间计划、盘中监控、收盘复盘，以及核心仓 / 卫星仓 / 风险三条主线。', 'The primary surface is now centered on nightly planning, intraday monitoring, post-close review, and the three main lanes: core book, satellite radar, and risk discipline.')}</div>",
             unsafe_allow_html=True,
         )
-        cols = st_module.columns(6)
-        cols[0].metric(
-            ui_text("最新夜间运行", "Latest Nightly"),
+        top_cols = st_module.columns(3)
+        bottom_cols = st_module.columns(3)
+        top_cols[0].metric(
+            ui_text("夜间运行", "Latest Nightly"),
             _format_timestamp(manifest.get("completed_at") or manifest.get("started_at")),
         )
-        cols[1].metric(
+        top_cols[1].metric(
             ui_text("明日计划", "Next-Day Plan"),
             ui_text("有动作", "Action")
             if bool((latest_trade_plan or {}).get("has_actions"))
             else ui_text("无动作", "No Action"),
         )
-        cols[2].metric(
-            ui_text("纪律状态", "Discipline"),
+        top_cols[2].metric(
+            ui_text("纪律", "Discipline"),
             str(discipline_snapshot.get("regime") or "UNKNOWN"),
         )
-        cols[3].metric(
+        bottom_cols[0].metric(
             ui_text("月度纪律", "Monthly Discipline"),
             str(monthly_discipline_review.get("status") or "MONITOR"),
         )
-        cols[4].metric(
-            ui_text("高优先级变化", "High Changes"),
+        bottom_cols[1].metric(
+            ui_text("高变化", "High Changes"),
             f"{int(summary.get('high_count', 0) or 0)}",
         )
         last_price_refresh = ((data_source_status or {}).get("prices", {}) or {}).get("last_updated")
-        cols[5].metric(
+        bottom_cols[2].metric(
             ui_text("行情刷新", "Price Refresh"),
             _format_timestamp(last_price_refresh),
+        )
+        refresh_runtime_status = dict(refresh_runtime_status or {})
+        refresh_mode = (
+            ui_text("run_all 自动刷新中", "run_all auto-refresh")
+            if bool(refresh_runtime_status.get("run_all_mode"))
+            else ui_text("仅前台会话", "UI session only")
+        )
+        event_last_updated = _format_timestamp(refresh_runtime_status.get("event_last_updated"))
+        st_module.caption(
+            ui_text(
+                f"后台刷新：{refresh_mode} | 事件上次刷新：{event_last_updated} | 首页优先显示最近一致快照，后台随后补最新数据。",
+                f"Background refresh: {refresh_mode} | Last event refresh: {event_last_updated} | The homepage shows the latest consistent snapshot first, then background updates fill in fresher data.",
+            )
         )
         monthly_summary = str(monthly_discipline_review.get("summary") or "").strip()
         if monthly_summary:
@@ -467,11 +495,12 @@ def render_core_etf_cards(
         st_module.info(ui_text("尚未生成核心 ETF 快照。", "Core ETF snapshot is not available yet."))
         return
 
-    columns = st_module.columns(3)
+    columns = st_module.columns(2)
     for idx, row in enumerate(rows):
-        col = columns[idx % 3]
+        col = columns[idx % len(columns)]
         with col:
             with _card_container(st_module):
+                st_module.markdown("<div class='qt-card-tight'>", unsafe_allow_html=True)
                 st_module.markdown(f"**{row.get('symbol', '—')} · {row.get('role', 'other')}**")
                 st_module.caption(str(row.get("signal_reason") or "").strip() or ui_text("暂无摘要。", "No summary yet."))
                 m1, m2 = st_module.columns(2)
@@ -500,14 +529,21 @@ def render_core_etf_cards(
                 trim_low = row.get("trim_zone_low")
                 trim_high = row.get("trim_zone_high")
                 risk_break = row.get("risk_break_level")
-                st_module.markdown(
+                buy_zone_text = (
+                    ('$%.2f ~ $%.2f' % (buy_low, buy_high))
+                    if buy_low is not None and buy_high is not None
+                    else "—"
+                )
+                trim_zone_text = (
+                    ('$%.2f ~ $%.2f' % (trim_low, trim_high))
+                    if trim_low is not None and trim_high is not None
+                    else "—"
+                )
+                risk_break_text = ('$%.2f' % risk_break) if risk_break is not None else "—"
+                st_module.caption(
                     ui_text(
-                        f"- 买入区间: {('$%.2f ~ $%.2f' % (buy_low, buy_high)) if buy_low is not None and buy_high is not None else '—'}\n"
-                        f"- 减仓区间: {('$%.2f ~ $%.2f' % (trim_low, trim_high)) if trim_low is not None and trim_high is not None else '—'}\n"
-                        f"- 风险破坏位: {('$%.2f' % risk_break) if risk_break is not None else '—'}",
-                        f"- Buy zone: {('$%.2f ~ $%.2f' % (buy_low, buy_high)) if buy_low is not None and buy_high is not None else '—'}\n"
-                        f"- Trim zone: {('$%.2f ~ $%.2f' % (trim_low, trim_high)) if trim_low is not None and trim_high is not None else '—'}\n"
-                        f"- Risk break: {('$%.2f' % risk_break) if risk_break is not None else '—'}",
+                        f"买 {buy_zone_text} | 减 {trim_zone_text} | 破位 {risk_break_text}",
+                        f"Buy {buy_zone_text} | Trim {trim_zone_text} | Break {risk_break_text}",
                     )
                 )
                 symbol = str(row.get("symbol") or "").strip().upper()
@@ -540,6 +576,7 @@ def render_core_etf_cards(
                         if explanation_label:
                             st_module.caption(explanation_label)
                         st_module.write(explanation_text)
+                st_module.markdown("</div>", unsafe_allow_html=True)
 
 
 def render_satellite_top_cards(snapshot, *, ui_text, st_module=None):
@@ -552,6 +589,7 @@ def render_satellite_top_cards(snapshot, *, ui_text, st_module=None):
     for idx, row in enumerate(top_rows[:3]):
         with columns[idx]:
             with _card_container(st_module):
+                st_module.markdown("<div class='qt-card-tight'>", unsafe_allow_html=True)
                 st_module.markdown(f"**{row.get('symbol', '—')}**")
                 st_module.caption(str(row.get("recommendation_reason") or row.get("signal_reason") or "").strip() or ui_text("暂无摘要。", "No summary yet."))
                 m1, m2 = st_module.columns(2)
@@ -567,6 +605,10 @@ def render_satellite_top_cards(snapshot, *, ui_text, st_module=None):
                     ui_text("MC预期", "MC Exp"),
                     f"{float(mc.get('expected_return')):+.2%}" if mc.get("expected_return") is not None else "—",
                 )
+                risk_note = str(row.get("risk_note") or row.get("exit_reason") or "").strip()
+                if risk_note:
+                    st_module.caption(risk_note)
+                st_module.markdown("</div>", unsafe_allow_html=True)
 
 
 def render_quant_report_summary(snapshot, files, *, ui_text, st_module=None):
@@ -586,11 +628,12 @@ def render_quant_report_summary(snapshot, files, *, ui_text, st_module=None):
                 f"Generated at: {snapshot.get('generated_at', '—')}",
             )
         )
-        cols = st_module.columns(4)
-        cols[0].metric(ui_text("覆盖标的", "Tracked"), f"{int(summary.get('total_symbols', 0) or 0)}")
-        cols[1].metric(ui_text("买入信号", "BUY"), f"{int(summary.get('buy_count', 0) or 0)}")
-        cols[2].metric(ui_text("卖出信号", "SELL"), f"{int(summary.get('sell_count', 0) or 0)}")
-        cols[3].metric(ui_text("观望信号", "HOLD"), f"{int(summary.get('hold_count', 0) or 0)}")
+        top_cols = st_module.columns(2)
+        bottom_cols = st_module.columns(2)
+        top_cols[0].metric(ui_text("覆盖标的", "Tracked"), f"{int(summary.get('total_symbols', 0) or 0)}")
+        top_cols[1].metric(ui_text("买入信号", "BUY"), f"{int(summary.get('buy_count', 0) or 0)}")
+        bottom_cols[0].metric(ui_text("卖出信号", "SELL"), f"{int(summary.get('sell_count', 0) or 0)}")
+        bottom_cols[1].metric(ui_text("观望信号", "HOLD"), f"{int(summary.get('hold_count', 0) or 0)}")
         top_buys = ", ".join(list(summary.get("top_buy_symbols", []) or []))
         if top_buys:
             st_module.caption(ui_text(f"优先关注：{top_buys}", f"Top candidates: {top_buys}"))
@@ -944,6 +987,8 @@ def render_dashboard_page(
     latest_nightly_manifest,
     account_snapshot,
     data_source_status,
+    refresh_runtime_status,
+    ui_performance_snapshot,
     allocation_regime_decision,
     discipline_snapshot,
     monthly_discipline_review,
@@ -982,6 +1027,7 @@ def render_dashboard_page(
         discipline_snapshot=discipline_snapshot,
         monthly_discipline_review=monthly_discipline_review,
         data_source_status=data_source_status,
+        refresh_runtime_status=refresh_runtime_status,
         ui_text=ui_text,
         st_module=st_module,
     )
@@ -994,16 +1040,21 @@ def render_dashboard_page(
     if latest_nightly_manifest and str(latest_nightly_manifest.get("status") or "").strip().lower() != "completed":
         up.render_nightly_manifest_panel(latest_nightly_manifest, ui_text=ui_text, st_module=st_module)
 
-    c1, c2, c3 = st_module.columns(3)
-    with c1:
+    top_left, top_right = st_module.columns((1.15, 1.0))
+    with top_left:
         up.render_account_snapshot_panel(account_snapshot, ui_text=ui_text, st_module=st_module)
-    with c2:
+    with top_right:
         up.render_allocation_regime_panel(allocation_regime_decision, ui_text=ui_text, st_module=st_module)
         up.render_discipline_snapshot_panel(discipline_snapshot, ui_text=ui_text, st_module=st_module)
-    with c3:
-        if market_risk_gate_decision is not None and market_risk_snapshot is not None:
-            up.render_market_risk_gate_banner(market_risk_gate_decision, market_risk_snapshot, L, st_module=st_module)
+
+    if market_risk_gate_decision is not None and market_risk_snapshot is not None:
+        up.render_market_risk_gate_banner(market_risk_gate_decision, market_risk_snapshot, L, st_module=st_module)
+
+    bottom_left, bottom_right = st_module.columns((1.0, 1.0))
+    with bottom_left:
         up.render_data_source_status_panel(data_source_status, ui_text=ui_text, st_module=st_module)
+    with bottom_right:
+        up.render_refresh_runtime_panel(refresh_runtime_status, ui_text=ui_text, st_module=st_module)
 
     st_module.subheader(ui_text("今日动作板", "Today Action Board"))
     action_col1, action_col2 = st_module.columns(2)
@@ -1061,6 +1112,7 @@ def render_dashboard_page(
         )
         up.render_intraday_event_panel(intraday_event_summary, ui_text=ui_text, st_module=st_module)
         up.render_signal_scoreboard_panel(live_scoreboard, ui_text=ui_text, st_module=st_module)
+        up.render_ui_performance_panel(ui_performance_snapshot, ui_text=ui_text, st_module=st_module)
 
 def render_core_etfs_page(
     *,
@@ -1073,11 +1125,12 @@ def render_core_etfs_page(
 ):
     st_module = st_module or st
     summary = dict((core_etf_snapshot or {}).get("summary", {}) or {})
-    c1, c2, c3, c4 = st_module.columns(4)
-    c1.metric(ui_text("候选 ETF", "Universe"), f"{int(summary.get('total_symbols', 0) or 0)}")
-    c2.metric(ui_text("可增配", "Accumulate"), f"{int(summary.get('accumulate_count', 0) or 0)}")
-    c3.metric(ui_text("需减配", "Trim"), f"{int(summary.get('trim_count', 0) or 0)}")
-    c4.metric(ui_text("暂停追价", "Pause Buy"), f"{int(summary.get('pause_buy_count', 0) or 0)}")
+    top_cols = st_module.columns(2)
+    bottom_cols = st_module.columns(2)
+    top_cols[0].metric(ui_text("候选数", "Universe"), f"{int(summary.get('total_symbols', 0) or 0)}")
+    top_cols[1].metric(ui_text("可增配", "Accumulate"), f"{int(summary.get('accumulate_count', 0) or 0)}")
+    bottom_cols[0].metric(ui_text("需减配", "Trim"), f"{int(summary.get('trim_count', 0) or 0)}")
+    bottom_cols[1].metric(ui_text("暂停追价", "Pause Buy"), f"{int(summary.get('pause_buy_count', 0) or 0)}")
 
     render_core_etf_cards(
         core_etf_snapshot,
@@ -1092,14 +1145,14 @@ def render_core_etfs_page(
     st_module.subheader(ui_text("当前核心 ETF 持仓", "Current Core ETF Holdings"))
     st_module.caption(
         ui_text(
-            "如需额外解释，可对单个 ETF 点“LLM 解释”。复杂解释默认走远程 LLM；本地 SLM 主要用于把结构化原因转述得更自然。",
-            "For extra context, click “LLM Explain” on an ETF card. Complex explanations use the remote LLM by default; the local SLM is mainly for turning structured reasons into more natural wording.",
+            "点单个 ETF 的“LLM 解释”可看更深说明。",
+            "Click “LLM Explain” on an ETF for deeper context.",
         )
     )
     st_module.caption(
         ui_text(
-            "核心 ETF 池、轮动阈值和最小交易金额现在统一放在 Settings → ETF / 候选池。",
-            "The core ETF universe, rotation thresholds, and minimum trade value now live in Settings → Universe & Strategy.",
+            "ETF 池和轮动阈值统一在 Settings → ETF / 候选池。",
+            "ETF universe and rotation thresholds live in Settings → Universe & Strategy.",
         )
     )
     if core_holdings_df is not None and not core_holdings_df.empty:
@@ -1122,11 +1175,12 @@ def render_satellite_radar_page(
 ):
     st_module = st_module or st
     summary = dict((satellite_candidate_snapshot or {}).get("summary", {}) or {})
-    c1, c2, c3, c4 = st_module.columns(4)
-    c1.metric(ui_text("扫描标的", "Scanned"), f"{int(summary.get('scanned_symbols', 0) or 0)}")
-    c2.metric(ui_text("候选池规模", "Pool Size"), f"{int(summary.get('candidate_count', 0) or 0)}")
-    c3.metric(ui_text("深度分析数", "Deep Analysis"), f"{int(summary.get('deep_analysis_count', 0) or 0)}")
-    c4.metric(ui_text("Top 推荐数", "Top Picks"), f"{int(summary.get('recommendation_count', 0) or 0)}")
+    top_cols = st_module.columns(2)
+    bottom_cols = st_module.columns(2)
+    top_cols[0].metric(ui_text("扫描数", "Scanned"), f"{int(summary.get('scanned_symbols', 0) or 0)}")
+    top_cols[1].metric(ui_text("候选池", "Pool Size"), f"{int(summary.get('candidate_count', 0) or 0)}")
+    bottom_cols[0].metric(ui_text("深度分析", "Deep Analysis"), f"{int(summary.get('deep_analysis_count', 0) or 0)}")
+    bottom_cols[1].metric(ui_text("Top 推荐", "Top Picks"), f"{int(summary.get('recommendation_count', 0) or 0)}")
 
     st_module.subheader(ui_text("当前卫星仓", "Current Satellite Positions"))
     if satellite_holdings_df is not None and not satellite_holdings_df.empty:
@@ -1145,8 +1199,8 @@ def render_satellite_radar_page(
         st_module.info(ui_text("当前没有候选池快照。", "No satellite candidate snapshot is available yet."))
     st_module.caption(
         ui_text(
-            "卫星候选池来源、容量和 Top 3 规则现在统一放在 Settings → ETF / 候选池。",
-            "Satellite-universe sources, pool size, and Top 3 rules now live in Settings → Universe & Strategy.",
+            "候选池来源、容量和 Top 3 规则统一在 Settings → ETF / 候选池。",
+            "Pool sources, size, and Top 3 rules live in Settings → Universe & Strategy.",
         )
     )
 

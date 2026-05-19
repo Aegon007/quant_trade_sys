@@ -51,6 +51,7 @@ class ServiceSpec:
     name: str
     command: List[str]
     cwd: str
+    env: Optional[dict] = None
 
 
 @dataclass(frozen=True)
@@ -86,6 +87,20 @@ def build_service_specs(
     python_executable = python_executable or sys.executable
     specs: List[ServiceSpec] = []
 
+    if with_ui:
+        specs.append(
+            ServiceSpec(
+                name="streamlit-ui",
+                command=[python_executable, "-m", "streamlit", "run", str(project_root / "main.py")],
+                cwd=str(project_root),
+                env={
+                    "QUANT_UI_SKIP_STARTUP_REFRESH": "1",
+                    "QUANT_UI_DEFER_INITIAL_EVENT_FETCH": "1",
+                    "QUANT_RUN_ALL_MODE": "1",
+                },
+            )
+        )
+
     if with_slack:
         specs.append(
             ServiceSpec(
@@ -95,20 +110,15 @@ def build_service_specs(
             )
         )
 
-    if with_ui:
-        specs.append(
-            ServiceSpec(
-                name="streamlit-ui",
-                command=[python_executable, "-m", "streamlit", "run", str(project_root / "main.py")],
-                cwd=str(project_root),
-            )
-        )
-
     return specs
 
 
 def start_service_process(spec: ServiceSpec, *, popen=subprocess.Popen):
-    return popen(spec.command, cwd=spec.cwd)
+    env = None
+    if spec.env:
+        env = os.environ.copy()
+        env.update({str(key): str(value) for key, value in spec.env.items()})
+    return popen(spec.command, cwd=spec.cwd, env=env)
 
 
 def emit_startup_summary(statuses, *, printer=print):
@@ -777,6 +787,40 @@ def run_supervisor(
             python_executable=python_executable,
             project_root=project_root,
         )
+        if not with_nightly and not with_market_refresh and not service_specs:
+            logger.warning("No services were requested; nothing to start.")
+            emit_startup_summary(startup_statuses, printer=status_printer)
+            return {
+                "services": [],
+                "launch_count": 0,
+                "startup_statuses": [asdict(status) for status in startup_statuses],
+            }
+
+        for spec in service_specs:
+            try:
+                process = start_service_process(spec, popen=popen)
+            except Exception as exc:
+                logger.exception("Failed to start %s", spec.name)
+                startup_statuses.append(
+                    ServiceStartupStatus(
+                        name=spec.name,
+                        state="failed",
+                        detail=str(exc),
+                    )
+                )
+                continue
+            services.append(spec)
+            launched_processes.append((spec, process))
+            logger.info("Started %s: %s", spec.name, " ".join(spec.command))
+            startup_statuses.append(
+                ServiceStartupStatus(
+                    name=spec.name,
+                    state="started",
+                    detail=" ".join(spec.command),
+                    pid=getattr(process, "pid", None),
+                )
+            )
+
         if with_nightly:
             scheduler_thread = threading.Thread(
                 target=nightly_scheduler_loop,
@@ -827,40 +871,6 @@ def run_supervisor(
                     name="market-refresh",
                     state="started",
                     detail=f"running in-process; poll={market_refresh_poll_seconds}s interval={market_refresh_interval_seconds}s.",
-                )
-            )
-
-        if not with_nightly and not with_market_refresh and not service_specs:
-            logger.warning("No services were requested; nothing to start.")
-            emit_startup_summary(startup_statuses, printer=status_printer)
-            return {
-                "services": [],
-                "launch_count": 0,
-                "startup_statuses": [asdict(status) for status in startup_statuses],
-            }
-
-        for spec in service_specs:
-            try:
-                process = start_service_process(spec, popen=popen)
-            except Exception as exc:
-                logger.exception("Failed to start %s", spec.name)
-                startup_statuses.append(
-                    ServiceStartupStatus(
-                        name=spec.name,
-                        state="failed",
-                        detail=str(exc),
-                    )
-                )
-                continue
-            services.append(spec)
-            launched_processes.append((spec, process))
-            logger.info("Started %s: %s", spec.name, " ".join(spec.command))
-            startup_statuses.append(
-                ServiceStartupStatus(
-                    name=spec.name,
-                    state="started",
-                    detail=" ".join(spec.command),
-                    pid=getattr(process, "pid", None),
                 )
             )
 

@@ -225,7 +225,7 @@ class UIPagesHelpersTests(unittest.TestCase):
         self.assertEqual(candidate_df.iloc[0]["代码"], "MU")
         self.assertEqual(candidate_df.iloc[0]["状态"], "CONFIRMED")
         self.assertEqual(candidate_df.iloc[0]["动作"], "ACCUMULATE")
-        self.assertEqual(candidate_df.iloc[0]["建议仓位"], "4.00%")
+        self.assertEqual(candidate_df.iloc[0]["仓位"], "4.00%")
         self.assertIn("manual_include", candidate_df.iloc[0]["来源"])
 
 

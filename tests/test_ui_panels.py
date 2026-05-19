@@ -143,8 +143,8 @@ class UIPanelsTests(unittest.TestCase):
         self.assertTrue(any("备用源已介入" in text for text in self.fake_st.state["warnings"]))
         self.assertTrue(any("历史主源错误" in text for text in self.fake_st.state["captions"]))
         self.assertTrue(self.fake_st.state["metrics"])
-        self.assertIn(("历史数据来源", "备用源 Stooq"), self.fake_st.state["metrics"])
-        self.assertIn(("现价数据来源", "备用源 Yahoo"), self.fake_st.state["metrics"])
+        self.assertIn(("历史源", "备用源 Stooq"), self.fake_st.state["metrics"])
+        self.assertIn(("现价源", "备用源 Yahoo"), self.fake_st.state["metrics"])
 
     def test_render_active_events_panel_shows_empty_message(self):
         summary = SimpleNamespace(
@@ -197,7 +197,7 @@ class UIPanelsTests(unittest.TestCase):
             st_module=self.fake_st,
         )
 
-        self.assertTrue(any(metric[0] == "纪律状态" for metric in self.fake_st.state["metrics"]))
+        self.assertTrue(any(metric[0] == "纪律" for metric in self.fake_st.state["metrics"]))
         self.assertTrue(self.fake_st.state["warnings"])
 
     def test_render_change_feed_panel_shows_high_and_medium_items(self):

@@ -22,9 +22,17 @@ class RunAllTests(unittest.TestCase):
             project_root=Path("/repo"),
         )
 
-        self.assertEqual([spec.name for spec in specs], ["slack-bot", "streamlit-ui"])
-        self.assertEqual(specs[0].command, ["/opt/python", "-m", "jobs.slack_bot"])
-        self.assertEqual(specs[1].command, ["/opt/python", "-m", "streamlit", "run", "/repo/main.py"])
+        self.assertEqual([spec.name for spec in specs], ["streamlit-ui", "slack-bot"])
+        self.assertEqual(specs[0].command, ["/opt/python", "-m", "streamlit", "run", "/repo/main.py"])
+        self.assertEqual(
+            specs[0].env,
+            {
+                "QUANT_UI_SKIP_STARTUP_REFRESH": "1",
+                "QUANT_UI_DEFER_INITIAL_EVENT_FETCH": "1",
+                "QUANT_RUN_ALL_MODE": "1",
+            },
+        )
+        self.assertEqual(specs[1].command, ["/opt/python", "-m", "jobs.slack_bot"])
 
     def test_build_service_specs_can_disable_everything(self):
         specs = self.module.build_service_specs(with_ui=False, with_slack=False)

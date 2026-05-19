@@ -2,7 +2,6 @@ import json
 import os
 from importlib import import_module
 
-import streamlit as st
 from quant_core import paths as qpaths
 
 CONFIG_PATH = qpaths.STRATEGY_CONFIG_FILE
@@ -42,6 +41,8 @@ def get_default_strategy_id(strategies):
     return strategies[0]["id"]
 
 def render_strategy_selector(strategies, default_strategy_id=None):
+    import streamlit as st
+
     if not strategies:
         return None
     strategy_names = [s["name"] for s in strategies]
@@ -55,6 +56,8 @@ def render_strategy_selector(strategies, default_strategy_id=None):
     return selected_strategy
 
 def display_strategy_description(strategy):
+    import streamlit as st
+
     if strategy and "description" in strategy:
         st.info(strategy["description"])
 

@@ -1,10 +1,19 @@
 from datetime import datetime
 
 
-def bootstrap_app_data(session_state, data_utils_module, *, refresh_interval_seconds: int):
+def bootstrap_app_data(
+    session_state,
+    data_utils_module,
+    *,
+    refresh_interval_seconds: int,
+    allow_startup_refresh: bool = True,
+):
     """Load app data once, then auto-refresh prices when cache is stale."""
     if "app_data" not in session_state or data_utils_module.has_newer_editable_data():
         session_state["app_data"] = data_utils_module.load_data()
+
+    if not allow_startup_refresh:
+        return session_state["app_data"]
 
     refreshed_data, auto_refreshed = data_utils_module.auto_refresh_market_data(
         session_state["app_data"],
@@ -45,6 +54,7 @@ def fetch_news_events_with_cache(
     symbols,
     interval_seconds: int,
     force: bool = False,
+    allow_initial_fetch: bool = True,
     now=None,
 ):
     now = now or datetime.now()
@@ -62,6 +72,13 @@ def fetch_news_events_with_cache(
         force=force,
     )
     if should_refresh:
+        if (
+            not allow_initial_fetch
+            and not isinstance(cached_bundle, dict)
+            and not bool(session_state.get("_deferred_event_fetch_skipped_once"))
+        ):
+            session_state["_deferred_event_fetch_skipped_once"] = True
+            return [], [], False
         events, source_reports = fetcher_module.fetch_events_from_sources(
             symbols=normalized_symbols,
             now=now,

@@ -13,7 +13,7 @@ def render_account_snapshot_panel(account_snapshot, *, ui_text, st_module=None):
     deployable_cash = float(account_snapshot.get("deployable_cash") or 0.0)
     exposure_pct = float(account_snapshot.get("exposure_pct") or 0.0)
 
-    st_module.subheader(ui_text("账户资金概览", "Account Overview"))
+    st_module.subheader(ui_text("账户概览", "Account Overview"))
     if total_capital is None:
         st_module.info(
             ui_text(
@@ -23,14 +23,15 @@ def render_account_snapshot_panel(account_snapshot, *, ui_text, st_module=None):
         )
         return
 
-    cols = st_module.columns(4)
-    cols[0].metric(ui_text("总资金", "Total Capital"), f"${float(total_capital):,.2f}")
-    cols[1].metric(
-        ui_text("可用现金", "Cash Available"),
+    top_cols = st_module.columns(2)
+    bottom_cols = st_module.columns(2)
+    top_cols[0].metric(ui_text("总资产", "Total Capital"), f"${float(total_capital):,.2f}")
+    top_cols[1].metric(
+        ui_text("现金", "Cash Available"),
         "—" if cash_available is None else f"${float(cash_available):,.2f}",
     )
-    cols[2].metric(ui_text("可部署现金", "Deployable Cash"), f"${deployable_cash:,.2f}")
-    cols[3].metric(ui_text("当前暴露", "Current Exposure"), f"{exposure_pct:.1f}%")
+    bottom_cols[0].metric(ui_text("可部署", "Deployable Cash"), f"${deployable_cash:,.2f}")
+    bottom_cols[1].metric(ui_text("暴露", "Current Exposure"), f"{exposure_pct:.1f}%")
     st_module.caption(
         ui_text(
             "现金缓冲 "
@@ -47,7 +48,7 @@ def render_account_snapshot_panel(account_snapshot, *, ui_text, st_module=None):
 
 def render_data_source_status_panel(data_source_status, *, ui_text, st_module=None):
     st_module = st_module or st
-    st_module.subheader(ui_text("数据源状态", "Data Source Status"))
+    st_module.subheader(ui_text("数据源", "Data Sources"))
     if not data_source_status:
         st_module.info(ui_text("暂无数据源状态。", "Data source status is not available yet."))
         return
@@ -84,11 +85,12 @@ def render_data_source_status_panel(data_source_status, *, ui_text, st_module=No
     history_fallbacks = int(history.get("fallback_requests") or 0)
     price_fallbacks = int(prices.get("fallback_symbols") or 0)
 
-    cols = st_module.columns(4)
-    cols[0].metric(ui_text("历史数据来源", "History Source"), history_source)
-    cols[1].metric(ui_text("历史回退次数", "History Fallbacks"), f"{history_fallbacks}")
-    cols[2].metric(ui_text("现价数据来源", "Price Source"), price_source)
-    cols[3].metric(ui_text("现价回退数量", "Price Fallback Count"), f"{price_fallbacks}")
+    top_cols = st_module.columns(2)
+    bottom_cols = st_module.columns(2)
+    top_cols[0].metric(ui_text("历史源", "History Source"), history_source)
+    top_cols[1].metric(ui_text("历史回退", "History Fallbacks"), f"{history_fallbacks}")
+    bottom_cols[0].metric(ui_text("现价源", "Price Source"), price_source)
+    bottom_cols[1].metric(ui_text("现价回退", "Price Fallbacks"), f"{price_fallbacks}")
 
     history_error = str(history.get("last_error") or "").strip()
     prices_error = str(prices.get("last_error") or "").strip()
@@ -137,6 +139,116 @@ def render_data_source_status_panel(data_source_status, *, ui_text, st_module=No
         st_module.caption(ui_text(f"历史主源错误: {history_error}", f"History primary-source error: {history_error}"))
     if prices_error:
         st_module.caption(ui_text(f"现价主源错误: {prices_error}", f"Price primary-source error: {prices_error}"))
+
+
+def render_refresh_runtime_panel(refresh_runtime_status, *, ui_text, st_module=None):
+    st_module = st_module or st
+    status = dict(refresh_runtime_status or {})
+    st_module.subheader(ui_text("后台刷新", "Background Refresh"))
+
+    run_all_mode = bool(status.get("run_all_mode"))
+    price_last_updated = str(status.get("price_last_updated") or "").strip()
+    event_last_updated = str(status.get("event_last_updated") or "").strip()
+    price_next_due_at = str(status.get("price_next_due_at") or "").strip()
+    event_next_due_at = str(status.get("event_next_due_at") or "").strip()
+    price_interval_seconds = int(status.get("price_refresh_interval_seconds") or 0)
+    event_interval_seconds = int(status.get("event_refresh_interval_seconds") or 0)
+
+    cols = st_module.columns(3)
+    cols[0].metric(
+        ui_text("自动刷新", "Auto Refresh"),
+        ui_text("开启", "ON") if run_all_mode else ui_text("未检测", "OFF"),
+    )
+    cols[1].metric(
+        ui_text("行情刷新", "Last Price Refresh"),
+        price_last_updated.replace("T", " ")[:16] if price_last_updated else "—",
+    )
+    cols[2].metric(
+        ui_text("事件刷新", "Last Event Refresh"),
+        event_last_updated.replace("T", " ")[:16] if event_last_updated else "—",
+    )
+
+    cadence_parts = []
+    if price_interval_seconds > 0:
+        cadence_parts.append(
+            ui_text(
+                f"行情刷新节奏：约每 {int(price_interval_seconds // 60)} 分钟",
+                f"Price refresh cadence: about every {int(price_interval_seconds // 60)} min",
+            )
+        )
+    if event_interval_seconds > 0:
+        cadence_parts.append(
+            ui_text(
+                f"事件检查节奏：约每 {int(event_interval_seconds // 60)} 分钟",
+                f"Event refresh cadence: about every {int(event_interval_seconds // 60)} min",
+            )
+        )
+    if cadence_parts:
+        st_module.caption(" | ".join(cadence_parts))
+
+    next_parts = []
+    if price_next_due_at:
+        next_parts.append(
+            ui_text(
+                f"下一次行情刷新不早于：{price_next_due_at.replace('T', ' ')[:16]}",
+                f"Next price refresh no earlier than: {price_next_due_at.replace('T', ' ')[:16]}",
+            )
+        )
+    if event_next_due_at:
+        next_parts.append(
+            ui_text(
+                f"下一次事件检查不早于：{event_next_due_at.replace('T', ' ')[:16]}",
+                f"Next event check no earlier than: {event_next_due_at.replace('T', ' ')[:16]}",
+            )
+        )
+    if next_parts:
+        st_module.caption(" | ".join(next_parts))
+
+    if run_all_mode:
+        st_module.success(
+            ui_text(
+                "当前由 jobs.run_all 后台线程负责自动刷新；首页优先显示最近一致快照，后台随后补最新数据。",
+                "Background threads from jobs.run_all are active; the UI shows the latest consistent snapshot first, then refreshes in the background.",
+            )
+        )
+    else:
+        st_module.info(
+            ui_text(
+                "当前未检测到 run_all 后台模式；若需要自动刷新，请使用 jobs.run_all 启动整套系统。",
+                "run_all background mode was not detected; use jobs.run_all if you want the full auto-refresh supervisor.",
+            )
+        )
+
+
+def render_ui_performance_panel(performance_snapshot, *, ui_text, st_module=None):
+    st_module = st_module or st
+    perf = dict(performance_snapshot or {})
+    last = dict(perf.get("last", {}) or {})
+    if not perf or not last:
+        st_module.info(ui_text("暂无页面性能数据。", "No page-performance data is available yet."))
+        return
+
+    st_module.subheader(ui_text("页面性能打点", "Page Performance"))
+    cols = st_module.columns(4)
+    cols[0].metric(ui_text("最近页面", "Last Page"), str(last.get("page") or "—"))
+    cols[1].metric(ui_text("最近总耗时", "Last Total"), f"{float(last.get('total_ms') or 0.0):.0f} ms")
+    cols[2].metric(ui_text("最近上下文", "Last Context"), f"{float(last.get('context_ms') or 0.0):.0f} ms")
+    cols[3].metric(ui_text("最近渲染", "Last Render"), f"{float(last.get('page_render_ms') or 0.0):.0f} ms")
+
+    average_total = perf.get("avg_total_ms_last_10")
+    average_context = perf.get("avg_context_ms_last_10")
+    average_page_render = perf.get("avg_render_ms_current_page")
+    samples = int(perf.get("samples") or 0)
+    st_module.caption(
+        ui_text(
+            f"最近 {samples} 次平均：总耗时 {average_total:.0f} ms | 上下文 {average_context:.0f} ms | 当前页渲染 {average_page_render:.0f} ms"
+            if average_total is not None and average_context is not None and average_page_render is not None
+            else f"最近 {samples} 次平均数据仍在积累中。",
+            f"Last {samples} samples: total {average_total:.0f} ms | context {average_context:.0f} ms | current-page render {average_page_render:.0f} ms"
+            if average_total is not None and average_context is not None and average_page_render is not None
+            else f"Performance averages are still warming up over the last {samples} samples.",
+        )
+    )
 
 
 def render_market_risk_gate_banner(decision, snapshot, L, *, st_module=None):
@@ -212,18 +324,19 @@ def render_signal_scoreboard_panel(scoreboard, *, ui_text, st_module=None):
         return
 
     st_module.subheader(ui_text("信号评分看板", "Signal Scoreboard"))
-    s1, s2, s3, s4, s5, s6 = st_module.columns(6)
-    s1.metric(ui_text("完成交易", "Closed Trades"), f"{int(getattr(scoreboard, 'completed_trades', 0) or 0)}")
+    row1 = st_module.columns(3)
+    row2 = st_module.columns(3)
+    row1[0].metric(ui_text("完成交易", "Closed Trades"), f"{int(getattr(scoreboard, 'completed_trades', 0) or 0)}")
     win_rate = getattr(scoreboard, "win_rate", None)
     expectancy = getattr(scoreboard, "expectancy_return_pct", None)
     payoff = getattr(scoreboard, "payoff_ratio", None)
     profit_factor = getattr(scoreboard, "profit_factor", None)
     max_dd = getattr(scoreboard, "max_drawdown_pct", None)
-    s2.metric(ui_text("信号胜率", "Signal Win Rate"), f"{float(win_rate):.2%}" if win_rate is not None else "—")
-    s3.metric(ui_text("期望收益/笔", "Expectancy/Trade"), f"{float(expectancy):.2%}" if expectancy is not None else "—")
-    s4.metric(ui_text("盈亏比", "Payoff Ratio"), f"{float(payoff):.2f}" if payoff is not None else "—")
-    s5.metric(ui_text("利润因子", "Profit Factor"), f"{float(profit_factor):.2f}" if profit_factor is not None else "—")
-    s6.metric(ui_text("最大回撤", "Max Drawdown"), f"{float(max_dd):.2%}" if max_dd is not None else "—")
+    row1[1].metric(ui_text("胜率", "Signal Win Rate"), f"{float(win_rate):.2%}" if win_rate is not None else "—")
+    row1[2].metric(ui_text("期望", "Expectancy/Trade"), f"{float(expectancy):.2%}" if expectancy is not None else "—")
+    row2[0].metric(ui_text("盈亏比", "Payoff Ratio"), f"{float(payoff):.2f}" if payoff is not None else "—")
+    row2[1].metric(ui_text("利润因子", "Profit Factor"), f"{float(profit_factor):.2f}" if profit_factor is not None else "—")
+    row2[2].metric(ui_text("回撤", "Max Drawdown"), f"{float(max_dd):.2%}" if max_dd is not None else "—")
 
     regime_breakdown = list(getattr(scoreboard, "regime_breakdown", []) or [])
     if regime_breakdown:
@@ -276,16 +389,17 @@ def render_discipline_snapshot_panel(snapshot, *, ui_text, st_module=None):
         st_module.info(ui_text("暂无纪律层快照。", "Discipline snapshot is not available yet."))
         return
 
-    st_module.subheader(ui_text("纪律与风险总控", "Risk & Discipline"))
-    cols = st_module.columns(4)
-    cols[0].metric(ui_text("纪律状态", "Discipline"), snapshot.get("regime", "UNKNOWN"))
-    cols[1].metric(ui_text("风险状态", "Risk Regime"), snapshot.get("risk_regime", "UNKNOWN"))
-    cols[2].metric(
-        ui_text("可开核心仓", "Core New"),
+    st_module.subheader(ui_text("纪律总控", "Discipline"))
+    top_cols = st_module.columns(2)
+    bottom_cols = st_module.columns(2)
+    top_cols[0].metric(ui_text("纪律", "Discipline"), snapshot.get("regime", "UNKNOWN"))
+    top_cols[1].metric(ui_text("风险", "Risk Regime"), snapshot.get("risk_regime", "UNKNOWN"))
+    bottom_cols[0].metric(
+        ui_text("核心新仓", "Core New"),
         ui_text("是", "Yes") if snapshot.get("can_open_new_core_positions") else ui_text("否", "No"),
     )
-    cols[3].metric(
-        ui_text("可开卫星仓", "Satellite New"),
+    bottom_cols[1].metric(
+        ui_text("卫星新仓", "Satellite New"),
         ui_text("是", "Yes") if snapshot.get("can_open_new_satellite_positions") else ui_text("否", "No"),
     )
 
@@ -337,11 +451,12 @@ def render_monthly_discipline_review_panel(
         )
 
     st_module.subheader(ui_text("纪律层月度自评", "Monthly Discipline Review"))
-    cols = st_module.columns(4)
-    cols[0].metric(ui_text("复盘月份", "Review Month"), review["month"])
-    cols[1].metric(ui_text("FOLLOW / IGNORE", "FOLLOW / IGNORE"), f"{review['follow_days']} / {review['ignore_days']}")
-    cols[2].metric(ui_text("FOLLOW 组盈亏", "FOLLOW P/L"), f"${float(review['follow_realized_pl']):+,.2f}")
-    cols[3].metric(ui_text("纪律状态", "Discipline Check"), review["status"])
+    top_cols = st_module.columns(2)
+    bottom_cols = st_module.columns(2)
+    top_cols[0].metric(ui_text("复盘月份", "Review Month"), review["month"])
+    top_cols[1].metric(ui_text("FOLLOW / IGNORE", "FOLLOW / IGNORE"), f"{review['follow_days']} / {review['ignore_days']}")
+    bottom_cols[0].metric(ui_text("FOLLOW 盈亏", "FOLLOW P/L"), f"${float(review['follow_realized_pl']):+,.2f}")
+    bottom_cols[1].metric(ui_text("纪律状态", "Discipline Check"), review["status"])
 
     if review["status"] == "ALIGNED":
         st_module.success(review["summary"])

@@ -1,4 +1,5 @@
 import os
+import time
 from datetime import datetime
 
 import streamlit as st
@@ -52,6 +53,9 @@ st.set_page_config(page_title="Portfolio Tracker", layout="wide")
 
 AUTO_REFRESH_INTERVAL_SECONDS = 300
 NEWS_AUTO_REFRESH_INTERVAL_SECONDS = 600
+DEFER_STARTUP_REFRESH = str(os.environ.get("QUANT_UI_SKIP_STARTUP_REFRESH") or "").strip().lower() in {"1", "true", "yes", "on"}
+DEFER_INITIAL_EVENT_FETCH = str(os.environ.get("QUANT_UI_DEFER_INITIAL_EVENT_FETCH") or "").strip().lower() in {"1", "true", "yes", "on"}
+RUN_ALL_MODE = str(os.environ.get("QUANT_RUN_ALL_MODE") or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 @st.cache_data(ttl=AUTO_REFRESH_INTERVAL_SECONDS, show_spinner=False)
@@ -109,10 +113,6 @@ def _parse_iso_datetime(value):
         except ValueError:
             continue
     return None
-
-
-def _time_bucket(now, *, seconds=AUTO_REFRESH_INTERVAL_SECONDS):
-    return int(now.timestamp()) // int(max(1, seconds))
 
 
 def _state_payload_signature():
@@ -219,6 +219,95 @@ def clear_runtime_caches():
     load_correlation_matrix_cached.clear()
     load_cached_state_payloads.clear()
     st.session_state.pop("_derived_ui_context_cache", None)
+
+
+def _format_ts_for_status(value):
+    parsed = _parse_iso_datetime(value)
+    if parsed is None:
+        return ""
+    return parsed.isoformat()
+
+
+def _background_refresh_status(*, data, event_fetch_bundle):
+    now = datetime.now()
+    price_last_updated = _format_ts_for_status((data or {}).get("prices_last_updated"))
+    event_last_updated = _format_ts_for_status(dict(event_fetch_bundle or {}).get("fetched_at"))
+    price_next_due_at = ""
+    event_next_due_at = ""
+
+    price_last_dt = _parse_iso_datetime(price_last_updated)
+    if price_last_dt is not None:
+        price_next_due_at = (price_last_dt.timestamp() + float(AUTO_REFRESH_INTERVAL_SECONDS))
+        price_next_due_at = datetime.fromtimestamp(price_next_due_at).isoformat()
+
+    event_last_dt = _parse_iso_datetime(event_last_updated)
+    if event_last_dt is not None:
+        event_interval = (
+            2
+            if DEFER_INITIAL_EVENT_FETCH and not event_fetch_bundle
+            else NEWS_AUTO_REFRESH_INTERVAL_SECONDS
+        )
+        event_next_due_at = datetime.fromtimestamp(
+            event_last_dt.timestamp() + float(event_interval)
+        ).isoformat()
+    elif DEFER_INITIAL_EVENT_FETCH:
+        event_next_due_at = datetime.fromtimestamp(now.timestamp() + 2.0).isoformat()
+
+    return {
+        "run_all_mode": RUN_ALL_MODE,
+        "startup_refresh_deferred": DEFER_STARTUP_REFRESH,
+        "initial_event_fetch_deferred": DEFER_INITIAL_EVENT_FETCH,
+        "price_last_updated": price_last_updated,
+        "event_last_updated": event_last_updated,
+        "price_refresh_interval_seconds": AUTO_REFRESH_INTERVAL_SECONDS,
+        "event_refresh_interval_seconds": NEWS_AUTO_REFRESH_INTERVAL_SECONDS,
+        "price_next_due_at": price_next_due_at,
+        "event_next_due_at": event_next_due_at,
+    }
+
+
+def _summarize_perf_history(history, *, current_page):
+    rows = list(history or [])
+    if not rows:
+        return {}
+    recent = rows[-10:]
+    current_page_rows = [row for row in recent if str(row.get("page") or "") == str(current_page or "")]
+
+    def _avg_ms(items, key):
+        if not items:
+            return None
+        values = [float(item.get(key) or 0.0) for item in items]
+        if not values:
+            return None
+        return sum(values) / len(values)
+
+    return {
+        "last": dict(rows[-1] or {}),
+        "avg_total_ms_last_10": _avg_ms(recent, "total_ms"),
+        "avg_context_ms_last_10": _avg_ms(recent, "context_ms"),
+        "avg_render_ms_current_page": _avg_ms(current_page_rows, "page_render_ms"),
+        "samples": len(recent),
+    }
+
+
+def _record_ui_perf(*, page, bootstrap_ms, context_ms, page_render_ms, total_ms):
+    entry = {
+        "recorded_at": datetime.now().isoformat(),
+        "page": str(page or ""),
+        "bootstrap_ms": round(float(bootstrap_ms or 0.0), 1),
+        "context_ms": round(float(context_ms or 0.0), 1),
+        "page_render_ms": round(float(page_render_ms or 0.0), 1),
+        "total_ms": round(float(total_ms or 0.0), 1),
+    }
+    history = list(st.session_state.get("_ui_perf_history", []) or [])
+    history.append(entry)
+    history = history[-20:]
+    st.session_state["_ui_perf_history"] = history
+    st.session_state["_ui_perf_last"] = entry
+    st.session_state["_ui_perf_summary"] = _summarize_perf_history(
+        history,
+        current_page=page,
+    )
 
 
 def render_flash_notice(session_key):
@@ -540,6 +629,7 @@ def get_or_build_derived_ui_context(
     include_core_holdings_df=False,
     include_satellite_holdings_df=False,
     include_latest_report=False,
+    allow_expensive_rebuilds=True,
 ):
     now = datetime.now()
     tracked_symbols = rt.collect_tracked_symbols(data)
@@ -548,6 +638,7 @@ def get_or_build_derived_ui_context(
         fetcher_module=ef,
         symbols=tracked_symbols,
         interval_seconds=NEWS_AUTO_REFRESH_INTERVAL_SECONDS,
+        allow_initial_fetch=not DEFER_INITIAL_EVENT_FETCH,
         now=now,
     )
     state_signature = _state_payload_signature()
@@ -569,7 +660,6 @@ def get_or_build_derived_ui_context(
         ),
         _event_bundle_signature(st.session_state.get("event_fetch_bundle")),
         state_signature,
-        _time_bucket(now),
     )
     cached = st.session_state.get("_derived_ui_context_cache")
     if isinstance(cached, dict) and cached.get("key") == cache_key:
@@ -660,11 +750,14 @@ def get_or_build_derived_ui_context(
     ]
 
     loaded_core_etf_snapshot = state_payloads.get("core_etf_snapshot")
-    if _snapshot_is_current(
-        loaded_core_etf_snapshot,
-        data=data,
-        risk_regime=current_risk_regime,
-        allocation_regime=current_allocation_regime,
+    if loaded_core_etf_snapshot and (
+        _snapshot_is_current(
+            loaded_core_etf_snapshot,
+            data=data,
+            risk_regime=current_risk_regime,
+            allocation_regime=current_allocation_regime,
+        )
+        or not allow_expensive_rebuilds
     ):
         core_etf_rotation_snapshot = None
         core_etf_snapshot = loaded_core_etf_snapshot
@@ -689,11 +782,14 @@ def get_or_build_derived_ui_context(
         )
 
     loaded_discipline_snapshot = state_payloads.get("discipline_snapshot")
-    if _snapshot_is_current(
-        loaded_discipline_snapshot,
-        data=data,
-        risk_regime=current_risk_regime,
-        allocation_regime=current_allocation_regime,
+    if loaded_discipline_snapshot and (
+        _snapshot_is_current(
+            loaded_discipline_snapshot,
+            data=data,
+            risk_regime=current_risk_regime,
+            allocation_regime=current_allocation_regime,
+        )
+        or not allow_expensive_rebuilds
     ):
         discipline_snapshot = loaded_discipline_snapshot
     else:
@@ -722,13 +818,13 @@ def get_or_build_derived_ui_context(
     )
 
     loaded_satellite_candidate_snapshot = state_payloads.get("satellite_candidate_snapshot")
-    use_saved_satellite_snapshot = (
-        selected_strategy_id == default_strategy_id
-        and _snapshot_is_current(
+    use_saved_satellite_snapshot = bool(loaded_satellite_candidate_snapshot) and selected_strategy_id == default_strategy_id and (
+        _snapshot_is_current(
             loaded_satellite_candidate_snapshot,
             data=data,
             history_period=history_period,
         )
+        or not allow_expensive_rebuilds
     )
     if use_saved_satellite_snapshot:
         satellite_candidate_snapshot = loaded_satellite_candidate_snapshot
@@ -854,15 +950,19 @@ def get_or_build_derived_ui_context(
     return context
 
 
+script_started_at = time.perf_counter()
+bootstrap_started_at = time.perf_counter()
 try:
     rt.bootstrap_app_data(
         st.session_state,
         du,
         refresh_interval_seconds=AUTO_REFRESH_INTERVAL_SECONDS,
+        allow_startup_refresh=not DEFER_STARTUP_REFRESH,
     )
 except ValueError as exc:
     st.error(f"数据文件加载失败: {exc}")
     st.stop()
+bootstrap_elapsed_ms = (time.perf_counter() - bootstrap_started_at) * 1000.0
 
 data = st.session_state.app_data
 market_events_bootstrapped = en.ensure_market_events_file()
@@ -907,9 +1007,15 @@ data = st.session_state.app_data
 
 L = lambda key, **kwargs: loc.get_text(st.session_state.lang, key, **kwargs)
 
+news_rerun_interval_seconds = (
+    2
+    if DEFER_INITIAL_EVENT_FETCH and "event_fetch_bundle" not in st.session_state
+    else NEWS_AUTO_REFRESH_INTERVAL_SECONDS
+)
+
 rt.enable_auto_news_rerun(
     session_state=st.session_state,
-    interval_seconds=NEWS_AUTO_REFRESH_INTERVAL_SECONDS,
+    interval_seconds=news_rerun_interval_seconds,
     st_module=st,
 )
 
@@ -945,6 +1051,7 @@ active_page = next(
 )
 st.session_state.active_page = active_page
 
+context_started_at = time.perf_counter()
 derived_context = get_or_build_derived_ui_context(
     data=data,
     history_period=st.session_state.history_period,
@@ -956,7 +1063,9 @@ derived_context = get_or_build_derived_ui_context(
     include_core_holdings_df=active_page == "core",
     include_satellite_holdings_df=active_page == "satellite",
     include_latest_report=active_page == "ops",
+    allow_expensive_rebuilds=active_page in {"core", "satellite", "risk"},
 )
+context_elapsed_ms = (time.perf_counter() - context_started_at) * 1000.0
 analyst_consensus_cache = derived_context["analyst_consensus_cache"]
 quant_analysis_snapshot = derived_context["quant_analysis_snapshot"]
 latest_trade_plan = derived_context["latest_trade_plan"]
@@ -990,7 +1099,12 @@ trade_plan_banner = ui.build_trade_plan_banner(
     latest_trade_plan,
     lang=st.session_state.get("lang", "zh"),
 )
+refresh_runtime_status = _background_refresh_status(
+    data=data,
+    event_fetch_bundle=st.session_state.get("event_fetch_bundle"),
+)
 
+page_render_started_at = time.perf_counter()
 if active_page == "dashboard":
     uc.render_dashboard_page(
         ui_text=ui_text,
@@ -1011,6 +1125,8 @@ if active_page == "dashboard":
         latest_nightly_manifest=latest_nightly_manifest,
         account_snapshot=account_snapshot,
         data_source_status=md.get_market_data_status_snapshot(),
+        refresh_runtime_status=refresh_runtime_status,
+        ui_performance_snapshot=st.session_state.get("_ui_perf_summary", {}),
         allocation_regime_decision=allocation_regime_decision,
         discipline_snapshot=discipline_snapshot,
         monthly_discipline_review=monthly_discipline_review,
@@ -1181,6 +1297,16 @@ else:
         st_module=st,
     )
 
+page_render_elapsed_ms = (time.perf_counter() - page_render_started_at) * 1000.0
+total_elapsed_ms = (time.perf_counter() - script_started_at) * 1000.0
+_record_ui_perf(
+    page=active_page,
+    bootstrap_ms=bootstrap_elapsed_ms,
+    context_ms=context_elapsed_ms,
+    page_render_ms=page_render_elapsed_ms,
+    total_ms=total_elapsed_ms,
+)
+
 snapshot_alerts = pg.build_snapshot_alerts(active_market_events)
 st.session_state.latest_system_snapshot = ss.build_system_snapshot(
     data=st.session_state.app_data,
@@ -1191,6 +1317,7 @@ st.session_state.latest_system_snapshot = ss.build_system_snapshot(
     data_sources=md.get_market_data_status_snapshot(),
     performance={
         "live_scoreboard": _scoreboard_to_dict(live_scoreboard),
+        "ui_performance": st.session_state.get("_ui_perf_last", {}),
     },
     allocation_regime=allocation_regime_decision.to_dict() if allocation_regime_decision is not None else {},
     trade_plan=latest_trade_plan,

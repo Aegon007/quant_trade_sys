@@ -6,8 +6,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable, Iterable, Mapping, Optional
 
-import deep_learning_strategy as dl_utils
-from engine import BacktraderEngine
 from quant_core import paths as qpaths
 from quant_core.analytics.monte_carlo import simulate_return_distribution
 from quant_core.portfolio.metrics import summarize_holdings
@@ -15,8 +13,6 @@ from quant_core.portfolio.position import recommend_position_action, summarize_b
 from share_utils import format_share_quantity
 from signal_approval import approve_signal
 from signal_scoreboard import build_signal_scoreboard
-from strategies import ui as su
-from strategies.registry import create_strategy
 
 
 DEFAULT_QUANT_ANALYSIS_SNAPSHOT_FILE = qpaths.QUANT_ANALYSIS_SNAPSHOT_FILE
@@ -35,6 +31,8 @@ def load_default_runtime_strategy(
     history_period: str = "2y",
     strategies: Optional[Iterable[Mapping]] = None,
 ) -> Optional[dict]:
+    from strategies import ui as su
+
     strategy_list = list(strategies or su.load_strategies())
     if not strategy_list:
         return None
@@ -417,13 +415,13 @@ def build_portfolio_quant_analysis_snapshot(
     engine_name: str = "backtrader",
     initial_cash: float = 100000.0,
     load_historical_data_fn: Optional[Callable[..., object]] = None,
-    get_signal_fn: Callable[[Mapping, str], tuple[str, str]] = su.get_signal,
-    create_strategy_fn: Callable[[Mapping], object] = create_strategy,
+    get_signal_fn: Optional[Callable[[Mapping, str], tuple[str, str]]] = None,
+    create_strategy_fn: Optional[Callable[[Mapping], object]] = None,
     engine_factory_fn: Optional[Callable[[], object]] = None,
     scoreboard_builder: Callable[..., object] = build_signal_scoreboard,
     guidance_builder: Callable[..., object] = summarize_backtest_guidance,
     monte_carlo_fn: Callable[..., object] = simulate_return_distribution,
-    tcn_profile_fn: Callable[..., object] = dl_utils.get_deep_tcn_signal_profile,
+    tcn_profile_fn: Optional[Callable[..., object]] = None,
     recommend_position_action_fn: Callable[..., object] = recommend_position_action,
     risk_gate=None,
     allocation_regime=None,
@@ -440,7 +438,22 @@ def build_portfolio_quant_analysis_snapshot(
     load_historical_data_fn = load_historical_data_fn or __import__(
         "quant_core.analytics.quant_analysis", fromlist=["get_historical_data"]
     ).get_historical_data
-    engine_factory_fn = engine_factory_fn or (lambda: BacktraderEngine(initial_cash=initial_cash))
+    if get_signal_fn is None:
+        from strategies import ui as su
+
+        get_signal_fn = su.get_signal
+    if create_strategy_fn is None:
+        from strategies.registry import create_strategy
+
+        create_strategy_fn = create_strategy
+    if tcn_profile_fn is None:
+        import deep_learning_strategy as dl_utils
+
+        tcn_profile_fn = dl_utils.get_deep_tcn_signal_profile
+    if engine_factory_fn is None:
+        from engine import BacktraderEngine
+
+        engine_factory_fn = lambda: BacktraderEngine(initial_cash=initial_cash)
 
     tracked_items = _tracked_items(data or {})
     holdings_summary = _safe_holdings_summary(data or {})

@@ -43,6 +43,33 @@ class RuntimeOrchestrationTests(unittest.TestCase):
 
         self.assertEqual(saved_payloads, [])
 
+    def test_bootstrap_app_data_can_skip_startup_refresh(self):
+        from app.orchestration import runtime
+
+        session_state = {}
+        call_state = {"refresh_calls": 0, "save_calls": 0}
+
+        data_utils_module = SimpleNamespace(
+            has_newer_editable_data=lambda: False,
+            load_data=lambda: {"holdings": [], "watchlist": [], "loaded": True},
+            auto_refresh_market_data=lambda data, refresh_interval_seconds: (
+                call_state.__setitem__("refresh_calls", call_state["refresh_calls"] + 1) or data,
+                False,
+            ),
+            save_data=lambda data: call_state.__setitem__("save_calls", call_state["save_calls"] + 1),
+        )
+
+        data = runtime.bootstrap_app_data(
+            session_state,
+            data_utils_module,
+            refresh_interval_seconds=300,
+            allow_startup_refresh=False,
+        )
+
+        self.assertTrue(data["loaded"])
+        self.assertEqual(call_state["refresh_calls"], 0)
+        self.assertEqual(call_state["save_calls"], 0)
+
     def test_apply_runtime_strategy_params_overrides_period(self):
         from app.orchestration import runtime
 
@@ -106,6 +133,47 @@ class RuntimeOrchestrationTests(unittest.TestCase):
             now=datetime(2026, 5, 10, 8, 1, 0),
         )
         self.assertFalse(refreshed2)
+        self.assertEqual(call_state["fetch_calls"], 1)
+        self.assertEqual(events2[0]["title"], "headline")
+        self.assertEqual(reports2[0]["source"], "mock")
+
+    def test_fetch_news_events_with_cache_can_defer_initial_fetch_once(self):
+        from app.orchestration import runtime
+
+        session_state = {}
+        call_state = {"fetch_calls": 0}
+
+        def fetch_events_from_sources(symbols, now):
+            call_state["fetch_calls"] += 1
+            return ([{"title": "headline", "symbols": symbols}], [{"source": "mock"}])
+
+        fetcher_module = SimpleNamespace(
+            should_refresh_events_cache=lambda **kwargs: True,
+            fetch_events_from_sources=fetch_events_from_sources,
+        )
+
+        events1, reports1, refreshed1 = runtime.fetch_news_events_with_cache(
+            session_state=session_state,
+            fetcher_module=fetcher_module,
+            symbols=["AAPL"],
+            interval_seconds=600,
+            allow_initial_fetch=False,
+            now=datetime(2026, 5, 10, 8, 0, 0),
+        )
+        self.assertEqual(events1, [])
+        self.assertEqual(reports1, [])
+        self.assertFalse(refreshed1)
+        self.assertEqual(call_state["fetch_calls"], 0)
+
+        events2, reports2, refreshed2 = runtime.fetch_news_events_with_cache(
+            session_state=session_state,
+            fetcher_module=fetcher_module,
+            symbols=["AAPL"],
+            interval_seconds=600,
+            allow_initial_fetch=False,
+            now=datetime(2026, 5, 10, 8, 0, 2),
+        )
+        self.assertTrue(refreshed2)
         self.assertEqual(call_state["fetch_calls"], 1)
         self.assertEqual(events2[0]["title"], "headline")
         self.assertEqual(reports2[0]["source"], "mock")
