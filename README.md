@@ -303,7 +303,7 @@ pip install "transformers>=4.40.0"
 应用内提供“通知配置”页，可配置并测试。当前通知能力：
 
 - 已支持：Slack 单向告警（Incoming Webhook）、Email 单向告警（SMTP）。
-- 已支持：Slack -> 系统 的双向命令控制（`/quant` + Socket Mode bot），用于从 Slack 更新本地持仓和关注列表。
+- 已支持：Slack -> 系统 的双向控制（`/quant` + Socket Mode bot），用于从 Slack 查询驾驶舱状态、更新本地持仓/关注列表，并支持上传 Robinhood CSV 直接同步交易记录。
 
 注意：
 
@@ -405,7 +405,14 @@ export ALERT_EMAIL_TO="your_gmail@gmail.com"
 
 ### Slack 双向消息控制
 
-Slack 的双向控制已经按 `slack_bolt + Socket Mode` 的方式接上了。现在 `/quant` 不是“配置完就自动工作”，它需要一个常驻 bot 进程在服务器上运行，去接收 Slack 的 slash command 并调用本系统内部的命令执行层。最省事的方式是直接运行统一入口：
+Slack 的双向控制已经按 `slack_bolt + Socket Mode` 的方式接上了。现在 bot 不只是处理 `/quant` slash command，也支持接收你上传的 Robinhood `Account activity CSV`，并自动完成：
+
+- 导入交易记录
+- 去重
+- reconcile 当前持仓和可用现金
+- 在 Slack 中返回同步摘要
+
+`/quant` 和文件上传都需要一个常驻 bot 进程在服务器上运行，去接收 Slack 事件并调用本系统内部的命令执行层。最省事的方式是直接运行统一入口：
 
 ```bash
 export SLACK_BOT_TOKEN="xoxb-..."
@@ -434,18 +441,30 @@ export SLACK_APP_TOKEN="xapp-..."
 1. 在 Slack API 后台创建一个新的 Slack App。
 2. 打开 `Socket Mode`。
 3. 创建 `App-Level Token`，拿到 `xapp-...`，并授予 `connections:write`。
-4. 在 `OAuth & Permissions` 里给 bot 加最小可用 scopes，至少要有 `commands`；如果后续要让 bot 主动发消息，可以再加 `chat:write`。
-5. 把 App 安装到你的 workspace，拿到 `Bot Token`，形如 `xoxb-...`。
-6. 在服务器上导出 `SLACK_BOT_TOKEN` 和 `SLACK_APP_TOKEN`，再启动 `python -m jobs.slack_bot`。
+4. 在 `OAuth & Permissions` 里给 bot 加最小可用 scopes：
+   - `commands`：让 `/quant` 可以工作
+   - `chat:write`：让 bot 能回复 slash command 和文件同步结果
+   - `files:read`：让 bot 可以读取你上传的 Robinhood CSV
+5. 在 `Event Subscriptions` 中启用事件，并按你的使用场景订阅消息事件：
+   - 如果你准备把 CSV 发给 bot 私聊：至少订阅 `message.im`
+   - 如果你准备发到公开频道：订阅 `message.channels`
+   - 如果你准备发到私有频道：订阅 `message.groups`
+6. 把 App 安装到你的 workspace，拿到 `Bot Token`，形如 `xoxb-...`。
+7. 在服务器上导出 `SLACK_BOT_TOKEN` 和 `SLACK_APP_TOKEN`，再启动 `python -m jobs.slack_bot`。
 
 这一模式下，配置位置分工如下：
 
 - 服务器：保存 Slack token，并运行 bot。
 - 本地电脑：只作为 Slack 客户端使用，不需要额外保存 bot token。
 
-当前第一版命令形态保持确定性，已经支持：
+当前第一版双向控制保持确定性，已经支持：
 
 - `可用命令`
+- `系统概览`
+- `今日计划`
+- `风险状态`
+- `核心ETF`
+- `卫星雷达`
 - `当前持仓`
 - `当前关注`
 - `状态 AAPL`
@@ -455,6 +474,37 @@ export SLACK_APP_TOKEN="xapp-..."
 - `转到关注 NVDA`
 - `转到持仓 MSFT 1`
 - `刷新 全部`
+
+### Slack 上传 Robinhood CSV 自动同步
+
+如果你只是想把 Robinhood 里的真实交易同步回系统，现在最省事的方式是：
+
+1. 在 Robinhood 导出 `Account activity CSV`
+2. 把这个 `.csv` 文件直接发到：
+   - bot 的私聊窗口；或
+   - 一个已经把 bot 拉进去的频道
+3. bot 会自动完成：
+   - 读取 CSV
+   - 导入交易记录
+   - 去重
+   - 重建当前持仓和可用现金
+4. 同步完成后，Slack 会回复一条摘要，通常包含：
+   - 文件名
+   - 解析记录数
+   - 新增记录数
+   - 重复跳过数
+   - 不支持行跳过数
+   - 当前持仓数量
+   - 当前关注数量
+   - 当前可用现金
+   - 若检测到历史可能不完整，也会附带 warning
+
+说明：
+
+- 这里同步的是**已经发生的历史交易记录**，不是实盘下单。
+- CSV 上传同步本身**不依赖实时价格**；它的核心作用是把系统的本地台账、当前持仓和现金，跟 Robinhood 的真实历史交易对齐。
+- 如果你之后还想刷新当前市值、盈亏和页面里的最新价格，再单独执行一次 `刷新 全部` 即可。
+- 同一个 CSV 重复上传不会重复导入；不同时间段但有重叠记录的 CSV，也会按 `import_key` 自动去重。
 
 第一版仍然不建议直接做自由聊天式 agent，而是先让 Slack 稳定地调用这些确定性命令，等执行链路稳定后再接 LLM 做解释层。
 

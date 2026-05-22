@@ -634,12 +634,12 @@ def update_all_prices(data, force_source_refresh=False):
     return data
 
 
-def _latest_market_price(symbol):
-    latest_prices = fetch_prices([symbol])
+def _latest_market_price(symbol, *, force_source_refresh=False):
+    latest_prices = fetch_prices([symbol], use_cache=not force_source_refresh, write_cache=True)
     return latest_prices.get(symbol)
 
 
-def resolve_record_price(record, symbol=None, price=None, allow_cost_fallback=True):
+def resolve_record_price(record, symbol=None, price=None, allow_cost_fallback=True, force_source_refresh=False):
     if price is not None:
         return float(price)
 
@@ -650,7 +650,10 @@ def resolve_record_price(record, symbol=None, price=None, allow_cost_fallback=Tr
 
     resolved_symbol = str(symbol or record.get("symbol") or "").strip().upper()
     if resolved_symbol:
-        latest_price = _latest_market_price(resolved_symbol)
+        latest_price = _latest_market_price(
+            resolved_symbol,
+            force_source_refresh=force_source_refresh,
+        )
         if latest_price is not None:
             return float(latest_price)
 
@@ -779,7 +782,12 @@ def move_watch_to_holding(index, shares=1.0):
     watch = data["watchlist"].pop(index)
 
     symbol = str(watch.get("symbol", "")).strip().upper()
-    entry_price = resolve_record_price(watch, symbol=symbol, allow_cost_fallback=False)
+    entry_price = resolve_record_price(
+        watch,
+        symbol=symbol,
+        allow_cost_fallback=False,
+        force_source_refresh=True,
+    )
     latest_price = watch.get("last_price")
     if latest_price is None:
         latest_price = entry_price

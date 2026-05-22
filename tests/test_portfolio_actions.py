@@ -63,6 +63,74 @@ class PortfolioActionsTests(unittest.TestCase):
         self.assertEqual(transactions[0]["event_type"], "BUY")
         self.assertEqual(transactions[0]["side"], "BUY")
 
+    def test_buy_symbol_can_fetch_price_for_symbol_not_already_in_watchlist(self):
+        self.data_utils.save_data(
+            {
+                "account": {
+                    "total_capital": 10000.0,
+                    "cash_available": 3000.0,
+                    "min_cash_buffer_pct": 0.1,
+                    "max_single_position_pct": 0.2,
+                    "max_total_exposure_pct": 1.0,
+                },
+                "holdings": [],
+                "watchlist": [],
+            }
+        )
+        self.actions.du.resolve_record_price = (
+            lambda record, price=None, symbol=None, allow_cost_fallback=True, force_source_refresh=False: 123.45
+        )
+
+        result = self.actions.buy_symbol("NVDA", 1.0)
+        data = self.data_utils.load_data()
+
+        self.assertEqual(result["symbol"], "NVDA")
+        self.assertEqual(result["price"], 123.45)
+        self.assertEqual(data["holdings"][0]["symbol"], "NVDA")
+        self.assertEqual(data["holdings"][0]["current_price"], 123.45)
+        self.assertEqual(data["account"]["cash_available"], 2876.55)
+
+    def test_buy_symbol_forces_source_refresh_when_resolving_price(self):
+        self.data_utils.save_data(
+            {
+                "account": {
+                    "total_capital": 10000.0,
+                    "cash_available": 3000.0,
+                    "min_cash_buffer_pct": 0.1,
+                    "max_single_position_pct": 0.2,
+                    "max_total_exposure_pct": 1.0,
+                },
+                "holdings": [],
+                "watchlist": [],
+            }
+        )
+        calls = []
+
+        def fake_resolve(record, price=None, symbol=None, allow_cost_fallback=True, force_source_refresh=False):
+            calls.append(
+                {
+                    "symbol": symbol,
+                    "allow_cost_fallback": allow_cost_fallback,
+                    "force_source_refresh": force_source_refresh,
+                }
+            )
+            return 250.0
+
+        self.actions.du.resolve_record_price = fake_resolve
+
+        self.actions.buy_symbol("TSLA", 1.0)
+
+        self.assertEqual(
+            calls,
+            [
+                {
+                    "symbol": "TSLA",
+                    "allow_cost_fallback": True,
+                    "force_source_refresh": True,
+                }
+            ],
+        )
+
     def test_sell_all_symbol_moves_holding_to_watchlist_and_increases_cash(self):
         self.data_utils.save_data(
             {
@@ -173,6 +241,26 @@ class PortfolioActionsTests(unittest.TestCase):
         self.assertEqual(transactions[-1]["symbol"], "MSFT")
         self.assertEqual(transactions[-1]["side"], "BUY")
         self.assertEqual(transactions[-1]["shares"], 1.5)
+
+    def test_move_watch_to_holding_requires_watchlist_entry(self):
+        self.data_utils.save_data(
+            {
+                "account": {
+                    "total_capital": 10000.0,
+                    "cash_available": 3000.0,
+                    "min_cash_buffer_pct": 0.1,
+                    "max_single_position_pct": 0.2,
+                    "max_total_exposure_pct": 1.0,
+                },
+                "holdings": [],
+                "watchlist": [],
+            }
+        )
+
+        with self.assertRaises(ValueError) as exc_info:
+            self.actions.move_watch_to_holding("MSFT", 1.5)
+
+        self.assertIn("watchlist MSFT not found", str(exc_info.exception))
 
     def test_remove_holding_record_removes_position_without_cash_change(self):
         self.data_utils.save_data(

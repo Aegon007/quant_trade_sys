@@ -34,8 +34,13 @@ def _adjust_cash(account, delta: float):
     account["cash_available"] = updated_cash
 
 
-def _execution_price(holding_or_watch, price=None) -> float:
-    return du.resolve_record_price(holding_or_watch, price=price)
+def _execution_price(holding_or_watch, price=None, symbol=None) -> float:
+    return du.resolve_record_price(
+        holding_or_watch,
+        price=price,
+        symbol=symbol,
+        force_source_refresh=True,
+    )
 
 
 def buy_symbol(symbol: str, shares: float, price=None, sector: str = ""):
@@ -46,7 +51,7 @@ def buy_symbol(symbol: str, shares: float, price=None, sector: str = ""):
     watch_index = _find_index(data.get("watchlist", []), symbol)
     watch_record = data["watchlist"].pop(watch_index) if watch_index is not None else None
     entry_context = watch_record or {}
-    entry_price = _execution_price(entry_context, price=price)
+    entry_price = _execution_price(entry_context, price=price, symbol=symbol)
     total_cost = shares_to_buy * entry_price
     _adjust_cash(account, -total_cost)
 
@@ -164,8 +169,9 @@ def move_watch_to_holding(symbol: str, shares: float = 1.0):
     notes = ""
     data = du.load_data()
     watch_index = _find_index(data.get("watchlist", []), symbol)
-    if watch_index is not None:
-        notes = str(data["watchlist"][watch_index].get("notes", "") or "")
+    if watch_index is None:
+        raise ValueError(f"watchlist {symbol} not found")
+    notes = str(data["watchlist"][watch_index].get("notes", "") or "")
     action = buy_symbol(symbol, shares)
     tx.add_portfolio_event(
         "MOVE_TO_HOLDING",

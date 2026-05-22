@@ -348,6 +348,19 @@ class SlackCommandServiceTests(unittest.TestCase):
         self.assertIn("pullback", result.message)
         self.assertIn("$820.00", result.message)
 
+    def test_refresh_all_command_forces_source_refresh(self):
+        calls = []
+        self.service.pactions.refresh_all_market_data = lambda force_source_refresh=False: (
+            calls.append(force_source_refresh)
+            or {"prices_last_updated": "2026-05-20T09:30:00"}
+        )
+
+        result = self.service.execute_slack_command("刷新 全部")
+
+        self.assertTrue(result.ok)
+        self.assertEqual(calls, [True])
+        self.assertIn("已强制刷新行情数据", result.message)
+
     def test_add_watch_command_appends_symbol_to_watchlist(self):
         self.data_utils.save_data(
             {
@@ -390,6 +403,23 @@ class SlackCommandServiceTests(unittest.TestCase):
         self.assertEqual(data["watchlist"], [])
         audit_rows = [json.loads(line) for line in self.audit_path.read_text(encoding="utf-8").splitlines() if line.strip()]
         self.assertEqual(audit_rows[-1]["command_name"], "REMOVE_WATCH")
+
+    def test_move_to_holding_command_requires_watchlist_entry(self):
+        self.data_utils.save_data(
+            {
+                "account": {
+                    "cash_available": 2000.0,
+                },
+                "holdings": [],
+                "watchlist": [],
+            }
+        )
+
+        result = self.service.execute_slack_command("转到持仓 MSFT 1")
+
+        self.assertFalse(result.ok)
+        self.assertIn("MSFT 不在关注列表中", result.message)
+        self.assertIn("买入 MSFT <股数>", result.message)
 
     def test_invalid_fractional_share_returns_error(self):
         result = self.service.execute_slack_command("买入 AAPL 0.0005")

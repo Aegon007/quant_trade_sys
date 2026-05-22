@@ -381,6 +381,22 @@ def _append_command_audit_log(command: ParsedSlackCommand, ok: bool, message: st
 
 def _friendly_error_message(exc: Exception) -> str:
     message = str(exc)
+    if message.startswith("watchlist ") and message.endswith(" not found"):
+        symbol = message[len("watchlist ") : -len(" not found")].strip().upper()
+        return f"{symbol} 不在关注列表中。请先执行“关注 {symbol}”，或直接使用“买入 {symbol} <股数>”。"
+    if message.startswith("holding ") and message.endswith(" not found"):
+        symbol = message[len("holding ") : -len(" not found")].strip().upper()
+        return f"{symbol} 不在持仓中。"
+    if message.endswith("already exists in holdings"):
+        symbol = message[: -len("already exists in holdings")].strip().upper()
+        return f"{symbol} 已在持仓中。"
+    if message.endswith("already exists in watchlist"):
+        symbol = message[: -len("already exists in watchlist")].strip().upper()
+        return f"{symbol} 已在关注列表中。"
+    if message == "sell shares cannot exceed current holding shares":
+        return "卖出股数不能超过当前持仓。"
+    if message == "cash_available would become negative":
+        return "可用现金不足，无法完成本次操作。"
     if "must be at least" in message:
         parts = message.split("must be at least", 1)
         field_name = parts[0].strip() or "shares"
@@ -461,9 +477,9 @@ def execute_slack_command(text) -> CommandExecutionResult:
             return _result(True, command, _format_status_message(data, command.symbol), data=data)
 
         if command.name == "REFRESH_ALL":
-            data = pactions.refresh_all_market_data()
+            data = pactions.refresh_all_market_data(force_source_refresh=True)
             updated_at = data.get("prices_last_updated") or "—"
-            return _result(True, command, f"已刷新行情数据。更新时间: {updated_at}", data=data)
+            return _result(True, command, f"已强制刷新行情数据。更新时间: {updated_at}", data=data)
 
         if command.name == "ADD_WATCH":
             action = pactions.add_watch_symbol(command.symbol)
