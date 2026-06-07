@@ -31,6 +31,31 @@ def save_explanation_cache(cache: Mapping, *, path: str = DEFAULT_EXPLANATION_CA
     return str(target)
 
 
+def summarize_explanation_cache(*, path: str = DEFAULT_EXPLANATION_CACHE_FILE):
+    cache = load_explanation_cache(path=path)
+    rows = list(dict(cache or {}).values())
+    if not rows:
+        return {"entry_count": 0, "by_kind": {}, "by_route": {}, "latest_created_at": None}
+    by_kind = {}
+    by_route = {}
+    latest_created_at = None
+    for row in rows:
+        row = dict(row or {})
+        kind = str(row.get("kind") or "unknown").strip() or "unknown"
+        route = str(row.get("route_name") or "unknown").strip() or "unknown"
+        by_kind[kind] = by_kind.get(kind, 0) + 1
+        by_route[route] = by_route.get(route, 0) + 1
+        created_at = str(row.get("created_at") or "").strip()
+        if created_at and (latest_created_at is None or created_at > latest_created_at):
+            latest_created_at = created_at
+    return {
+        "entry_count": len(rows),
+        "by_kind": by_kind,
+        "by_route": by_route,
+        "latest_created_at": latest_created_at,
+    }
+
+
 def select_llm_route(config: Mapping, *, complexity: str = "narration"):
     normalized = ncfg.normalize_notification_config(dict(config or {}))
     local_slm = dict(normalized.get("local_slm", {}) or {})
@@ -87,6 +112,50 @@ def build_core_etf_explanation_messages(
         {
             "role": "system",
             "content": "You are a concise portfolio co-pilot. Explain only from the provided portfolio and signal context. Do not invent external facts.",
+        },
+        {"role": "user", "content": user_prompt},
+    ]
+
+
+def build_satellite_explanation_messages(
+    *,
+    candidate_row: Mapping,
+    discipline_snapshot: Optional[Mapping] = None,
+    change_feed: Optional[Mapping] = None,
+):
+    row = dict(candidate_row or {})
+    discipline_snapshot = dict(discipline_snapshot or {})
+    change_feed = dict(change_feed or {})
+    symbol = str(row.get("symbol") or "").strip().upper() or "UNKNOWN"
+    title_bits = []
+    for item in list(change_feed.get("high_items", []) or []):
+        if str(item.get("symbol") or "").strip().upper() == symbol:
+            title_bits.append(f"{item.get('title', '')}: {item.get('message', '')}".strip(": "))
+    change_context = " | ".join(title_bits[:2]) or "无新的高优先级变化。"
+    mc = dict(row.get("monte_carlo", {}) or {})
+    user_prompt = (
+        f"请用简洁中文解释为什么系统当前把 {symbol} 放入卫星仓候选 / Top 3。\n"
+        f"- 当前状态: {row.get('recommendation_status') or row.get('candidate_state') or 'WATCH'}\n"
+        f"- 计划动作: {row.get('plan_action') or 'HOLD'}\n"
+        f"- 建议仓位: {row.get('suggested_weight_pct')}\n"
+        f"- 综合分: {row.get('satellite_score')}\n"
+        f"- Top3 状态: {row.get('top3_membership_state')}\n"
+        f"- 已驻留天数: {row.get('top3_residency_days')}\n"
+        f"- 推荐原因: {row.get('recommendation_reason') or row.get('signal_reason') or '无'}\n"
+        f"- 风险提示: {row.get('risk_note') or row.get('exit_reason') or '无'}\n"
+        f"- 预期回报: {mc.get('expected_return')}\n"
+        f"- 纪律状态: {discipline_snapshot.get('regime', 'UNKNOWN')}\n"
+        f"- 最近变化: {change_context}\n\n"
+        "输出要求：\n"
+        "1. 用 3-5 个简短要点。\n"
+        "2. 明确说明它为什么值得关注，以及为什么不是更激进或更保守。\n"
+        "3. 最后给一句“什么情况下这个候选会失效或降级”。\n"
+        "4. 不要编造外部信息。"
+    )
+    return [
+        {
+            "role": "system",
+            "content": "You are a concise satellite-selection co-pilot. Explain only from the provided structured candidate context. Do not invent external facts.",
         },
         {"role": "user", "content": user_prompt},
     ]
@@ -203,6 +272,65 @@ def build_discipline_review_messages(
     ]
 
 
+def build_news_summary_messages(*, summary_payload: Mapping, mode: str = "narration"):
+    payload = dict(summary_payload or {})
+    mode = str(mode or "narration").strip().lower()
+    overview = str(payload.get("overview") or "").strip() or "无"
+    focus_points = [str(item).strip() for item in list(payload.get("focus_points", []) or []) if str(item).strip()]
+    theme_focuses = list(payload.get("theme_focuses", []) or [])
+    theme_lines = []
+    for row in theme_focuses[:5]:
+        row = dict(row or {})
+        label = str(row.get("label_zh") or row.get("label_en") or row.get("theme_key") or "").strip()
+        summary = str(row.get("summary_zh") or row.get("summary_en") or "").strip()
+        headlines = " | ".join(str(item).strip() for item in list(row.get("top_headlines", []) or [])[:2] if str(item).strip())
+        line = f"- {label}: {summary}"
+        if headlines:
+            line += f" | 代表新闻: {headlines}"
+        theme_lines.append(line)
+
+    if mode == "narration":
+        system_prompt = (
+            "You are a concise financial narration assistant. Rewrite only from the provided structured news summary. "
+            "Do not add new facts, predictions, or external causes."
+        )
+        user_prompt = (
+            "请把下面这份结构化新闻/事件摘要，转述成一段更自然、更容易快速阅读的中文。\n"
+            "要求：\n"
+            "1. 只做整理和改写，不要新增判断依据；\n"
+            "2. 突出今天最重要的 2-3 个焦点；\n"
+            "3. 结尾点出“当前最值得盯的风险或机会”；\n"
+            "4. 控制在 4 句以内。\n\n"
+            f"总览：{overview}\n"
+            "焦点：\n"
+            + "\n".join(f"- {item}" for item in focus_points[:4])
+            + "\n主题聚合：\n"
+            + "\n".join(theme_lines[:5])
+        )
+    else:
+        system_prompt = (
+            "You are a market news analyst. Explain only from the structured news summary provided. "
+            "Do not invent external facts."
+        )
+        user_prompt = (
+            "请基于下面这份结构化新闻/事件摘要，解释今天新闻面最重要的变化意味着什么。\n"
+            "要求：\n"
+            "1. 先总结主导情绪与主导主题；\n"
+            "2. 说明更偏向系统性风险、行业事件还是个股驱动；\n"
+            "3. 最后给一句盘中最该注意什么；\n"
+            "4. 不要编造外部事实。\n\n"
+            f"总览：{overview}\n"
+            "焦点：\n"
+            + "\n".join(f"- {item}" for item in focus_points[:4])
+            + "\n主题聚合：\n"
+            + "\n".join(theme_lines[:5])
+        )
+    return [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt},
+    ]
+
+
 def _core_etf_cache_key(
     *,
     symbol_row: Mapping,
@@ -287,6 +415,77 @@ def explain_core_etf_decision(
     cache[cache_key] = {
         "kind": "core_etf_explanation",
         "symbol": str(dict(symbol_row or {}).get("symbol") or "").strip().upper(),
+        "route_name": route_name,
+        "model": str(route_config.get("model") or "").strip(),
+        "created_at": datetime.now().isoformat(),
+        "text": text,
+    }
+    save_explanation_cache(cache, path=cache_path)
+    return True, text, {
+        "route_name": route_name,
+        "model": str(route_config.get("model") or "").strip(),
+        "cached": False,
+    }
+
+
+def explain_satellite_candidate(
+    *,
+    candidate_row: Mapping,
+    notification_config: Mapping,
+    discipline_snapshot: Optional[Mapping] = None,
+    change_feed: Optional[Mapping] = None,
+    complexity: str = "explanation",
+    cache_path: str = DEFAULT_EXPLANATION_CACHE_FILE,
+    urlopen=None,
+):
+    route_name, route_config = select_llm_route(notification_config, complexity=complexity)
+    if not route_name or not route_config:
+        return False, "尚未配置可用的远程 LLM 或本地 SLM。", {"route_name": "", "model": ""}
+
+    route_config = dict(route_config or {})
+    cache = load_explanation_cache(path=cache_path)
+    cache_key = _generic_cache_key(
+        kind="satellite_candidate_explanation",
+        payload={
+            "symbol": dict(candidate_row or {}).get("symbol"),
+            "recommendation_status": dict(candidate_row or {}).get("recommendation_status"),
+            "candidate_state": dict(candidate_row or {}).get("candidate_state"),
+            "plan_action": dict(candidate_row or {}).get("plan_action"),
+            "suggested_weight_pct": dict(candidate_row or {}).get("suggested_weight_pct"),
+            "satellite_score": dict(candidate_row or {}).get("satellite_score"),
+            "membership_state": dict(candidate_row or {}).get("top3_membership_state"),
+            "residency_days": dict(candidate_row or {}).get("top3_residency_days"),
+            "reason": dict(candidate_row or {}).get("recommendation_reason") or dict(candidate_row or {}).get("signal_reason"),
+            "discipline_regime": dict(discipline_snapshot or {}).get("regime"),
+            "change_generated_at": dict(change_feed or {}).get("generated_at"),
+        },
+        route_name=route_name,
+        model_name=str(route_config.get("model") or "").strip(),
+        mode=complexity,
+    )
+    cached = dict(cache.get(cache_key, {}) or {})
+    if str(cached.get("text") or "").strip():
+        return True, str(cached.get("text") or "").strip(), {
+            "route_name": route_name,
+            "model": str(route_config.get("model") or "").strip(),
+            "cached": True,
+        }
+
+    messages = build_satellite_explanation_messages(
+        candidate_row=candidate_row,
+        discipline_snapshot=discipline_snapshot,
+        change_feed=change_feed,
+    )
+    if urlopen is None:
+        ok, text = oai.call_openai_compatible_chat(messages, route_config)
+    else:
+        ok, text = oai.call_openai_compatible_chat(messages, route_config, urlopen=urlopen)
+    if not ok:
+        return False, text, {"route_name": route_name, "model": str(route_config.get("model") or "").strip(), "cached": False}
+
+    cache[cache_key] = {
+        "kind": "satellite_candidate_explanation",
+        "symbol": str(dict(candidate_row or {}).get("symbol") or "").strip().upper(),
         "route_name": route_name,
         "model": str(route_config.get("model") or "").strip(),
         "created_at": datetime.now().isoformat(),
@@ -477,6 +676,25 @@ def explain_discipline_review(
         messages=messages,
         notification_config=notification_config,
         complexity="explanation",
+        cache_path=cache_path,
+        urlopen=urlopen,
+    )
+
+
+def narrate_news_summary(
+    *,
+    summary_payload: Mapping,
+    notification_config: Mapping,
+    cache_path: str = DEFAULT_EXPLANATION_CACHE_FILE,
+    urlopen=None,
+):
+    messages = build_news_summary_messages(summary_payload=summary_payload, mode="narration")
+    return _run_messages_with_cache(
+        cache_kind="news_summary_narration",
+        cache_payload=dict(summary_payload or {}),
+        messages=messages,
+        notification_config=notification_config,
+        complexity="narration",
         cache_path=cache_path,
         urlopen=urlopen,
     )

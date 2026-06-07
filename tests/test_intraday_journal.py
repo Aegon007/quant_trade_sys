@@ -20,6 +20,9 @@ class IntradayJournalTests(unittest.TestCase):
                 trigger_reason="月度纪律状态变化",
                 was_alert_sent=True,
                 send_context="intraday_alert",
+                plan_context_signature="plan-123",
+                discipline_regime_at_trigger="LIGHT",
+                risk_regime_at_trigger="CAUTION",
                 payload={"monthly_status": "CAUTION", "ignore_days": 4},
             )
             self.module.append_intraday_event(entry, journal_path=journal_path)
@@ -28,6 +31,8 @@ class IntradayJournalTests(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["event_type"], "DISCIPLINE_MONTH_DETERIORATION")
         self.assertTrue(rows[0]["was_alert_sent"])
+        self.assertEqual(rows[0]["plan_context_signature"], "plan-123")
+        self.assertEqual(rows[0]["discipline_regime_at_trigger"], "LIGHT")
         self.assertEqual(rows[0]["payload"]["monthly_status"], "CAUTION")
 
     def test_annotate_event_outcomes_marks_favorable_and_trade_match(self):
@@ -48,6 +53,7 @@ class IntradayJournalTests(unittest.TestCase):
                 journal_path=journal_path,
                 review_day="2026-05-14",
                 end_of_day_prices={"AAPL": 103.0},
+                next_day_prices={"AAPL": 104.0},
                 transactions=[
                     {
                         "record_type": "TRADE",
@@ -64,5 +70,9 @@ class IntradayJournalTests(unittest.TestCase):
         self.assertEqual(summary["reviewed_count"], 1)
         self.assertEqual(summary["favorable_count"], 1)
         self.assertEqual(rows[0]["outcome_label"], "FAVORABLE")
+        self.assertTrue(rows[0]["was_followed_by_trade"])
         self.assertAlmostEqual(rows[0]["same_day_close_return_pct"], 0.03, places=6)
+        self.assertAlmostEqual(rows[0]["next_day_close_return_pct"], 0.04, places=6)
         self.assertEqual(rows[0]["matched_trade_count"], 1)
+        self.assertAlmostEqual(rows[0]["matched_trade_price"], 100.5, places=6)
+        self.assertAlmostEqual(rows[0]["matched_trade_shares"], 1.0, places=6)

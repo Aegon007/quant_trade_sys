@@ -77,6 +77,15 @@ def _previous_row_map(previous_snapshot: Optional[Mapping]):
     return rows
 
 
+def _action_bias(action: str) -> int:
+    action = str(action or "").strip().upper()
+    if action == "ACCUMULATE":
+        return 1
+    if action in {"TRIM", "RISK_EXIT"}:
+        return -1
+    return 0
+
+
 def _range_for_role(role: str, policy: Mapping):
     ranges = dict((policy or {}).get("core_etf_weight_ranges", {}) or {})
     return dict(ranges.get(str(role or "other").strip().lower(), ranges.get("other", {"min_pct": 0.0, "max_pct": 15.0})))
@@ -236,10 +245,10 @@ def _confirmed_action(
     symbol: str,
     proposed_action: str,
     action_reason: str,
-    previous_snapshot: Optional[Mapping],
+    previous_row: Optional[Mapping],
     confirmation_days: int,
 ) -> tuple[str, int, str]:
-    previous_row = _previous_row_map(previous_snapshot).get(symbol, {})
+    previous_row = dict(previous_row or {})
     previous_proposed = str(previous_row.get("proposed_action") or previous_row.get("action") or "HOLD").upper()
     previous_support_days = int(_safe_float(previous_row.get("action_support_days"), 0) or 0)
     support_days = previous_support_days + 1 if previous_proposed == proposed_action else 1
@@ -252,6 +261,29 @@ def _confirmed_action(
             return "ACCUMULATE", support_days, action_reason
         return "HOLD", support_days, f"{action_reason} 仍在确认期（{support_days}/{confirmation_days}）。"
     return "HOLD", support_days, action_reason
+
+
+def _signal_stability_score(
+    *,
+    action_support_days: int,
+    days_in_same_action: int,
+    days_since_regime_change: int,
+    weight_change_vs_threshold: float,
+    volatility: Optional[float],
+    high_volatility_threshold: float,
+    action: str,
+    proposed_action: str,
+):
+    score = 35.0
+    score += min(max(action_support_days, 0), 5) * 6.0
+    score += min(max(days_in_same_action, 0), 6) * 4.0
+    score += _clamp(float(weight_change_vs_threshold or 0.0), 0.0, 2.5) * 8.0
+    score += min(max(days_since_regime_change, 0), 5) * 3.0
+    if volatility is not None and volatility >= high_volatility_threshold:
+        score -= 8.0
+    if str(action or "HOLD").strip().upper() != str(proposed_action or "HOLD").strip().upper():
+        score -= 6.0
+    return round(_clamp(score, 0.0, 100.0), 4)
 
 
 def _target_weight_pct(score: float, weight_range: Mapping, alignment_score: float):
@@ -282,8 +314,19 @@ def build_core_etf_snapshot(
         getattr(allocation_regime, "block_new_buys", False)
     )
     confirmation_days = int(policy.get("action_confirmation_days", 2) or 2)
+    action_cooldown_days = int(policy.get("action_cooldown_days", 2) or 2)
     min_weight_change_pct = float(policy.get("min_weight_change_pct", 3.0) or 3.0)
     minimum_trade_value = float(policy.get("minimum_trade_value", 250.0) or 250.0)
+    high_volatility_threshold = float(policy.get("high_volatility_threshold", 0.28) or 0.28)
+    high_volatility_confirmation_boost_days = int(policy.get("high_volatility_confirmation_boost_days", 1) or 1)
+    previous_rows = _previous_row_map(previous_snapshot)
+    previous_summary = dict((previous_snapshot or {}).get("summary", {}) or {})
+    regime_changed = (
+        str(previous_summary.get("risk_regime") or "").strip().upper() != risk_regime
+        or str(previous_summary.get("allocation_regime") or "").strip().upper() != allocation_name
+    )
+    previous_regime_days = int(_safe_float(previous_summary.get("days_since_regime_change"), 0) or 0)
+    days_since_regime_change = 0 if regime_changed else previous_regime_days + 1
 
     rows = []
     for rotation_row in list((rotation_snapshot or {}).get("symbols", []) or []):
@@ -305,6 +348,7 @@ def build_core_etf_snapshot(
             risk_regime=risk_regime,
             allocation_regime=allocation_name,
         )
+        previous_row = previous_rows.get(symbol, {})
         target_weight_pct = _target_weight_pct(
             float(rotation_row.get("rotation_score") or 0.0),
             adjusted_range,
@@ -322,12 +366,45 @@ def build_core_etf_snapshot(
             risk_regime=risk_regime,
             role=role,
         )
+        row_volatility = _safe_float(rotation_row.get("volatility"))
+        effective_confirmation_days = confirmation_days + (
+            high_volatility_confirmation_boost_days
+            if row_volatility is not None and row_volatility >= high_volatility_threshold
+            else 0
+        )
         action, action_support_days, action_reason = _confirmed_action(
             symbol=symbol,
             proposed_action=proposed_action,
             action_reason=action_reason,
-            previous_snapshot=previous_snapshot,
-            confirmation_days=confirmation_days,
+            previous_row=previous_row,
+            confirmation_days=effective_confirmation_days,
+        )
+        previous_action = str(previous_row.get("action") or "HOLD").strip().upper()
+        previous_action_days = int(_safe_float(previous_row.get("days_in_same_action"), 0) or 0)
+        previous_bias = _action_bias(previous_action)
+        action_bias = _action_bias(action)
+        if (
+            previous_bias != 0
+            and action_bias != 0
+            and previous_bias != action_bias
+            and previous_action_days < action_cooldown_days
+        ):
+            action = previous_action
+            action_reason = f"{action_reason} 动作刚切换不久，触发防抖冷却期（{previous_action_days}/{action_cooldown_days}）。"
+        days_in_same_action = previous_action_days + 1 if previous_action == action else 1
+        weight_change_vs_threshold = abs(float(target_weight_pct or 0.0) - float(current_weight_pct or 0.0)) / max(
+            min_weight_change_pct,
+            0.0001,
+        )
+        stability_score = _signal_stability_score(
+            action_support_days=action_support_days,
+            days_in_same_action=days_in_same_action,
+            days_since_regime_change=days_since_regime_change,
+            weight_change_vs_threshold=weight_change_vs_threshold,
+            volatility=row_volatility,
+            high_volatility_threshold=high_volatility_threshold,
+            action=action,
+            proposed_action=proposed_action,
         )
         zones = _zones(current_price, rotation_row.get("ma50"), action)
         rows.append(
@@ -347,6 +424,11 @@ def build_core_etf_snapshot(
                 "action": action,
                 "proposed_action": proposed_action,
                 "action_support_days": action_support_days,
+                "days_in_same_action": days_in_same_action,
+                "days_since_regime_change": days_since_regime_change,
+                "weight_change_vs_threshold": round(weight_change_vs_threshold, 4),
+                "signal_stability_score": stability_score,
+                "effective_confirmation_days": effective_confirmation_days,
                 "expected_return_3m": rotation_row.get("expected_return_3m"),
                 "expected_return_12m": rotation_row.get("expected_return_12m"),
                 "confidence": rotation_row.get("confidence"),
@@ -378,6 +460,13 @@ def build_core_etf_snapshot(
             "trim_count": len(trims),
             "focus_symbols": accumulate[:5],
             "defensive_symbols": trims[:5],
+            "days_since_regime_change": days_since_regime_change,
+            "avg_signal_stability_score": round(
+                sum(float(row.get("signal_stability_score") or 0.0) for row in rows) / len(rows),
+                4,
+            )
+            if rows
+            else None,
         },
         "symbols": rows,
     }

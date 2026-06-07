@@ -6,6 +6,32 @@ from quant_core.notifications import change_feed as cfeed
 from quant_core.portfolio import discipline as qdisc
 
 
+def render_compact_table(dataframe, *, st_module=None):
+    st_module = st_module or st
+    if dataframe is None:
+        return
+    if not isinstance(dataframe, pd.DataFrame):
+        dataframe = pd.DataFrame(dataframe)
+    if dataframe.empty:
+        return
+    if not hasattr(st_module, "table"):
+        st_module.dataframe(dataframe, hide_index=True, width="stretch")
+        return
+    try:
+        st_module.table(dataframe.style.hide(axis="index"))
+    except Exception:
+        fallback_df = dataframe.copy()
+        fallback_df.index = [""] * len(fallback_df)
+        st_module.table(fallback_df)
+
+
+def _collapsed_expander(st_module, label):
+    try:
+        return st_module.expander(label, expanded=False)
+    except TypeError:
+        return st_module.expander(label)
+
+
 def render_account_snapshot_panel(account_snapshot, *, ui_text, st_module=None):
     st_module = st_module or st
     total_capital = account_snapshot.get("total_capital")
@@ -249,6 +275,80 @@ def render_ui_performance_panel(performance_snapshot, *, ui_text, st_module=None
             else f"Performance averages are still warming up over the last {samples} samples.",
         )
     )
+
+
+def render_strategy_validation_panel(snapshot, *, journal_rows=None, ui_text, st_module=None):
+    st_module = st_module or st
+    snapshot = dict(snapshot or {})
+    summary = dict(snapshot.get("summary", {}) or {})
+    if not snapshot or not summary:
+        st_module.info(ui_text("尚未生成策略验证快照。", "No strategy-validation snapshot is available yet."))
+        return
+
+    st_module.subheader(ui_text("策略验证", "Strategy Validation"))
+    cols = st_module.columns(4)
+    cols[0].metric(ui_text("状态", "Status"), str(summary.get("status") or "—"))
+    cols[1].metric(ui_text("覆盖", "Coverage"), f"{int(summary.get('symbol_count', 0) or 0)}")
+    cols[2].metric(ui_text("通过", "Validated"), f"{int(summary.get('validated_count', 0) or 0)}")
+    cols[3].metric(ui_text("预警", "Warnings"), f"{len(list(summary.get('warning_symbols', []) or []))}")
+
+    message = str(summary.get("message") or "").strip()
+    status = str(summary.get("status") or "").strip().upper()
+    if message:
+        if status == "READY":
+            st_module.success(message)
+        elif status == "CAUTION":
+            st_module.warning(message)
+        else:
+            st_module.info(message)
+
+    rows = []
+    for row in list(snapshot.get("symbols", []) or [])[:8]:
+        rows.append(
+            {
+                ui_text("代码", "Symbol"): str(row.get("symbol") or "—"),
+                ui_text("角色", "Role"): ui_text("核心", "Core")
+                if str(row.get("focus_role") or "").strip().lower() == "core"
+                else ui_text("卫星", "Satellite"),
+                ui_text("状态", "Status"): str(row.get("status") or "—"),
+                ui_text("默认名次", "Default Rank"): "—"
+                if row.get("default_rank") is None
+                else int(row.get("default_rank") or 0),
+                ui_text("领先策略", "Best Strategy"): str(row.get("best_strategy_name") or "—"),
+                ui_text("分差", "Gap"): "—"
+                if row.get("score_gap_vs_best") is None
+                else f"{float(row.get('score_gap_vs_best') or 0.0):+.2f}",
+                ui_text("样本", "Trades"): int(row.get("completed_trades") or 0),
+            }
+        )
+    if rows:
+        render_compact_table(pd.DataFrame(rows), st_module=st_module)
+
+    avg_rank = summary.get("avg_default_rank")
+    avg_gap = summary.get("avg_score_gap")
+    footer_bits = []
+    if avg_rank is not None:
+        footer_bits.append(ui_text(f"平均默认名次 {float(avg_rank):.2f}", f"Average default rank {float(avg_rank):.2f}"))
+    if avg_gap is not None:
+        footer_bits.append(ui_text(f"平均分差 {float(avg_gap):+.2f}", f"Average score gap {float(avg_gap):+.2f}"))
+    if footer_bits:
+        st_module.caption(" | ".join(footer_bits))
+
+    journal_rows = list(journal_rows or [])
+    if journal_rows:
+        with _collapsed_expander(st_module, ui_text("最近研究轨迹", "Recent Research Trail")):
+            compact_rows = []
+            for row in journal_rows[-5:][::-1]:
+                compact_rows.append(
+                    {
+                        ui_text("时间", "Time"): str(row.get("generated_at") or "").replace("T", " ")[:16] or "—",
+                        ui_text("状态", "Status"): str(row.get("status") or "—"),
+                        ui_text("覆盖", "Coverage"): int(row.get("symbol_count") or 0),
+                        ui_text("通过", "Validated"): int(row.get("validated_count") or 0),
+                        ui_text("预警", "Warnings"): len(list(row.get("warning_symbols", []) or [])),
+                    }
+                )
+            render_compact_table(pd.DataFrame(compact_rows), st_module=st_module)
 
 
 def render_market_risk_gate_banner(decision, snapshot, L, *, st_module=None):
@@ -570,7 +670,7 @@ def render_change_feed_panel(
                 if details.get("after_value") not in (None, ""):
                     detail_rows.append({ui_text("字段", "Field"): ui_text("今日", "Today"), ui_text("值", "Value"): details.get("after_value")})
                 if detail_rows:
-                    st_module.dataframe(pd.DataFrame(detail_rows), hide_index=True, width="stretch")
+                    render_compact_table(pd.DataFrame(detail_rows), st_module=st_module)
 
     if medium_items:
         with st_module.expander(ui_text("查看中优先级变化", "Show Medium-Priority Changes")):
@@ -620,7 +720,7 @@ def render_nightly_manifest_panel(manifest, *, ui_text, st_module=None):
                     ui_text("错误", "Error"): step.get("error_message") or "—",
                 }
             )
-        st_module.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
+        render_compact_table(pd.DataFrame(rows), st_module=st_module)
 
 
 def render_intraday_event_panel(summary, *, ui_text, st_module=None):
@@ -652,7 +752,55 @@ def render_intraday_event_panel(summary, *, ui_text, st_module=None):
                     ui_text("说明", "Reason"): row.get("trigger_reason") or payload.get("alert_message") or "—",
                 }
             )
-        st_module.dataframe(pd.DataFrame(display_rows), hide_index=True, width="stretch")
+        render_compact_table(pd.DataFrame(display_rows), st_module=st_module)
+
+
+def render_intraday_tactical_panel(snapshot, *, ui_text, st_module=None):
+    st_module = st_module or st
+    snapshot = dict(snapshot or {})
+    if not snapshot:
+        st_module.info(ui_text("暂无盘中战术快照。", "No intraday tactical snapshot is available yet."))
+        return
+
+    st_module.subheader(ui_text("盘中战术层", "Intraday Tactical Overlay"))
+    top_cols = st_module.columns(2)
+    bottom_cols = st_module.columns(2)
+    top_cols[0].metric(ui_text("状态", "State"), str(snapshot.get("state") or "UNKNOWN"))
+    top_cols[1].metric(ui_text("动作", "Action"), str(snapshot.get("recommended_action") or "NONE"))
+    bottom_cols[0].metric(ui_text("工具", "Tool"), str(snapshot.get("recommended_symbol") or "—"))
+    suggested_weight = snapshot.get("suggested_weight_pct")
+    bottom_cols[1].metric(
+        ui_text("建议仓位", "Suggested Weight"),
+        f"{float(suggested_weight):.1f}%" if suggested_weight is not None else "—",
+    )
+
+    message = str(snapshot.get("message") or "").strip()
+    state = str(snapshot.get("state") or "").strip().upper()
+    if message:
+        if state in {"PANIC", "CAPITULATION"}:
+            st_module.warning(message)
+        elif state == "STRESS_BUILDING":
+            st_module.info(message)
+        else:
+            st_module.caption(message)
+
+    benchmark_rows = []
+    for row in list(snapshot.get("benchmark_rows", []) or []):
+        change_pct = row.get("change_pct")
+        benchmark_rows.append(
+            {
+                ui_text("基准", "Benchmark"): row.get("symbol") or "—",
+                ui_text("现价", "Live"): f"${float(row.get('current_price')):,.2f}" if row.get("current_price") is not None else "—",
+                ui_text("昨收", "Prev Close"): f"${float(row.get('previous_close')):,.2f}" if row.get("previous_close") is not None else "—",
+                ui_text("变动", "Move"): f"{float(change_pct):+.2%}" if change_pct is not None else "—",
+            }
+        )
+    if benchmark_rows:
+        render_compact_table(pd.DataFrame(benchmark_rows), st_module=st_module)
+
+    bullets = [str(item).strip() for item in list(snapshot.get("explanation_bullets", []) or []) if str(item).strip()]
+    if bullets:
+        st_module.caption(" | ".join(bullets[:3]))
 
 
 def render_active_events_panel(
@@ -664,6 +812,8 @@ def render_active_events_panel(
     lang="zh",
     st_module=None,
     summarize_news_events=None,
+    news_summary_narration=None,
+    narrate_news_summary_fn=None,
 ):
     st_module = st_module or st
     summarize_news_events = summarize_news_events or ns.summarize_news_events
@@ -673,30 +823,77 @@ def render_active_events_panel(
         lang="zh" if lang == "zh" else "en",
         max_headlines=3,
     )
+    event_count = int(getattr(summary, "event_count", 0) or 0)
+    high_severity_count = int(getattr(summary, "high_severity_count", 0) or 0)
+    verified_count = int(getattr(summary, "verified_count", 0) or 0)
+    dominant_sentiment = str(getattr(summary, "dominant_sentiment", "neutral") or "neutral").lower()
+    top_headline_details = list(getattr(summary, "top_headline_details", []) or [])
+    top_headlines = list(getattr(summary, "top_headlines", []) or [])
+    theme_focuses = list(getattr(summary, "theme_focuses", []) or [])
+    focus_points = [str(item).strip() for item in list(getattr(summary, "focus_points", []) or []) if str(item).strip()]
+    summary_signature = ns.build_news_summary_signature(summary)
+    narration = dict(news_summary_narration or {})
+    narration_text = ""
+    narration_label = ""
+    if str(narration.get("signature") or "").strip() == summary_signature:
+        narration_text = str(narration.get("text") or "").strip()
+        narration_label = str(narration.get("label") or "").strip()
+
     st_module.markdown(f"**{L('event_news_summary_title')}**")
-    st_module.info(summary.overview)
-    if summary.top_headline_details:
-        for idx, detail in enumerate(summary.top_headline_details, start=1):
-            st_module.caption(f"{idx}. {detail.headline}")
-            with st_module.expander(f"{L('event_news_expand_label')} #{idx}"):
-                metric_col = "指标" if lang == "zh" else "Metric"
-                score_col = "分数" if lang == "zh" else "Score"
-                score_df = pd.DataFrame(
-                    [
-                        {metric_col: L("event_news_score_total"), score_col: round(detail.total_score, 2)},
-                        {metric_col: L("event_news_score_severity"), score_col: round(detail.severity_component, 2)},
-                        {metric_col: L("event_news_score_sentiment"), score_col: round(detail.sentiment_component, 2)},
-                        {metric_col: L("event_news_score_confidence"), score_col: round(detail.confidence_component, 2)},
-                        {metric_col: L("event_news_score_verified"), score_col: round(detail.verified_component, 2)},
-                        {metric_col: L("event_news_score_type"), score_col: round(detail.event_type_component, 2)},
-                    ]
-                )
-                st_module.dataframe(score_df, hide_index=True, width="stretch")
-                explanation = detail.explanation_zh if lang == "zh" else detail.explanation_en
-                st_module.caption(explanation)
-    elif summary.top_headlines:
-        for idx, headline in enumerate(summary.top_headlines, start=1):
-            st_module.caption(f"{idx}. {headline}")
+    if narration_text:
+        st_module.info(narration_text)
+        if narration_label:
+            st_module.caption(narration_label)
+    else:
+        st_module.info(str(getattr(summary, "overview", "") or ""))
+
+    dominant_label = {
+        "negative": "偏负面" if lang == "zh" else "Negative",
+        "neutral": "中性" if lang == "zh" else "Neutral",
+        "positive": "偏正面" if lang == "zh" else "Positive",
+    }.get(dominant_sentiment, "—")
+    st_module.caption(
+        " | ".join(
+            [
+                f"{'事件数' if lang == 'zh' else 'Events'} {event_count}",
+                f"{'高强度' if lang == 'zh' else 'High Severity'} {high_severity_count}",
+                f"{'已核验' if lang == 'zh' else 'Verified'} {verified_count}",
+                f"{'主情绪' if lang == 'zh' else 'Tone'} {dominant_label}",
+            ]
+        )
+    )
+
+    if callable(narrate_news_summary_fn) and hasattr(st_module, "button"):
+        if st_module.button("本地聚合" if lang == "zh" else "Local Narration", key="news_summary_narrate"):
+            ok, message, _meta = narrate_news_summary_fn()
+            if ok:
+                narration_text = str(message or "").strip()
+            else:
+                st_module.error(message)
+
+    if focus_points:
+        st_module.markdown(f"**{'今日重点' if lang == 'zh' else 'Key Focus'}**")
+        for idx, point in enumerate(focus_points[:3], start=1):
+            st_module.caption(f"{idx}. {point}")
+
+    if theme_focuses:
+        st_module.markdown(f"**{'主题排序' if lang == 'zh' else 'Priority Themes'}**")
+        for idx, item in enumerate(theme_focuses[:4], start=1):
+            label = getattr(item, "label_zh", "") if lang == "zh" else getattr(item, "label_en", "")
+            sentiment_text = {
+                "negative": "偏负面" if lang == "zh" else "Negative",
+                "neutral": "中性" if lang == "zh" else "Neutral",
+                "positive": "偏正面" if lang == "zh" else "Positive",
+            }.get(str(getattr(item, "dominant_sentiment", "neutral") or "neutral").lower(), "—")
+            symbols = list(getattr(item, "top_symbols", []) or [])
+            symbol_text = " / ".join(symbols[:3]) if symbols else ("广泛市场" if lang == "zh" else "Broad Market")
+            summary_text = getattr(item, "summary_zh", "") if lang == "zh" else getattr(item, "summary_en", "")
+            st_module.markdown(
+                f"{idx}. **{label}**  "
+                f"`{sentiment_text}`  "
+                f"`{symbol_text}`\n\n"
+                f"{summary_text}"
+            )
 
     if event_decision is not None:
         regime_map = {
@@ -710,49 +907,73 @@ def render_active_events_panel(
             f"{L('risk_score')}: {event_decision.risk_score} | "
             f"{L('event_count')}: {event_decision.active_event_count}"
         )
-    if source_reports:
-        report_lines = []
-        for report in source_reports:
-            status = "OK" if report.get("ok") else "ERR"
-            fetched = int(report.get("fetched", 0))
-            error = str(report.get("error") or "").strip()
-            if error:
-                report_lines.append(
-                    f"[{status}] {report.get('source_id')} {L('event_fetch_count')}: {fetched}, "
-                    f"{L('event_fetch_error')}: {error}"
-                )
-            else:
-                report_lines.append(f"[{status}] {report.get('source_id')} {L('event_fetch_count')}: {fetched}")
-        st_module.caption(" | ".join(report_lines))
     if not active_events:
         st_module.info(L("event_risk_none"))
+        if source_reports:
+            with _collapsed_expander(st_module, "抓取状态" if lang == "zh" else "Fetch Status"):
+                report_lines = []
+                for report in source_reports:
+                    status = "OK" if report.get("ok") else "ERR"
+                    fetched = int(report.get("fetched", 0))
+                    error = str(report.get("error") or "").strip()
+                    if error:
+                        report_lines.append(
+                            f"[{status}] {report.get('source_id')} {L('event_fetch_count')}: {fetched}, "
+                            f"{L('event_fetch_error')}: {error}"
+                        )
+                    else:
+                        report_lines.append(f"[{status}] {report.get('source_id')} {L('event_fetch_count')}: {fetched}")
+                for line in report_lines:
+                    st_module.caption(line)
         return
 
-    rows = []
-    for event in active_events:
-        window_text = "—"
-        if event.starts_at is not None or event.ends_at is not None:
-            start_text = event.starts_at.isoformat(timespec="minutes") if event.starts_at else "?"
-            end_text = event.ends_at.isoformat(timespec="minutes") if event.ends_at else "?"
-            window_text = f"{start_text} ~ {end_text}"
-        rows.append(
-            {
-                L("event_title"): event.title,
-                L("event_type"): event.event_type,
-                L("event_severity"): event.severity,
-                L("event_verified"): "Yes" if event.verified else "No",
-                L("event_confidence"): f"{event.confidence_level} ({(event.confidence_score or 0.0):.2f})",
-                L("event_sentiment"): (
-                    f"{event.sentiment}"
-                    + (
-                        f" ({event.sentiment_score:.2f}, {event.sentiment_model or 'n/a'})"
-                        if event.sentiment_score is not None
-                        else ""
+    with _collapsed_expander(st_module, "原始新闻明细" if lang == "zh" else "Raw Headlines"):
+        if top_headline_details:
+            for idx, detail in enumerate(top_headline_details, start=1):
+                st_module.caption(f"{idx}. {detail.headline}")
+                with st_module.expander(f"{L('event_news_expand_label')} #{idx}"):
+                    metric_col = "指标" if lang == "zh" else "Metric"
+                    score_col = "分数" if lang == "zh" else "Score"
+                    score_df = pd.DataFrame(
+                        [
+                            {metric_col: L("event_news_score_total"), score_col: round(detail.total_score, 2)},
+                            {metric_col: L("event_news_score_severity"), score_col: round(detail.severity_component, 2)},
+                            {metric_col: L("event_news_score_sentiment"), score_col: round(detail.sentiment_component, 2)},
+                            {metric_col: L("event_news_score_confidence"), score_col: round(detail.confidence_component, 2)},
+                            {metric_col: L("event_news_score_verified"), score_col: round(detail.verified_component, 2)},
+                            {metric_col: L("event_news_score_type"), score_col: round(detail.event_type_component, 2)},
+                        ]
                     )
-                ),
-                L("event_symbols"): ", ".join(event.symbols) if event.symbols else "ALL",
-                L("event_window"): window_text,
-                L("event_source"): event.source or "—",
-            }
-        )
-    st_module.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
+                    render_compact_table(score_df, st_module=st_module)
+                    explanation = detail.explanation_zh if lang == "zh" else detail.explanation_en
+                    st_module.caption(explanation)
+        rows = []
+        for event in active_events:
+            window_text = "—"
+            if event.starts_at is not None or event.ends_at is not None:
+                start_text = event.starts_at.isoformat(timespec="minutes") if event.starts_at else "?"
+                end_text = event.ends_at.isoformat(timespec="minutes") if event.ends_at else "?"
+                window_text = f"{start_text} ~ {end_text}"
+            rows.append(
+                {
+                    L("event_title"): event.title,
+                    L("event_severity"): event.severity,
+                    L("event_symbols"): ", ".join(event.symbols) if event.symbols else "ALL",
+                    L("event_window"): window_text,
+                    L("event_source"): event.source or "—",
+                }
+            )
+        render_compact_table(pd.DataFrame(rows), st_module=st_module)
+        if source_reports:
+            st_module.markdown(f"**{'抓取状态' if lang == 'zh' else 'Fetch Status'}**")
+            for report in source_reports:
+                status = "OK" if report.get("ok") else "ERR"
+                fetched = int(report.get("fetched", 0))
+                error = str(report.get("error") or "").strip()
+                if error:
+                    st_module.caption(
+                        f"[{status}] {report.get('source_id')} {L('event_fetch_count')}: {fetched}, "
+                        f"{L('event_fetch_error')}: {error}"
+                    )
+                else:
+                    st_module.caption(f"[{status}] {report.get('source_id')} {L('event_fetch_count')}: {fetched}")

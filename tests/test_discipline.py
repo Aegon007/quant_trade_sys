@@ -92,6 +92,9 @@ class DisciplineTests(unittest.TestCase):
         self.assertEqual(review["defensive_override_days"], 1)
         self.assertEqual(review["follow_realized_pl"], 120.0)
         self.assertEqual(review["ignore_realized_pl"], -80.0)
+        self.assertEqual(review["follow_directional_hit_rate"], 0.5)
+        self.assertEqual(review["ignore_directional_hit_rate"], 0.0)
+        self.assertEqual(review["defensive_override_penalty_rate"], 1.0)
 
     def test_build_monthly_discipline_review_can_load_jsonl_journal(self):
         scoreboard = type("Scoreboard", (), {"expectancy_return_pct": None, "win_rate": None})()

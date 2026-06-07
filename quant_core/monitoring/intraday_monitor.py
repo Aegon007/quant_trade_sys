@@ -218,6 +218,11 @@ def classify_intraday_events(
     event_regime = str(_mapping_value(event_decision, "regime", "") or "").strip().upper()
     can_open_satellite = bool(discipline_snapshot.get("can_open_new_satellite_positions", True))
     can_open_core = bool(discipline_snapshot.get("can_open_new_core_positions", True))
+    regime_payload = {
+        "risk_regime": risk_regime or None,
+        "event_regime": event_regime or None,
+        "discipline_regime": str(discipline_snapshot.get("regime") or "").strip() or None,
+    }
 
     if event_regime == "RISK_OFF" and holdings:
         events.append(
@@ -231,7 +236,7 @@ def classify_intraday_events(
                 action_side="SELL",
                 payload={
                     "active_event_count": len(list(active_events or [])),
-                    "risk_regime": risk_regime or None,
+                    **regime_payload,
                 },
                 reason_codes=["event_risk_off", "reduce_exposure"],
                 explanation_summary="高影响事件把盘中风险切到了 RISK_OFF，系统建议优先检查减仓或退出。",
@@ -263,11 +268,12 @@ def classify_intraday_events(
                     should_notify=True,
                     plan_action=plan_row.get("plan_action"),
                     action_side="SELL",
-                    payload={
-                        "trigger_price": current_price,
-                        "risk_break_level": risk_break_level,
-                        "reference_price": _safe_float(plan_row.get("reference_price")),
-                    },
+                        payload={
+                            **regime_payload,
+                            "trigger_price": current_price,
+                            "risk_break_level": risk_break_level,
+                            "reference_price": _safe_float(plan_row.get("reference_price")),
+                        },
                     reason_codes=["risk_break", "sell_signal"],
                     explanation_summary=f"{symbol} 已跌破夜间计划里的风险破坏位，优先考虑减仓或退出。",
                     explanation_bullets=[
@@ -292,6 +298,7 @@ def classify_intraday_events(
                         should_notify=True,
                         action_side="SELL",
                         payload={
+                            **regime_payload,
                             "trigger_price": current_price,
                             "cost_basis": cost,
                             "return_pct": return_pct,
@@ -335,6 +342,7 @@ def classify_intraday_events(
                 plan_action=plan_action,
                 action_side="BUY",
                 payload={
+                    **regime_payload,
                     "trigger_price": current_price,
                     "buy_zone_low": buy_zone_low,
                     "buy_zone_high": buy_zone_high,

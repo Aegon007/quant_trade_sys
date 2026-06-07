@@ -195,7 +195,8 @@ class UIPagesHelpersTests(unittest.TestCase):
         )
 
         self.assertEqual(core_df.iloc[0]["代码"], "VOO")
-        self.assertIn("20.0% ~ 40.0%", core_df.iloc[0]["目标区间"])
+        self.assertEqual(core_df.iloc[0]["仓位"], "20.00% → 25.00%")
+        self.assertIn("495.00", core_df.iloc[0]["价位"])
         self.assertEqual(discipline_df.iloc[0]["当前值"], "LIGHT")
         self.assertEqual(discipline_df.iloc[4]["当前值"], "否")
 
@@ -226,7 +227,8 @@ class UIPagesHelpersTests(unittest.TestCase):
         self.assertEqual(candidate_df.iloc[0]["状态"], "CONFIRMED")
         self.assertEqual(candidate_df.iloc[0]["动作"], "ACCUMULATE")
         self.assertEqual(candidate_df.iloc[0]["仓位"], "4.00%")
-        self.assertIn("manual_include", candidate_df.iloc[0]["来源"])
+        self.assertIn("+18.00%", candidate_df.iloc[0]["预期"])
+        self.assertEqual(candidate_df.iloc[0]["亮点"], "趋势确认")
 
 
 if __name__ == "__main__":

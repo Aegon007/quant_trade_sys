@@ -34,11 +34,17 @@ DEFAULT_ENGINE_POLICY = {
     "min_weight_change_pct": 3.0,
     "action_confirmation_days": 2,
     "minimum_trade_value": 250.0,
+    "action_cooldown_days": 2,
+    "high_volatility_threshold": 0.28,
+    "high_volatility_confirmation_boost_days": 1,
     "satellite_max_total_weight_pct": 15.0,
     "satellite_max_single_weight_pct": 5.0,
     "candidate_entry_threshold": 65.0,
     "candidate_exit_threshold": 45.0,
     "candidate_persistence_days": 2,
+    "top3_promotion_confirmation_days": 2,
+    "top3_demotion_confirmation_days": 2,
+    "minimum_top3_residency_days": 2,
 }
 
 DEFAULT_ROTATION_SNAPSHOT_FILE = qpaths.CORE_ETF_SNAPSHOT_FILE
@@ -133,11 +139,17 @@ def normalize_engine_policy(config) -> dict:
         "min_weight_change_pct",
         "action_confirmation_days",
         "minimum_trade_value",
+        "action_cooldown_days",
+        "high_volatility_threshold",
+        "high_volatility_confirmation_boost_days",
         "satellite_max_total_weight_pct",
         "satellite_max_single_weight_pct",
         "candidate_entry_threshold",
         "candidate_exit_threshold",
         "candidate_persistence_days",
+        "top3_promotion_confirmation_days",
+        "top3_demotion_confirmation_days",
+        "minimum_top3_residency_days",
     ):
         value = _safe_float(config.get(key), payload[key])
         payload[key] = int(value) if "days" in key else float(value)

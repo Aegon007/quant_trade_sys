@@ -8,6 +8,7 @@ from app.ui import pages as pg
 from app.ui import panels as up
 from quant_core.analytics import candidate_pool as cpool
 from quant_core.analytics import core_etf_rotation as cer
+from quant_core.monitoring import intraday_tactical as itac
 
 
 def _card_container(st_module):
@@ -50,6 +51,16 @@ def inject_cockpit_styles(*, st_module=None):
         div[data-testid="stCaptionContainer"] {
             line-height: 1.35;
         }
+        div[data-testid="stTable"] table {
+            width: 100%;
+            table-layout: fixed;
+        }
+        div[data-testid="stTable"] th,
+        div[data-testid="stTable"] td {
+            white-space: normal !important;
+            word-break: break-word;
+            vertical-align: top;
+        }
         .qt-card-tight p {
             margin-bottom: 0.35rem;
         }
@@ -78,6 +89,7 @@ def render_shell_header(
     change_feed,
     discipline_snapshot,
     monthly_discipline_review,
+    strategy_validation_snapshot,
     data_source_status,
     refresh_runtime_status,
     ui_text,
@@ -88,6 +100,7 @@ def render_shell_header(
     manifest = dict(latest_nightly_manifest or {})
     discipline_snapshot = dict(discipline_snapshot or {})
     monthly_discipline_review = dict(monthly_discipline_review or {})
+    strategy_validation_snapshot = dict(strategy_validation_snapshot or {})
 
     with _card_container(st_module):
         st_module.markdown(
@@ -143,6 +156,14 @@ def render_shell_header(
                 ui_text(
                     f"月度纪律提示：{monthly_summary}",
                     f"Monthly discipline: {monthly_summary}",
+                )
+            )
+        validation_summary = dict(strategy_validation_snapshot.get("summary", {}) or {})
+        if validation_summary:
+            st_module.caption(
+                ui_text(
+                    f"策略验证：{validation_summary.get('status') or '—'} | 覆盖 {int(validation_summary.get('symbol_count', 0) or 0)} | 预警 {len(list(validation_summary.get('warning_symbols', []) or []))}",
+                    f"Strategy validation: {validation_summary.get('status') or '—'} | coverage {int(validation_summary.get('symbol_count', 0) or 0)} | warnings {len(list(validation_summary.get('warning_symbols', []) or []))}",
                 )
             )
 
@@ -478,6 +499,125 @@ def render_satellite_config_editor(*, ui_text, st_module=None):
         st_module.rerun()
 
 
+def render_intraday_tactical_config_editor(*, ui_text, st_module=None):
+    st_module = st_module or st
+    config = itac.load_intraday_tactical_config()
+    st_module.subheader(ui_text("盘中战术层配置", "Intraday Tactical Overlay Config"))
+    st_module.caption(
+        ui_text(
+            "这里控制盘中战术工具池和触发阈值。它只服务于盘中风险升级与反向对冲，不参与核心仓或普通卫星仓配置。",
+            "This controls the intraday tactical tool pool and trigger thresholds. It is only for intraday risk escalation and tactical hedging, not for the core or normal satellite books.",
+        )
+    )
+    enabled = st_module.checkbox(
+        ui_text("启用盘中战术层", "Enable Intraday Tactical Overlay"),
+        value=bool(config.get("enabled", True)),
+        key="intraday_tactical_enabled",
+    )
+    benchmark_symbols_text = st_module.text_input(
+        ui_text("基准标的（逗号分隔）", "Benchmark symbols (comma-separated)"),
+        value=", ".join(list(config.get("benchmark_symbols", []) or [])),
+        key="intraday_tactical_benchmarks",
+    )
+    tactical_df = pd.DataFrame(list(config.get("tactical_symbols", []) or []))
+    if tactical_df.empty:
+        tactical_df = pd.DataFrame(columns=["symbol", "role", "max_weight_pct"])
+    edited_df = st_module.data_editor(
+        tactical_df,
+        hide_index=True,
+        num_rows="dynamic",
+        width="stretch",
+        key="intraday_tactical_symbols_editor",
+        column_config={
+            "symbol": st.column_config.TextColumn("symbol"),
+            "role": st.column_config.TextColumn("role"),
+            "max_weight_pct": st.column_config.NumberColumn("max_weight_pct", min_value=0.0, step=0.5, format="%.1f"),
+        },
+    )
+    thresholds = dict(config.get("thresholds", {}) or {})
+    t1, t2 = st_module.columns(2)
+    qqq_stress = t1.number_input(
+        ui_text("QQQ 压力阈值 (%)", "QQQ stress threshold (%)"),
+        value=float(thresholds.get("qqq_stress_drop_pct", -0.02) or 0.0) * 100.0,
+        step=0.1,
+        format="%.1f",
+        key="intraday_tactical_qqq_stress",
+    )
+    qqq_panic = t2.number_input(
+        ui_text("QQQ 恐慌阈值 (%)", "QQQ panic threshold (%)"),
+        value=float(thresholds.get("qqq_panic_drop_pct", -0.03) or 0.0) * 100.0,
+        step=0.1,
+        format="%.1f",
+        key="intraday_tactical_qqq_panic",
+    )
+    t3, t4 = st_module.columns(2)
+    spy_stress = t3.number_input(
+        ui_text("SPY 压力阈值 (%)", "SPY stress threshold (%)"),
+        value=float(thresholds.get("spy_stress_drop_pct", -0.015) or 0.0) * 100.0,
+        step=0.1,
+        format="%.1f",
+        key="intraday_tactical_spy_stress",
+    )
+    spy_panic = t4.number_input(
+        ui_text("SPY 恐慌阈值 (%)", "SPY panic threshold (%)"),
+        value=float(thresholds.get("spy_panic_drop_pct", -0.025) or 0.0) * 100.0,
+        step=0.1,
+        format="%.1f",
+        key="intraday_tactical_spy_panic",
+    )
+    t5, t6 = st_module.columns(2)
+    tactical_chase_gain = t5.number_input(
+        ui_text("不追高阈值 (%)", "Do-not-chase threshold (%)"),
+        value=float(thresholds.get("tactical_chase_gain_pct", 0.08) or 0.0) * 100.0,
+        step=0.5,
+        format="%.1f",
+        key="intraday_tactical_chase_gain",
+    )
+    max_tactical_total_weight_pct = t6.number_input(
+        ui_text("战术总仓位上限 (%)", "Max tactical total weight (%)"),
+        min_value=0.0,
+        value=float(config.get("max_tactical_total_weight_pct", 5.0) or 0.0),
+        step=0.5,
+        format="%.1f",
+        key="intraday_tactical_total_cap",
+    )
+    allow_overnight = st_module.checkbox(
+        ui_text("允许隔夜", "Allow overnight holding"),
+        value=bool(config.get("allow_overnight", False)),
+        key="intraday_tactical_allow_overnight",
+    )
+    if st_module.button(ui_text("保存盘中战术层配置", "Save Intraday Tactical Config"), key="save_intraday_tactical_config"):
+        payload = {
+            "enabled": bool(enabled),
+            "benchmark_symbols": [
+                item.strip().upper()
+                for item in benchmark_symbols_text.replace(" ", "").split(",")
+                if item.strip()
+            ],
+            "tactical_symbols": [
+                {
+                    "symbol": str(row.get("symbol") or "").strip().upper(),
+                    "role": str(row.get("role") or "").strip(),
+                    "max_weight_pct": float(row.get("max_weight_pct") or 0.0),
+                }
+                for row in edited_df.to_dict("records")
+                if str(row.get("symbol") or "").strip()
+            ],
+            "thresholds": {
+                "qqq_stress_drop_pct": float(qqq_stress) / 100.0,
+                "qqq_panic_drop_pct": float(qqq_panic) / 100.0,
+                "spy_stress_drop_pct": float(spy_stress) / 100.0,
+                "spy_panic_drop_pct": float(spy_panic) / 100.0,
+                "tactical_chase_gain_pct": float(tactical_chase_gain) / 100.0,
+            },
+            "allow_overnight": bool(allow_overnight),
+            "max_tactical_total_weight_pct": float(max_tactical_total_weight_pct),
+        }
+        itac.save_intraday_tactical_config(payload)
+        st_module.success(ui_text("盘中战术层配置已保存。", "Intraday tactical overlay configuration saved."))
+        st_module.rerun()
+
+
 def render_core_etf_cards(
     snapshot,
     *,
@@ -524,6 +664,16 @@ def render_core_etf_cards(
                         f"Target range {float(row.get('target_weight_range_low_pct') or 0.0):.1f}% ~ {float(row.get('target_weight_range_high_pct') or 0.0):.1f}%",
                     )
                 )
+                stability_score = row.get("signal_stability_score")
+                same_action_days = int(float(row.get("days_in_same_action") or 0.0) or 0)
+                regime_change_days = int(float(row.get("days_since_regime_change") or 0.0) or 0)
+                if stability_score is not None:
+                    st_module.caption(
+                        ui_text(
+                            f"稳定度 {float(stability_score):.0f}/100 | 同动作 {same_action_days} 天 | 距 regime 切换 {regime_change_days} 天",
+                            f"Stability {float(stability_score):.0f}/100 | Same action {same_action_days}d | Since regime change {regime_change_days}d",
+                        )
+                    )
                 buy_low = row.get("recommended_buy_zone_low")
                 buy_high = row.get("recommended_buy_zone_high")
                 trim_low = row.get("trim_zone_low")
@@ -579,9 +729,19 @@ def render_core_etf_cards(
                 st_module.markdown("</div>", unsafe_allow_html=True)
 
 
-def render_satellite_top_cards(snapshot, *, ui_text, st_module=None):
+def render_satellite_top_cards(
+    snapshot,
+    *,
+    ui_text,
+    st_module=None,
+    enable_llm_explanations: bool = False,
+    llm_explanations=None,
+    explain_satellite_fn=None,
+    button_namespace: str = "satellite_top",
+):
     st_module = st_module or st
     top_rows = list((snapshot or {}).get("top_recommendations", []) or [])
+    llm_explanations = dict(llm_explanations or {})
     if not top_rows:
         st_module.info(ui_text("当前没有 Top 3 候选。", "Top 3 candidates are not available yet."))
         return
@@ -605,9 +765,47 @@ def render_satellite_top_cards(snapshot, *, ui_text, st_module=None):
                     ui_text("MC预期", "MC Exp"),
                     f"{float(mc.get('expected_return')):+.2%}" if mc.get("expected_return") is not None else "—",
                 )
+                membership_state = str(row.get("top3_membership_state") or "").strip().upper()
+                residency_days = int(float(row.get("top3_residency_days") or 0.0) or 0)
+                if membership_state:
+                    st_module.caption(
+                        ui_text(
+                            f"Top3 状态 {membership_state} | 已驻留 {residency_days} 天",
+                            f"Top3 state {membership_state} | Residency {residency_days}d",
+                        )
+                    )
                 risk_note = str(row.get("risk_note") or row.get("exit_reason") or "").strip()
                 if risk_note:
                     st_module.caption(risk_note)
+                symbol = str(row.get("symbol") or "").strip().upper()
+                explanation_record = dict(llm_explanations.get(symbol, {}) or {})
+                explanation_text = str(explanation_record.get("text") or "").strip()
+                explanation_label = str(explanation_record.get("label") or "").strip()
+                if enable_llm_explanations and explain_satellite_fn is not None:
+                    if st_module.button(
+                        ui_text("LLM 解释", "LLM Explain"),
+                        key=f"{button_namespace}_llm_explain_{symbol}_{idx}",
+                    ):
+                        ok, message, meta = explain_satellite_fn(row)
+                        if ok:
+                            explanation_text = str(message or "").strip()
+                            route_name = str((meta or {}).get("route_name") or "").strip()
+                            model_name = str((meta or {}).get("model") or "").strip()
+                            detail_bits = []
+                            if route_name:
+                                detail_bits.append(route_name)
+                            if model_name:
+                                detail_bits.append(model_name)
+                            if (meta or {}).get("cached"):
+                                detail_bits.append("cached")
+                            explanation_label = " | ".join(detail_bits)
+                        else:
+                            st_module.error(message)
+                if explanation_text:
+                    with st_module.expander(ui_text("查看解释", "View Explanation"), expanded=False):
+                        if explanation_label:
+                            st_module.caption(explanation_label)
+                        st_module.write(explanation_text)
                 st_module.markdown("</div>", unsafe_allow_html=True)
 
 
@@ -693,6 +891,10 @@ def render_control_center_page(
     data_utils_module,
     session_state,
     report_rebuilder,
+    latest_weekend_research_snapshot=None,
+    latest_strategy_validation_snapshot=None,
+    latest_strategy_experiment_journal=None,
+    run_weekend_research_fn=None,
     st_module=None,
 ):
     st_module = st_module or st
@@ -738,6 +940,52 @@ def render_control_center_page(
         render_quant_report_summary(
             latest_report_snapshot,
             latest_report_files,
+            ui_text=ui_text,
+            st_module=st_module,
+        )
+
+        st_module.divider()
+        st_module.subheader(ui_text("周末研究", "Weekend Research"))
+        if callable(run_weekend_research_fn) and st_module.button(ui_text("立即运行周末研究", "Run Weekend Research Now")):
+            run_weekend_research_fn()
+        weekend_snapshot = dict(latest_weekend_research_snapshot or {})
+        weekend_summary = dict(weekend_snapshot.get("summary", {}) or {})
+        if weekend_snapshot:
+            w1, w2 = st_module.columns(2)
+            w3, w4 = st_module.columns(2)
+            w1.metric(ui_text("周偏向", "Bias"), str(weekend_summary.get("next_week_bias") or "—"))
+            w2.metric(ui_text("风控状态", "Risk"), str(weekend_summary.get("risk_regime") or "—"))
+            w3.metric(ui_text("核心焦点", "Core Focus"), f"{int(weekend_summary.get('core_focus_count', 0) or 0)}")
+            w4.metric(ui_text("卫星Top", "Satellite Top"), f"{int(weekend_summary.get('satellite_top_count', 0) or 0)}")
+            message = str(weekend_summary.get("message") or "").strip()
+            if message:
+                st_module.info(message)
+            recommendation_rows = [
+                {ui_text("研究结论", "Research takeaway"): str(item).strip()}
+                for item in list(weekend_snapshot.get("recommendations", []) or [])[:5]
+                if str(item).strip()
+            ]
+            if recommendation_rows:
+                up.render_compact_table(pd.DataFrame(recommendation_rows), st_module=st_module)
+            strategy_rows = []
+            for row in list(weekend_snapshot.get("strategy_research_rows", []) or [])[:5]:
+                strategy_rows.append(
+                    {
+                        ui_text("代码", "Symbol"): row.get("symbol") or "—",
+                        ui_text("领先策略", "Best Strategy"): row.get("best_strategy_name") or "—",
+                        ui_text("分数", "Score"): f"{float(row.get('best_strategy_score') or 0.0):.2f}",
+                    }
+                )
+            if strategy_rows:
+                st_module.caption(ui_text("周末策略对比亮点", "Weekend strategy-compare highlights"))
+                up.render_compact_table(pd.DataFrame(strategy_rows), st_module=st_module)
+        else:
+            st_module.info(ui_text("尚未生成周末研究快照。", "No weekend research snapshot is available yet."))
+
+        st_module.divider()
+        up.render_strategy_validation_panel(
+            latest_strategy_validation_snapshot,
+            journal_rows=latest_strategy_experiment_journal,
             ui_text=ui_text,
             st_module=st_module,
         )
@@ -788,10 +1036,12 @@ def render_settings_page(
     refresh_news_fn=None,
     reload_editable_data_fn=None,
     manual_tcn_retrain_fn=None,
+    run_weekend_research_fn=None,
     nightly_retrain_status=None,
     analyst_consensus_status=None,
     last_price_refresh=None,
     last_news_refresh=None,
+    last_weekend_research=None,
     st_module=None,
 ):
     st_module = st_module or st
@@ -867,6 +1117,8 @@ def render_settings_page(
             reload_editable_data_fn()
         if callable(manual_tcn_retrain_fn) and st_module.button(ui_text("手动重训 TCN", "Manual TCN Retrain")):
             manual_tcn_retrain_fn()
+        if callable(run_weekend_research_fn) and st_module.button(ui_text("立即运行周末研究", "Run Weekend Research Now")):
+            run_weekend_research_fn()
         st_module.caption(
             ui_text(
                 "“强制补齐整套系统数据”会立即跑一次无通知版 nightly 流程，用来在白天首次启动时补齐快照、候选池、报告和计划单。",
@@ -895,6 +1147,13 @@ def render_settings_page(
                 ui_text(
                     f"最近新闻刷新: {last_news_refresh}",
                     f"Latest news refresh: {last_news_refresh}",
+                )
+            )
+        if last_weekend_research:
+            runtime_bits.append(
+                ui_text(
+                    f"最近周末研究: {last_weekend_research}",
+                    f"Latest weekend research: {last_weekend_research}",
                 )
             )
         if runtime_bits:
@@ -955,6 +1214,11 @@ def render_settings_page(
             ui_text=ui_text,
             st_module=st_module,
         )
+        st_module.divider()
+        render_intraday_tactical_config_editor(
+            ui_text=ui_text,
+            st_module=st_module,
+        )
 
     with delivery_tab:
         notification_renderer(
@@ -992,6 +1256,7 @@ def render_dashboard_page(
     allocation_regime_decision,
     discipline_snapshot,
     monthly_discipline_review,
+    strategy_validation_snapshot,
     live_scoreboard,
     market_risk_gate_decision,
     market_risk_snapshot,
@@ -999,7 +1264,10 @@ def render_dashboard_page(
     active_market_events,
     event_risk_decision,
     event_source_reports,
+    news_summary_narration=None,
+    narrate_news_summary_fn=None,
     intraday_event_summary,
+    intraday_tactical_snapshot,
     L,
     core_etf_snapshot,
     satellite_candidate_snapshot,
@@ -1026,6 +1294,7 @@ def render_dashboard_page(
         change_feed=latest_change_feed,
         discipline_snapshot=discipline_snapshot,
         monthly_discipline_review=monthly_discipline_review,
+        strategy_validation_snapshot=strategy_validation_snapshot,
         data_source_status=data_source_status,
         refresh_runtime_status=refresh_runtime_status,
         ui_text=ui_text,
@@ -1055,6 +1324,7 @@ def render_dashboard_page(
         up.render_data_source_status_panel(data_source_status, ui_text=ui_text, st_module=st_module)
     with bottom_right:
         up.render_refresh_runtime_panel(refresh_runtime_status, ui_text=ui_text, st_module=st_module)
+    up.render_intraday_tactical_panel(intraday_tactical_snapshot, ui_text=ui_text, st_module=st_module)
 
     st_module.subheader(ui_text("今日动作板", "Today Action Board"))
     action_col1, action_col2 = st_module.columns(2)
@@ -1065,7 +1335,7 @@ def render_dashboard_page(
                 st_module.caption(str(latest_trade_plan.get("summary_reason") or "").strip() or "—")
                 trade_plan_records = ui.build_trade_plan_records(latest_trade_plan)
                 if trade_plan_records:
-                    st_module.dataframe(pd.DataFrame(trade_plan_records), hide_index=True, width="stretch")
+                    up.render_compact_table(pd.DataFrame(trade_plan_records), st_module=st_module)
                 else:
                     st_module.info(ui_text("当前没有需要执行的计划单。", "There are no actionable items for the next session."))
             else:
@@ -1074,9 +1344,19 @@ def render_dashboard_page(
         with _card_container(st_module):
             st_module.markdown(f"**{ui_text('收盘执行复盘', 'Post-Close Review')}**")
             if latest_post_close_review:
+                st_module.caption(
+                    ui_text(
+                        f"执行 {int(float(latest_post_close_review.get('executed_count') or 0.0) or 0)} | "
+                        f"触达未做 {int(float(latest_post_close_review.get('missed_reachable_count') or 0.0) or 0)} | "
+                        f"价位失效 {int(float(latest_post_close_review.get('price_failure_count') or 0.0) or 0)}",
+                        f"Executed {int(float(latest_post_close_review.get('executed_count') or 0.0) or 0)} | "
+                        f"Missed but reachable {int(float(latest_post_close_review.get('missed_reachable_count') or 0.0) or 0)} | "
+                        f"Price failures {int(float(latest_post_close_review.get('price_failure_count') or 0.0) or 0)}",
+                    )
+                )
                 review_records = ui.build_execution_review_records(latest_post_close_review)
                 if review_records:
-                    st_module.dataframe(pd.DataFrame(review_records), hide_index=True, width="stretch")
+                    up.render_compact_table(pd.DataFrame(review_records), st_module=st_module)
                 else:
                     st_module.info(ui_text("最近一个交易日没有可复盘的执行记录。", "The latest session has no matched execution review records."))
             else:
@@ -1089,6 +1369,12 @@ def render_dashboard_page(
     with focus_col2:
         render_satellite_top_cards(satellite_candidate_snapshot, ui_text=ui_text, st_module=st_module)
 
+    up.render_strategy_validation_panel(
+        strategy_validation_snapshot,
+        ui_text=ui_text,
+        st_module=st_module,
+    )
+
     if active_market_events:
         up.render_active_events_panel(
             active_market_events,
@@ -1097,6 +1383,8 @@ def render_dashboard_page(
             L,
             lang=lang,
             st_module=st_module,
+            news_summary_narration=news_summary_narration,
+            narrate_news_summary_fn=narrate_news_summary_fn,
         )
 
     with st_module.expander(ui_text("更多变化与盘中提醒", "More changes & intraday watch"), expanded=False):
@@ -1156,7 +1444,7 @@ def render_core_etfs_page(
         )
     )
     if core_holdings_df is not None and not core_holdings_df.empty:
-        st_module.dataframe(core_holdings_df, hide_index=True, width="stretch")
+        up.render_compact_table(core_holdings_df, st_module=st_module)
     else:
         st_module.info(ui_text("当前没有核心 ETF 持仓。", "There are no current core ETF holdings."))
 
@@ -1166,9 +1454,15 @@ def render_satellite_radar_page(
     satellite_candidate_snapshot,
     satellite_holdings_df,
     ui_text,
+    discipline_snapshot=None,
+    latest_change_feed=None,
+    llm_explanations=None,
+    explain_satellite_fn=None,
     active_market_events,
     event_risk_decision,
     event_source_reports,
+    news_summary_narration=None,
+    narrate_news_summary_fn=None,
     L,
     st_module=None,
     lang="zh",
@@ -1184,17 +1478,25 @@ def render_satellite_radar_page(
 
     st_module.subheader(ui_text("当前卫星仓", "Current Satellite Positions"))
     if satellite_holdings_df is not None and not satellite_holdings_df.empty:
-        st_module.dataframe(satellite_holdings_df, hide_index=True, width="stretch")
+        up.render_compact_table(satellite_holdings_df, st_module=st_module)
     else:
         st_module.info(ui_text("当前没有卫星仓持仓。", "There are no satellite holdings right now."))
 
     st_module.subheader(ui_text("Top 3 推荐", "Top 3 Recommendations"))
-    render_satellite_top_cards(satellite_candidate_snapshot, ui_text=ui_text, st_module=st_module)
+    render_satellite_top_cards(
+        satellite_candidate_snapshot,
+        ui_text=ui_text,
+        st_module=st_module,
+        enable_llm_explanations=True,
+        llm_explanations=llm_explanations,
+        explain_satellite_fn=explain_satellite_fn,
+        button_namespace="satellite_page",
+    )
 
     st_module.subheader(ui_text("候选池 Top 10", "Candidate Pool Top 10"))
     top10_df = pg.build_satellite_candidate_dataframe(satellite_candidate_snapshot, limit=10)
     if not top10_df.empty:
-        st_module.dataframe(top10_df, hide_index=True, width="stretch")
+        up.render_compact_table(top10_df, st_module=st_module)
     else:
         st_module.info(ui_text("当前没有候选池快照。", "No satellite candidate snapshot is available yet."))
     st_module.caption(
@@ -1212,6 +1514,8 @@ def render_satellite_radar_page(
             L,
             lang=lang,
             st_module=st_module,
+            news_summary_narration=news_summary_narration,
+            narrate_news_summary_fn=narrate_news_summary_fn,
         )
 
 
@@ -1238,6 +1542,7 @@ def render_risk_page(
     latest_post_close_review,
     snapshot_journal,
     intraday_event_summary,
+    intraday_tactical_snapshot,
     L,
     st_module=None,
 ):
@@ -1271,6 +1576,7 @@ def render_risk_page(
         up.render_account_snapshot_panel(account_snapshot, ui_text=ui_text, st_module=st_module)
     with s2:
         up.render_data_source_status_panel(data_source_status, ui_text=ui_text, st_module=st_module)
+    up.render_intraday_tactical_panel(intraday_tactical_snapshot, ui_text=ui_text, st_module=st_module)
     up.render_monthly_discipline_review_panel(
         discipline_snapshot=discipline_snapshot,
         scoreboard=live_scoreboard,

@@ -95,6 +95,48 @@ class CoreEtfEngineTests(unittest.TestCase):
         self.assertEqual(snapshot["symbols"][0]["action"], "RISK_EXIT")
         self.assertEqual(snapshot["symbols"][0]["regime_alignment"], "NEGATIVE")
 
+    def test_build_core_etf_snapshot_adds_stability_fields(self):
+        rotation_snapshot = {
+            "symbols": [
+                {
+                    "symbol": "VOO",
+                    "enabled": True,
+                    "role": "broad_market",
+                    "current_price": 500.0,
+                    "rotation_score": 82.0,
+                    "rotation_status": "FOCUS",
+                    "confidence": 0.82,
+                    "expected_return_3m": 0.04,
+                    "expected_return_12m": 0.12,
+                    "ma50": 490.0,
+                    "volatility": 0.18,
+                    "rotation_backtest": {"excess_return": 0.03},
+                }
+            ]
+        }
+        snapshot1 = self.engine.build_core_etf_snapshot(
+            data={"holdings": [], "watchlist": []},
+            account_snapshot={"total_capital": 10000.0},
+            rotation_snapshot=rotation_snapshot,
+            previous_snapshot=None,
+            now=datetime(2026, 5, 13, 22, 0, 0),
+        )
+        snapshot2 = self.engine.build_core_etf_snapshot(
+            data={"holdings": [], "watchlist": []},
+            account_snapshot={"total_capital": 10000.0},
+            rotation_snapshot=rotation_snapshot,
+            previous_snapshot=snapshot1,
+            now=datetime(2026, 5, 14, 22, 0, 0),
+        )
+
+        row = snapshot2["symbols"][0]
+        self.assertIn("signal_stability_score", row)
+        self.assertIn("days_in_same_action", row)
+        self.assertIn("days_since_regime_change", row)
+        self.assertGreaterEqual(row["signal_stability_score"], 0.0)
+        self.assertGreaterEqual(row["days_in_same_action"], 1)
+        self.assertGreaterEqual(snapshot2["summary"]["avg_signal_stability_score"], 0.0)
+
 
 if __name__ == "__main__":
     unittest.main()

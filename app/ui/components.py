@@ -205,12 +205,15 @@ def build_trade_plan_banner(plan, *, lang="zh"):
     has_actions = bool(plan.get("has_actions"))
     decision = str(plan.get("decision") or "").strip().upper()
     action_count = int(plan.get("action_count") or len(list(plan.get("items", []) or [])) or 0)
+    blocked_count = int(plan.get("blocked_count") or len(list(plan.get("blocked_items", []) or [])) or 0)
     summary_reason = str(plan.get("summary_reason") or "").strip()
     plan_date = str(plan.get("plan_date") or "").strip()
 
     if lang == "en":
         if has_actions:
             message = f"Tomorrow has {action_count} planned actions."
+            if blocked_count > 0:
+                message += f" {blocked_count} additional entry actions were blocked by discipline rules."
             if plan_date:
                 message += f" Plan date: {plan_date}."
             if summary_reason:
@@ -226,6 +229,8 @@ def build_trade_plan_banner(plan, *, lang="zh"):
 
     if has_actions or decision == "ACTION":
         message = f"明日有 {action_count} 条交易动作。"
+        if blocked_count > 0:
+            message += f" 另有 {blocked_count} 条动作被纪律层压制。"
         if plan_date:
             message += f" 计划日期：{plan_date}。"
         if summary_reason:
@@ -244,35 +249,29 @@ def build_trade_plan_banner(plan, *, lang="zh"):
 def build_trade_plan_records(plan):
     records = []
     for item in list((plan or {}).get("items", []) or []):
+        zone_low = item.get("buy_zone_low") if item.get("buy_zone_low") is not None else item.get("trim_zone_low")
+        zone_high = item.get("buy_zone_high") if item.get("buy_zone_high") is not None else item.get("trim_zone_high")
+        risk_break = (
+            f"${float(item.get('risk_break_level')):,.2f}"
+            if item.get("risk_break_level") is not None
+            else "—"
+        )
+        invalid_condition = str(item.get("invalid_condition") or "").strip()
+        guard_text = " | ".join(part for part in [risk_break if risk_break != "—" else "", invalid_condition] if part) or "—"
         records.append(
             {
                 "代码": str(item.get("symbol") or "").strip().upper(),
                 "动作": str(item.get("plan_action") or "").strip().upper(),
-                "计划仓位变化": (
+                "仓位": (
                     f"{float(item.get('plan_weight_delta_pct') or 0.0):+.1f}%"
                     if item.get("plan_weight_delta_pct") is not None
                     else "—"
                 ),
-                "参考价": (
-                    f"${float(item.get('reference_price')):,.2f}"
-                    if item.get("reference_price") is not None
-                    else "—"
-                ),
                 "计划区间": _format_price_range(
-                    item.get("buy_zone_low") if item.get("buy_zone_low") is not None else item.get("trim_zone_low"),
-                    item.get("buy_zone_high") if item.get("buy_zone_high") is not None else item.get("trim_zone_high"),
+                    zone_low,
+                    zone_high,
                 ),
-                "追价上限": (
-                    f"${float(item.get('max_chase_price')):,.2f}"
-                    if item.get("max_chase_price") is not None
-                    else "—"
-                ),
-                "风险破坏位": (
-                    f"${float(item.get('risk_break_level')):,.2f}"
-                    if item.get("risk_break_level") is not None
-                    else "—"
-                ),
-                "失效条件": str(item.get("invalid_condition") or "").strip(),
+                "失效 / 破位": guard_text,
                 "原因": str(item.get("reason") or "").strip(),
             }
         )
@@ -289,23 +288,34 @@ def build_execution_review_records(review):
             zone_text = "否"
         else:
             zone_text = "—"
+        opportunity_status = str(item.get("opportunity_status") or "").strip().upper()
+        if opportunity_status == "EXECUTED":
+            opportunity_text = "已执行"
+        elif opportunity_status == "REACHABLE":
+            opportunity_text = "触达未做"
+        elif opportunity_status == "INVALIDATED":
+            opportunity_text = "跳空失效"
+        elif opportunity_status == "UNREACHABLE":
+            opportunity_text = "区间未到"
+        else:
+            opportunity_text = "—"
         records.append(
             {
                 "代码": str(item.get("symbol") or "").strip().upper(),
                 "动作": str(item.get("plan_action") or "").strip().upper(),
                 "状态": str(item.get("status") or "").strip().upper(),
-                "成交均价": (
+                "成交": (
                     f"${float(item.get('avg_execution_price')):,.2f}"
                     if item.get("avg_execution_price") is not None
                     else "—"
                 ),
-                "成交股数": (
+                "股数": (
                     format_share_quantity(item.get("executed_shares"))
                     if item.get("executed_shares") is not None
                     else "—"
                 ),
-                "区间内执行": zone_text,
-                "匹配笔数": int(item.get("matched_trade_count") or 0),
+                "区间": zone_text,
+                "机会": opportunity_text,
             }
         )
     return records

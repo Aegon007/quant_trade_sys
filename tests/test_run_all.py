@@ -721,6 +721,117 @@ class RunAllTests(unittest.TestCase):
 
         self.assertEqual(len(saved_snapshots), 1)
 
+    def test_maybe_run_intraday_tactical_tick_sends_alert_and_marks_state(self):
+        now = datetime.fromisoformat("2026-05-11T10:30:00-04:00")
+        deliveries = []
+        original_runtime_builder = self.module._build_intraday_tactical_runtime
+        original_is_market_session = self.module.nr.is_us_market_session
+        self.addCleanup(setattr, self.module, "_build_intraday_tactical_runtime", original_runtime_builder)
+        self.addCleanup(setattr, self.module.nr, "is_us_market_session", original_is_market_session)
+        self.module._build_intraday_tactical_runtime = lambda **kwargs: (
+            {"state": "PANIC", "recommended_action": "TACTICAL_HEDGE"},
+            [
+                {
+                    "event_type": "TACTICAL_HEDGE_TRIGGER",
+                    "priority": "high",
+                    "symbol": "SQQQ",
+                    "title": "SQQQ 盘中战术对冲触发",
+                    "message": "市场进入恐慌阶段，可考虑用 SQQQ 做小仓位战术对冲。",
+                    "trigger_reason": "tactical_hedge",
+                    "should_notify": True,
+                    "plan_action": "TACTICAL_HEDGE",
+                    "action_side": "BUY",
+                    "payload": {"state": "PANIC"},
+                    "reason_codes": ["qqq_panic"],
+                    "explanation_summary": "市场进入恐慌阶段。",
+                    "explanation_bullets": ["QQQ 跌幅扩大"],
+                }
+            ],
+        )
+        self.module.nr.is_us_market_session = lambda value: True
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_path = Path(temp_dir) / "intraday_event_alert_state.json"
+            journal_path = Path(temp_dir) / "intraday_event_journal.jsonl"
+            result = self.module.maybe_run_intraday_tactical_tick(
+                now=now,
+                loader=lambda: {"holdings": [], "watchlist": []},
+                config_loader=lambda: {
+                    "slack": {"enabled": True, "webhook_url": "https://hooks.slack.com/services/test"},
+                    "alert_settings": {"send_intraday_alerts": True},
+                },
+                message_router=lambda *args, **kwargs: deliveries.append(kwargs["body"]) or [{"channel": "slack", "ok": True}],
+                intraday_event_alert_state_path=str(state_path),
+                intraday_event_journal_path=str(journal_path),
+            )
+
+            state_payload = json.loads(state_path.read_text(encoding="utf-8"))
+            journal_lines = journal_path.read_text(encoding="utf-8").strip().splitlines()
+
+        self.assertTrue(result)
+        self.assertEqual(len(deliveries), 1)
+        self.assertIn("Tactical alert:", deliveries[0])
+        self.assertEqual(state_payload["day"], now.date().isoformat())
+        self.assertEqual(len(state_payload["sent_signatures"]), 1)
+        self.assertEqual(len(journal_lines), 1)
+        self.assertIn("TACTICAL_HEDGE_TRIGGER", journal_lines[0])
+
+    def test_market_refresh_loop_runs_tactical_tick_each_poll(self):
+        calls = []
+        original_market_refresh = self.module.maybe_run_market_refresh
+        original_tactical_tick = self.module.maybe_run_intraday_tactical_tick
+        self.addCleanup(setattr, self.module, "maybe_run_market_refresh", original_market_refresh)
+        self.addCleanup(setattr, self.module, "maybe_run_intraday_tactical_tick", original_tactical_tick)
+        self.module.maybe_run_market_refresh = lambda **kwargs: calls.append(("refresh", kwargs["now"])) or False
+        self.module.maybe_run_intraday_tactical_tick = lambda **kwargs: calls.append(("tactical", kwargs["now"], kwargs["price_cache_ttl_seconds"])) or False
+
+        class _OneShotStopEvent:
+            def __init__(self):
+                self._done = False
+
+            def is_set(self):
+                return self._done
+
+            def wait(self, _seconds):
+                self._done = True
+                return True
+
+        tick_now = datetime.fromisoformat("2026-05-11T10:30:00-04:00")
+        self.module.market_refresh_loop(
+            _OneShotStopEvent(),
+            poll_seconds=123,
+            now_func=lambda: tick_now,
+            loader=lambda: {"holdings": [], "watchlist": []},
+            refresher=lambda payload, **kwargs: (payload, False),
+            saver=lambda payload: None,
+        )
+
+        self.assertEqual(
+            calls,
+            [
+                ("refresh", tick_now),
+                ("tactical", tick_now, 123),
+            ],
+        )
+
+    def test_maybe_run_weekend_research_runs_when_due(self):
+        now = datetime.fromisoformat("2026-06-07T11:30:00")
+        calls = []
+        result = self.module.maybe_run_weekend_research(
+            now=now,
+            config_loader=lambda: {
+                "alert_settings": {
+                    "enable_weekend_research": True,
+                    "weekend_research_day_local": "sunday",
+                    "weekend_research_hour_local": 11,
+                    "weekend_research_minute_local": 0,
+                }
+            },
+            runner=lambda **kwargs: calls.append(kwargs) or {"ran": True, "snapshot": {"generated_at": now.isoformat()}},
+        )
+        self.assertTrue(result)
+        self.assertEqual(calls, [{"now": now, "force": False}])
+
 
 if __name__ == "__main__":
     unittest.main()

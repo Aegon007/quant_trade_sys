@@ -192,3 +192,117 @@ class LLMExplainerTests(unittest.TestCase):
         self.assertEqual(meta["route_name"], "llm")
         self.assertFalse(meta["cached"])
         self.assertEqual(calls["count"], 1)
+
+    def test_narrate_news_summary_prefers_local_slm(self):
+        calls = {"count": 0}
+
+        def fake_urlopen(request, timeout=0):
+            calls["count"] += 1
+            payload = {"choices": [{"message": {"content": "本地新闻聚合完成"}}]}
+            return _FakeResponse(json.dumps(payload).encode("utf-8"))
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache_path = str(Path(temp_dir) / "llm_summary_cache.json")
+            config = {
+                "local_slm": {
+                    "enabled": True,
+                    "provider": "openai",
+                    "base_url": "http://127.0.0.1:8000/v1",
+                    "api_key": "EMPTY",
+                    "model": "Qwen/Qwen3-0.6B",
+                },
+                "llm": {
+                    "enabled": True,
+                    "provider": "openai",
+                    "base_url": "https://api.openai.com/v1",
+                    "api_key": "sk-test",
+                    "model": "gpt-5-mini",
+                },
+            }
+            ok, text, meta = self.module.narrate_news_summary(
+                summary_payload={
+                    "overview": "共 4 条生效新闻/事件，整体偏负面；高强度 2 条，已核验 3 条。",
+                    "event_count": 4,
+                    "dominant_sentiment": "negative",
+                    "high_severity_count": 2,
+                    "verified_count": 3,
+                    "focus_points": [
+                        "FOMC / 利率 2 条，整体偏负面，重点涉及 QQQ、SPY。",
+                        "NVDA 跟踪 1 条，整体偏正面，重点涉及 NVDA。",
+                    ],
+                    "theme_focuses": [
+                        {
+                            "theme_key": "fomc",
+                            "label_zh": "FOMC / 利率",
+                            "label_en": "FOMC / Rates",
+                            "event_count": 2,
+                            "dominant_sentiment": "negative",
+                            "high_severity_count": 2,
+                            "verified_count": 2,
+                            "top_symbols": ["QQQ", "SPY"],
+                            "top_headlines": ["FOMC uncertainty rises"],
+                            "summary_zh": "FOMC / 利率 2 条，整体偏负面，重点涉及 QQQ、SPY。",
+                            "summary_en": "FOMC / Rates: 2 items, overall negative, focused on QQQ and SPY.",
+                            "priority_score": 9.1,
+                        }
+                    ],
+                    "top_headlines": ["FOMC uncertainty rises"],
+                },
+                notification_config=config,
+                cache_path=cache_path,
+                urlopen=fake_urlopen,
+            )
+
+        self.assertTrue(ok)
+        self.assertEqual(text, "本地新闻聚合完成")
+        self.assertEqual(meta["route_name"], "local_slm")
+        self.assertFalse(meta["cached"])
+        self.assertEqual(calls["count"], 1)
+
+    def test_explain_satellite_candidate_uses_cache(self):
+        calls = {"count": 0}
+
+        def fake_urlopen(request, timeout=0):
+            calls["count"] += 1
+            payload = {"choices": [{"message": {"content": "卫星候选解释完成"}}]}
+            return _FakeResponse(json.dumps(payload).encode("utf-8"))
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache_path = str(Path(temp_dir) / "llm_summary_cache.json")
+            config = {
+                "llm": {
+                    "enabled": True,
+                    "provider": "openai",
+                    "base_url": "https://api.openai.com/v1",
+                    "api_key": "sk-test",
+                    "model": "gpt-5-mini",
+                }
+            }
+            kwargs = dict(
+                candidate_row={
+                    "symbol": "NVDA",
+                    "recommendation_status": "CONFIRMED",
+                    "plan_action": "ACCUMULATE",
+                    "suggested_weight_pct": 5.0,
+                    "satellite_score": 92.0,
+                    "top3_membership_state": "RETAINED",
+                    "top3_residency_days": 4,
+                    "recommendation_reason": "趋势、评分和回测共同支持。",
+                },
+                discipline_snapshot={"regime": "NORMAL"},
+                change_feed={"generated_at": "2026-05-14T06:00:00", "high_items": []},
+                notification_config=config,
+                cache_path=cache_path,
+                urlopen=fake_urlopen,
+            )
+            ok1, text1, meta1 = self.module.explain_satellite_candidate(**kwargs)
+            ok2, text2, meta2 = self.module.explain_satellite_candidate(**kwargs)
+
+        self.assertTrue(ok1)
+        self.assertTrue(ok2)
+        self.assertEqual(text1, "卫星候选解释完成")
+        self.assertEqual(text2, "卫星候选解释完成")
+        self.assertFalse(meta1["cached"])
+        self.assertTrue(meta2["cached"])
+        self.assertEqual(meta1["route_name"], "llm")
+        self.assertEqual(calls["count"], 1)

@@ -135,6 +135,15 @@ class ReportingTests(unittest.TestCase):
                     "ignore_realized_pl": -45.0,
                     "summary": "本月已有的计划执行整体保持纪律，没有检测到明显的偏离日。",
                 },
+                "strategy_validation_snapshot": {
+                    "summary": {
+                        "status": "CAUTION",
+                        "symbol_count": 3,
+                        "validated_count": 1,
+                        "warning_symbols": ["QQQ"],
+                        "message": "默认策略整体仍可用，但领先优势不够稳或样本偏少。",
+                    }
+                },
                 "change_feed": {
                     "summary": {"high_count": 2, "medium_count": 1, "low_count": 0},
                 },
@@ -165,6 +174,8 @@ class ReportingTests(unittest.TestCase):
         self.assertIn("Discipline month:", text)
         self.assertIn("follow=6", text.lower())
         self.assertIn("ignore=1", text.lower())
+        self.assertIn("Strategy validation:", text)
+        self.assertIn("status=CAUTION", text)
 
     def test_build_quant_analysis_report_includes_summary_and_symbols(self):
         from quant_core.notifications.reporting import build_quant_analysis_report

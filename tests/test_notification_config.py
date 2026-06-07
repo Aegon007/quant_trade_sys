@@ -27,6 +27,10 @@ class NotificationConfigTests(unittest.TestCase):
         self.assertTrue(config["alert_settings"]["enable_auto_quant_analysis"])
         self.assertEqual(config["alert_settings"]["auto_quant_analysis_min_interval_seconds"], 7200)
         self.assertEqual(config["alert_settings"]["auto_quant_analysis_price_jump_pct"], 0.03)
+        self.assertTrue(config["alert_settings"]["enable_weekend_research"])
+        self.assertEqual(config["alert_settings"]["weekend_research_day_local"], "sunday")
+        self.assertEqual(config["alert_settings"]["weekend_research_hour_local"], 11)
+        self.assertEqual(config["alert_settings"]["weekend_research_history_period"], "5y")
         self.assertEqual(config["llm"]["provider"], "openai")
         self.assertEqual(config["llm"]["base_url"], "https://api.openai.com/v1")
         self.assertEqual(config["local_slm"]["model"], "Qwen/Qwen3-0.6B")
@@ -151,6 +155,11 @@ class NotificationConfigTests(unittest.TestCase):
                     "auto_quant_analysis_price_jump_pct": "0.045",
                     "send_premarket_brief": False,
                     "send_intraday_alerts": False,
+                    "enable_weekend_research": True,
+                    "weekend_research_day_local": "saturday",
+                    "weekend_research_hour_local": "9",
+                    "weekend_research_minute_local": "30",
+                    "weekend_research_history_period": "10y",
                 }
             },
             self.config_path,
@@ -163,6 +172,11 @@ class NotificationConfigTests(unittest.TestCase):
         self.assertEqual(config["alert_settings"]["auto_quant_analysis_price_jump_pct"], 0.045)
         self.assertFalse(config["alert_settings"]["send_premarket_brief"])
         self.assertFalse(config["alert_settings"]["send_intraday_alerts"])
+        self.assertTrue(config["alert_settings"]["enable_weekend_research"])
+        self.assertEqual(config["alert_settings"]["weekend_research_day_local"], "saturday")
+        self.assertEqual(config["alert_settings"]["weekend_research_hour_local"], 9)
+        self.assertEqual(config["alert_settings"]["weekend_research_minute_local"], 30)
+        self.assertEqual(config["alert_settings"]["weekend_research_history_period"], "10y")
 
     def test_save_and_load_normalizes_llm_settings(self):
         self.module.save_notification_config(

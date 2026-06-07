@@ -8,6 +8,7 @@ from quant_core.analytics import candidate_pool as cpool
 from quant_core.portfolio import actions as pactions
 from quant_core.portfolio import core_etf_engine as cee
 from quant_core.portfolio import discipline as qdisc
+from quant_core.research import strategy_validation as sval
 from quant_core.data import storage as du
 from quant_core.execution import nightly_planner as nplanner
 from quant_core.snapshots import system_snapshot as ss
@@ -22,6 +23,7 @@ DISCIPLINE_SNAPSHOT_FILE = qpaths.DISCIPLINE_SNAPSHOT_FILE
 CORE_ETF_SNAPSHOT_FILE = qpaths.CORE_ETF_SNAPSHOT_FILE
 SATELLITE_CANDIDATE_POOL_FILE = qpaths.SATELLITE_CANDIDATE_POOL_FILE
 NIGHTLY_JOURNAL_FILE = ss.DEFAULT_NIGHTLY_JOURNAL_FILE
+STRATEGY_VALIDATION_SNAPSHOT_FILE = qpaths.STRATEGY_VALIDATION_SNAPSHOT_FILE
 
 
 @dataclass(frozen=True)
@@ -41,6 +43,7 @@ def supported_commands_text() -> str:
             "- 系统概览",
             "- 今日计划 / 明日计划",
             "- 风险状态 / 纪律状态",
+            "- 策略验证",
             "- 核心ETF",
             "- 卫星雷达 / top3",
             "- 当前持仓",
@@ -196,6 +199,10 @@ def _load_satellite_snapshot():
     return cpool.load_satellite_candidate_pool_snapshot(path=SATELLITE_CANDIDATE_POOL_FILE)
 
 
+def _load_strategy_validation_snapshot():
+    return sval.load_strategy_validation_snapshot(path=STRATEGY_VALIDATION_SNAPSHOT_FILE)
+
+
 def _load_latest_monthly_review():
     rows = ss.load_snapshot_journal(journal_path=NIGHTLY_JOURNAL_FILE, limit=1)
     if not rows:
@@ -213,6 +220,9 @@ def _format_trade_plan_message(plan) -> str:
         f"- 模式: {plan.get('decision') or '—'}",
         f"- 结论: {plan.get('summary_reason') or '—'}",
     ]
+    decision_signature = str(plan.get("decision_signature") or "").strip()
+    if decision_signature:
+        lines.append(f"- 计划签名: {decision_signature}")
     items = list(plan.get("items", []) or [])
     if not items:
         lines.append("- 当前无强信号，建议按计划不动。")
@@ -297,13 +307,17 @@ def _format_core_etf_message(snapshot) -> str:
     for row in ranked[:5]:
         symbol = str(row.get("symbol") or "").strip().upper() or "—"
         action = str(row.get("action") or "HOLD").strip().upper()
+        stability = row.get("signal_stability_score")
+        stability_text = "—" if stability is None else f"{float(stability):.0f}/100"
+        same_action_days = int(float(row.get("days_in_same_action") or 0.0) or 0)
         lines.append(
             "  "
             f"{symbol} | {action} | 当前 {_format_pct(row.get('current_weight_pct'))} | "
-            f"目标 {_format_pct(row.get('target_weight_pct'))} | 分数 {float(row.get('rotation_score') or 0.0):.1f}"
+            f"目标 {_format_pct(row.get('target_weight_pct'))} | 分数 {float(row.get('rotation_score') or 0.0):.1f} | 稳定 {stability_text}"
         )
         lines.append(
             "    "
+            f"同动作 {same_action_days} 天 | "
             f"买 {_format_price_range(row.get('recommended_buy_zone_low'), row.get('recommended_buy_zone_high'))} | "
             f"减 {_format_price_range(row.get('trim_zone_low'), row.get('trim_zone_high'))} | "
             f"破位 {_format_price(row.get('risk_break_level'))}"
@@ -330,17 +344,71 @@ def _format_satellite_message(snapshot) -> str:
         symbol = str(row.get("symbol") or "").strip().upper() or "—"
         status = str(row.get("recommendation_status") or "WATCH").strip().upper()
         action = str(row.get("plan_action") or "HOLD").strip().upper()
+        membership_state = str(row.get("top3_membership_state") or "").strip().upper() or "—"
+        residency_days = int(float(row.get("top3_residency_days") or 0.0) or 0)
         lines.append(
             "  "
             f"{symbol} | {status} / {action} | 仓位 {_format_pct(row.get('suggested_weight_pct'))} | 总分 {float(row.get('satellite_score') or 0.0):.1f}"
         )
+        lines.append(f"    Top3: {membership_state} | 驻留 {residency_days} 天")
         reason = str(row.get("recommendation_reason") or row.get("signal_reason") or "").strip()
         if reason:
             lines.append(f"    原因: {reason}")
     return "\n".join(lines)
 
 
-def _format_overview_message(data, snapshot, plan, discipline_snapshot, core_snapshot, satellite_snapshot, monthly_review=None) -> str:
+def _format_strategy_validation_message(snapshot) -> str:
+    snapshot = dict(snapshot or {})
+    summary = dict(snapshot.get("summary", {}) or {})
+    if not summary:
+        return "尚未生成策略验证快照。请先运行周末研究或执行一次强制补齐。"
+    lines = [
+        "策略验证",
+        f"- 状态: {summary.get('status') or '—'} | 覆盖: {int(summary.get('symbol_count') or 0)} | 已验证: {int(summary.get('validated_count') or 0)}",
+        f"- 预警: {int(summary.get('review_count') or 0)} REVIEW / {int(summary.get('caution_count') or 0)} CAUTION / {int(summary.get('low_sample_count') or 0)} LOW_SAMPLE",
+    ]
+    message = str(summary.get("message") or "").strip()
+    if message:
+        lines.append(f"- 结论: {message}")
+    warning_symbols = list(summary.get("warning_symbols", []) or [])
+    if warning_symbols:
+        lines.append(f"- 重点复核: {', '.join(warning_symbols[:6])}")
+    rows = list(snapshot.get("symbols", []) or [])
+    if rows:
+        ranked = sorted(
+            rows,
+            key=lambda row: (
+                {"REVIEW": 0, "CAUTION": 1, "LOW_SAMPLE": 2, "VALIDATED": 3, "UNVALIDATED": 4}.get(
+                    str((row or {}).get("status") or "UNVALIDATED").strip().upper(),
+                    9,
+                ),
+                str((row or {}).get("focus_role") or ""),
+                str((row or {}).get("symbol") or ""),
+            ),
+        )
+        lines.append("- 重点标的:")
+        for row in ranked[:5]:
+            lines.append(
+                "  "
+                f"{str(row.get('symbol') or '').strip().upper() or '—'} | "
+                f"{str(row.get('focus_role') or 'satellite').strip().lower()} | "
+                f"{str(row.get('status') or '—').strip().upper()} | "
+                f"默认第 {row.get('default_rank') if row.get('default_rank') is not None else '—'} | "
+                f"领先 {str(row.get('best_strategy_name') or '—').strip()}"
+            )
+    return "\n".join(lines)
+
+
+def _format_overview_message(
+    data,
+    snapshot,
+    plan,
+    discipline_snapshot,
+    core_snapshot,
+    satellite_snapshot,
+    strategy_validation_snapshot=None,
+    monthly_review=None,
+) -> str:
     account = dict((snapshot or {}).get("account", {}) or {})
     lines = [
         "系统概览",
@@ -349,12 +417,22 @@ def _format_overview_message(data, snapshot, plan, discipline_snapshot, core_sna
         f"- 账户: 现金 {_format_currency(account.get('cash_available'))} | 可部署 {_format_currency(account.get('deployable_cash'))} | 暴露 {_format_pct(account.get('exposure_pct'))}",
         f"- 持仓/关注: {len((data or {}).get('holdings', []) or [])} / {len((data or {}).get('watchlist', []) or [])}",
     ]
+    plan_signature = str((plan or {}).get("decision_signature") or "").strip()
+    if plan_signature:
+        lines.append(f"- 计划签名: {plan_signature}")
     core_summary = dict((core_snapshot or {}).get("summary", {}) or {})
     lines.append(
         f"- 核心 ETF: 加仓 {int(core_summary.get('accumulate_count') or 0)} / 减仓 {int(core_summary.get('trim_count') or 0)}"
     )
     top_symbols = list(dict((satellite_snapshot or {}).get("summary", {}) or {}).get("top_symbols", []) or [])
     lines.append(f"- 卫星雷达 Top: {', '.join(top_symbols[:3]) if top_symbols else '当前无 Top 推荐'}")
+    validation_summary = dict((strategy_validation_snapshot or {}).get("summary", {}) or {})
+    if validation_summary:
+        lines.append(
+            f"- 策略验证: {validation_summary.get('status') or '—'} | "
+            f"覆盖 {int(validation_summary.get('symbol_count') or 0)} | "
+            f"预警 {len(list(validation_summary.get('warning_symbols', []) or []))}"
+        )
     if monthly_review:
         lines.append(
             f"- 月度纪律: {monthly_review.get('status') or '—'} | FOLLOW {int(monthly_review.get('follow_days') or 0)} / IGNORE {int(monthly_review.get('ignore_days') or 0)}"
@@ -438,6 +516,9 @@ def execute_slack_command(text) -> CommandExecutionResult:
                 _format_risk_message(_load_discipline_snapshot(), monthly_review=_load_latest_monthly_review()),
             )
 
+        if command.name == "SHOW_VALIDATION":
+            return _result(True, command, _format_strategy_validation_message(_load_strategy_validation_snapshot()))
+
         if command.name == "SHOW_CORE":
             return _result(True, command, _format_core_etf_message(_load_core_etf_snapshot()))
 
@@ -457,6 +538,7 @@ def execute_slack_command(text) -> CommandExecutionResult:
                     _load_discipline_snapshot(),
                     _load_core_etf_snapshot(),
                     _load_satellite_snapshot(),
+                    _load_strategy_validation_snapshot(),
                     monthly_review=_load_latest_monthly_review(),
                 ),
                 data=data,

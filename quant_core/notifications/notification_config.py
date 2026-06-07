@@ -15,6 +15,10 @@ DEFAULT_LLM_TEMPERATURE = 0.2
 DEFAULT_LOCAL_SLM_TIMEOUT_SECONDS = 20
 DEFAULT_LOCAL_SLM_MAX_TOKENS = 220
 DEFAULT_LOCAL_SLM_TEMPERATURE = 0.1
+DEFAULT_WEEKEND_RESEARCH_DAY = "sunday"
+DEFAULT_WEEKEND_RESEARCH_HOUR_LOCAL = 11
+DEFAULT_WEEKEND_RESEARCH_MINUTE_LOCAL = 0
+DEFAULT_WEEKEND_RESEARCH_HISTORY_PERIOD = "5y"
 
 LLM_PRESETS = {
     "openai": {
@@ -86,9 +90,15 @@ DEFAULT_NOTIFICATION_CONFIG = {
         "send_hourly_market_summary": True,
         "send_hourly_market_summary_market_hours_only": True,
         "send_quant_analysis_change_summary": True,
+        "send_weekend_research_summary": True,
         "enable_auto_quant_analysis": True,
         "auto_quant_analysis_min_interval_seconds": DEFAULT_AUTO_QUANT_ANALYSIS_MIN_INTERVAL_SECONDS,
         "auto_quant_analysis_price_jump_pct": DEFAULT_AUTO_QUANT_ANALYSIS_PRICE_JUMP_PCT,
+        "enable_weekend_research": True,
+        "weekend_research_day_local": DEFAULT_WEEKEND_RESEARCH_DAY,
+        "weekend_research_hour_local": DEFAULT_WEEKEND_RESEARCH_HOUR_LOCAL,
+        "weekend_research_minute_local": DEFAULT_WEEKEND_RESEARCH_MINUTE_LOCAL,
+        "weekend_research_history_period": DEFAULT_WEEKEND_RESEARCH_HISTORY_PERIOD,
     },
 }
 
@@ -214,6 +224,9 @@ def normalize_notification_config(config):
         normalized["alert_settings"]["send_quant_analysis_change_summary"] = bool(
             alert_settings.get("send_quant_analysis_change_summary", True)
         )
+        normalized["alert_settings"]["send_weekend_research_summary"] = bool(
+            alert_settings.get("send_weekend_research_summary", True)
+        )
         normalized["alert_settings"]["enable_auto_quant_analysis"] = bool(
             alert_settings.get("enable_auto_quant_analysis", True)
         )
@@ -237,6 +250,41 @@ def normalize_notification_config(config):
                 DEFAULT_AUTO_QUANT_ANALYSIS_PRICE_JUMP_PCT,
             ),
         )
+        normalized["alert_settings"]["enable_weekend_research"] = bool(
+            alert_settings.get("enable_weekend_research", True)
+        )
+        weekend_day = str(
+            alert_settings.get("weekend_research_day_local", DEFAULT_WEEKEND_RESEARCH_DAY)
+            or DEFAULT_WEEKEND_RESEARCH_DAY
+        ).strip().lower()
+        if weekend_day not in {"saturday", "sunday"}:
+            weekend_day = DEFAULT_WEEKEND_RESEARCH_DAY
+        normalized["alert_settings"]["weekend_research_day_local"] = weekend_day
+        normalized["alert_settings"]["weekend_research_hour_local"] = min(
+            23,
+            max(
+                0,
+                _coerce_int(
+                    alert_settings.get("weekend_research_hour_local", DEFAULT_WEEKEND_RESEARCH_HOUR_LOCAL),
+                    DEFAULT_WEEKEND_RESEARCH_HOUR_LOCAL,
+                ),
+            ),
+        )
+        normalized["alert_settings"]["weekend_research_minute_local"] = min(
+            59,
+            max(
+                0,
+                _coerce_int(
+                    alert_settings.get("weekend_research_minute_local", DEFAULT_WEEKEND_RESEARCH_MINUTE_LOCAL),
+                    DEFAULT_WEEKEND_RESEARCH_MINUTE_LOCAL,
+                ),
+            ),
+        )
+        history_period = str(
+            alert_settings.get("weekend_research_history_period", DEFAULT_WEEKEND_RESEARCH_HISTORY_PERIOD)
+            or DEFAULT_WEEKEND_RESEARCH_HISTORY_PERIOD
+        ).strip()
+        normalized["alert_settings"]["weekend_research_history_period"] = history_period or DEFAULT_WEEKEND_RESEARCH_HISTORY_PERIOD
 
     return normalized
 

@@ -79,6 +79,7 @@ class SystemSnapshotTests(unittest.TestCase):
             satellite_candidate_snapshot={"summary": {"top_symbols": ["MU", "ANET"]}},
             discipline_snapshot={"regime": "LIGHT"},
             monthly_discipline_review={"status": "ALIGNED", "follow_days": 3, "ignore_days": 0},
+            strategy_validation_snapshot={"summary": {"status": "CAUTION", "symbol_count": 3}},
             change_feed={"summary": {"high_count": 1}},
             nightly_manifest={"run_id": "20260509-nightly", "status": "completed"},
             generated_at=now,
@@ -97,6 +98,7 @@ class SystemSnapshotTests(unittest.TestCase):
         self.assertIn("satellite_candidate_snapshot", snapshot)
         self.assertIn("discipline_snapshot", snapshot)
         self.assertIn("monthly_discipline_review", snapshot)
+        self.assertIn("strategy_validation_snapshot", snapshot)
         self.assertIn("change_feed", snapshot)
         self.assertIn("nightly_manifest", snapshot)
         self.assertEqual(snapshot["risk"]["regime"], "CAUTION")
@@ -112,6 +114,7 @@ class SystemSnapshotTests(unittest.TestCase):
         self.assertEqual(snapshot["satellite_candidate_snapshot"]["summary"]["top_symbols"], ["MU", "ANET"])
         self.assertEqual(snapshot["discipline_snapshot"]["regime"], "LIGHT")
         self.assertEqual(snapshot["monthly_discipline_review"]["status"], "ALIGNED")
+        self.assertEqual(snapshot["strategy_validation_snapshot"]["summary"]["status"], "CAUTION")
         self.assertEqual(snapshot["change_feed"]["summary"]["high_count"], 1)
         self.assertEqual(snapshot["nightly_manifest"]["status"], "completed")
 

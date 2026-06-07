@@ -1,10 +1,12 @@
 import streamlit as st
 
 
-def render_notification_config_page(*, ncfg_module, nch_module, llm_module=None, st_module=None, show_header=True):
+def render_notification_config_page(*, ncfg_module, nch_module, llm_module=None, llm_explainer_module=None, st_module=None, show_header=True):
     st_module = st_module or st
     if llm_module is None:
         from quant_core.llm import openai_compatible as llm_module
+    if llm_explainer_module is None:
+        from quant_core.llm import explainer as llm_explainer_module
     config = ncfg_module.load_notification_config()
     alert_defaults = dict(getattr(ncfg_module, "DEFAULT_NOTIFICATION_CONFIG", {}).get("alert_settings", {}) or {})
     alert_settings = {**alert_defaults, **dict(config.get("alert_settings", {}) or {})}
@@ -12,6 +14,7 @@ def render_notification_config_page(*, ncfg_module, nch_module, llm_module=None,
     local_slm_cfg = dict(config.get("local_slm", {}) or {})
     local_status = llm_module.inspect_openai_compatible_endpoint(local_slm_cfg)
     exposed_models = list(local_status.get("models", []) or [])
+    cache_summary = llm_explainer_module.summarize_explanation_cache()
     if show_header:
         st_module.header("Settings")
     elif show_header is None:
@@ -47,6 +50,10 @@ def render_notification_config_page(*, ncfg_module, nch_module, llm_module=None,
         st_module.warning(status_message or "本地 SLM 服务当前不可用。")
     if exposed_models:
         st_module.caption("LM Studio 当前暴露模型: " + " | ".join(exposed_models[:5]))
+    cache_cols = st_module.columns(3)
+    cache_cols[0].metric("解释缓存", int(cache_summary.get("entry_count") or 0))
+    cache_cols[1].metric("本地转述缓存", int(dict(cache_summary.get("by_route", {}) or {}).get("local_slm", 0) or 0))
+    cache_cols[2].metric("远程解释缓存", int(dict(cache_summary.get("by_route", {}) or {}).get("llm", 0) or 0))
 
     quick1, quick2 = st_module.columns(2)
     if quick1.button("写入本地 SLM 默认配置 (LM Studio / Qwen3-0.6B)"):
@@ -125,9 +132,17 @@ def render_notification_config_page(*, ncfg_module, nch_module, llm_module=None,
                 "发送全量量化分析变化摘要",
                 value=bool(alert_settings.get("send_quant_analysis_change_summary", True)),
             )
+            send_weekend_research_summary = st_module.checkbox(
+                "发送周末研究摘要",
+                value=bool(alert_settings.get("send_weekend_research_summary", True)),
+            )
             enable_auto_quant_analysis = st_module.checkbox(
                 "启用盘中自动触发全量量化分析",
                 value=bool(alert_settings.get("enable_auto_quant_analysis", True)),
+            )
+            enable_weekend_research = st_module.checkbox(
+                "启用周末研究任务",
+                value=bool(alert_settings.get("enable_weekend_research", True)),
             )
             ac1, ac2 = st_module.columns(2)
             auto_quant_analysis_min_interval_minutes = ac1.number_input(
@@ -143,6 +158,47 @@ def render_notification_config_page(*, ncfg_module, nch_module, llm_module=None,
                 step=0.1,
                 format="%.1f",
             )
+            current_weekend_day = str(alert_settings.get("weekend_research_day_local", "sunday")).strip().lower()
+            if hasattr(st_module, "selectbox"):
+                weekend_research_day_local = st_module.selectbox(
+                    "周末研究日期",
+                    ["saturday", "sunday"],
+                    index=0 if current_weekend_day == "saturday" else 1,
+                )
+            else:
+                weekend_research_day_local = st_module.text_input(
+                    "周末研究日期",
+                    value=current_weekend_day or "sunday",
+                )
+            wc2, wc3 = st_module.columns(2)
+            weekend_research_hour_local = wc2.number_input(
+                "周末研究小时",
+                min_value=0,
+                max_value=23,
+                value=int(alert_settings.get("weekend_research_hour_local", 11) or 11),
+                step=1,
+            )
+            weekend_research_minute_local = wc3.number_input(
+                "周末研究分钟",
+                min_value=0,
+                max_value=59,
+                value=int(alert_settings.get("weekend_research_minute_local", 0) or 0),
+                step=5,
+            )
+            current_weekend_period = str(alert_settings.get("weekend_research_history_period", "5y") or "5y")
+            if hasattr(st_module, "selectbox"):
+                weekend_research_history_period = st_module.selectbox(
+                    "周末研究历史窗口",
+                    ["2y", "3y", "5y", "10y"],
+                    index=["2y", "3y", "5y", "10y"].index(current_weekend_period)
+                    if current_weekend_period in ["2y", "3y", "5y", "10y"]
+                    else 2,
+                )
+            else:
+                weekend_research_history_period = st_module.text_input(
+                    "周末研究历史窗口",
+                    value=current_weekend_period,
+                )
             save_alert_settings = st_module.columns(1)[0].form_submit_button("保存系统/提醒配置")
 
         if save_alert_settings:
@@ -154,9 +210,15 @@ def render_notification_config_page(*, ncfg_module, nch_module, llm_module=None,
                 "send_hourly_market_summary": bool(send_hourly_market_summary),
                 "send_hourly_market_summary_market_hours_only": bool(send_hourly_market_summary_market_hours_only),
                 "send_quant_analysis_change_summary": bool(send_quant_analysis_change_summary),
+                "send_weekend_research_summary": bool(send_weekend_research_summary),
                 "enable_auto_quant_analysis": bool(enable_auto_quant_analysis),
                 "auto_quant_analysis_min_interval_seconds": int(auto_quant_analysis_min_interval_minutes) * 60,
                 "auto_quant_analysis_price_jump_pct": float(auto_quant_analysis_price_jump_pct) / 100.0,
+                "enable_weekend_research": bool(enable_weekend_research),
+                "weekend_research_day_local": str(weekend_research_day_local or "sunday").strip().lower(),
+                "weekend_research_hour_local": int(weekend_research_hour_local),
+                "weekend_research_minute_local": int(weekend_research_minute_local),
+                "weekend_research_history_period": str(weekend_research_history_period or "5y").strip(),
             }
             config = ncfg_module.save_notification_config(config)
             alert_settings = dict(config.get("alert_settings", {}) or {})
@@ -324,15 +386,17 @@ def render_notification_config_page(*, ncfg_module, nch_module, llm_module=None,
                 else:
                     st_module.error(message)
     auto_quant_enabled = "已启用" if alert_settings.get("enable_auto_quant_analysis", True) else "未启用"
+    weekend_research_enabled = "已启用" if alert_settings.get("enable_weekend_research", True) else "未启用"
     min_interval_minutes = int(alert_settings.get("auto_quant_analysis_min_interval_seconds", 7200) or 0) // 60
     jump_pct = float(alert_settings.get("auto_quant_analysis_price_jump_pct", 0.03) or 0.0) * 100.0
     st_module.caption(
-        f"自动全量分析: {auto_quant_enabled} | 最短间隔 {min_interval_minutes} 分钟 | 价格跳变阈值 {jump_pct:.1f}%"
+        f"自动全量分析: {auto_quant_enabled} | 最短间隔 {min_interval_minutes} 分钟 | 价格跳变阈值 {jump_pct:.1f}% | 周末研究: {weekend_research_enabled}"
     )
     cadence_parts = [
         f"夜报 {'开' if alert_settings.get('send_daily_summary', True) else '关'}",
         f"盘前简报 {'开' if alert_settings.get('send_premarket_brief', True) else '关'}",
         f"盘中提醒 {'开' if alert_settings.get('send_intraday_alerts', True) else '关'}",
         f"小时摘要 {'开' if alert_settings.get('send_hourly_market_summary', True) else '关'}",
+        f"周末时间 {alert_settings.get('weekend_research_day_local', 'sunday')} {int(alert_settings.get('weekend_research_hour_local', 11) or 11):02d}:{int(alert_settings.get('weekend_research_minute_local', 0) or 0):02d}",
     ]
     st_module.caption("通知节奏: " + " | ".join(cadence_parts))

@@ -73,6 +73,46 @@ PYTHONPYCACHEPREFIX=/tmp/pycache ~/venv/bin/python -m unittest discover -s tests
 5. 分析师共识与 ETF 代理共识按夜间缓存更新；只有“强一致”结论会增强交易提示，其他状态默认只作信息展示。
 6. 强信号告警和风险告警可以通过独立夜间任务发送到 Slack 或 Email。
 
+## 周末研究模式
+
+系统现在支持一条独立的 `Weekend Research` 链路，用来在周末跑更长时间的研究任务，帮助形成下周的市场偏向判断，而不是挤进盘中或首屏渲染里。
+
+默认行为：
+
+- 默认在 `Settings -> 通知 / 模型 -> 系统节奏 / 自动分析` 中启用。
+- 默认调度为 `Sunday 11:00` 本地时间。
+- 默认历史窗口为 `5y`。
+- 默认会生成：
+  - 核心 ETF 轮动研究
+  - 更大容量的卫星候选池扫描
+  - Top 候选的周末策略对比
+  - `next_week_bias`（如下周偏防守 / 平衡 / 风险偏好）
+
+结果位置：
+
+- 运行时快照：
+  - `storage/state/weekend_research_snapshot.json`
+- 最新报告：
+  - `reports/weekend_research_latest.md`
+  - `reports/weekend_research_latest.json`
+- 页面入口：
+  - `Operations -> 报告与通知 -> 周末研究`
+  - `Settings -> 快速操作 -> 立即运行周末研究`
+
+如果你想手动强制跑一次：
+
+```bash
+~/venv/bin/python -m jobs.weekend_research --force
+```
+
+如果你平时就是用统一入口：
+
+```bash
+~/venv/bin/python -m jobs.run_all
+```
+
+那么 `run_all` 会在周末按配置自动检查并执行周末研究任务。
+
 ## 手工维护持仓与观察列表
 
 除了通过 UI 添加和编辑，也可以直接维护 `storage/state/portfolio_input.json`。系统会在启动或页面重跑时检测这个文件：当它比运行时文件 `storage/state/portfolio_data.json` 更新时，会自动导入。侧边栏也提供“从文件重新加载持仓/关注”按钮，可以强制同步。

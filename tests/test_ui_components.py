@@ -243,6 +243,7 @@ class UIComponentsTests(unittest.TestCase):
                         "status": "EXECUTED",
                         "avg_execution_price": 500.5,
                         "executed_in_plan_zone": True,
+                        "opportunity_status": "EXECUTED",
                     }
                 ]
             }
@@ -250,8 +251,10 @@ class UIComponentsTests(unittest.TestCase):
 
         self.assertEqual(plan_records[0]["代码"], "VOO")
         self.assertIn("495.00", plan_records[0]["计划区间"])
+        self.assertIn("若高开过多则作废", plan_records[0]["失效 / 破位"])
         self.assertEqual(review_records[0]["状态"], "EXECUTED")
-        self.assertEqual(review_records[0]["区间内执行"], "是")
+        self.assertEqual(review_records[0]["区间"], "是")
+        self.assertEqual(review_records[0]["机会"], "已执行")
 
 
 if __name__ == "__main__":

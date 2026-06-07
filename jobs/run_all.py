@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import json
 import logging
 import os
 import signal
@@ -13,6 +14,7 @@ import threading
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Callable, List, Optional
 
 from quant_core.analytics import quant_analysis as qa
@@ -25,6 +27,7 @@ from quant_core.execution import nightly_planner as np
 from quant_core.ledger import transactions as tx
 from quant_core.monitoring import intraday_journal as ij
 from quant_core.monitoring import intraday_monitor as im
+from quant_core.monitoring import intraday_tactical as itac
 from quant_core.notifications import change_feed as cfeed
 from quant_core.notifications import notification_channels as nch
 from quant_core.notifications import notification_config as ncfg
@@ -44,6 +47,7 @@ DEFAULT_MARKET_REFRESH_POLL_SECONDS = 300
 DEFAULT_MARKET_REFRESH_INTERVAL_SECONDS = 3600
 DEFAULT_AUTO_QUANT_ANALYSIS_MIN_INTERVAL_SECONDS = ncfg.DEFAULT_AUTO_QUANT_ANALYSIS_MIN_INTERVAL_SECONDS
 DEFAULT_AUTO_QUANT_ANALYSIS_PRICE_JUMP_PCT = ncfg.DEFAULT_AUTO_QUANT_ANALYSIS_PRICE_JUMP_PCT
+DEFAULT_TRADE_PLAN_FILE = np.DEFAULT_TRADE_PLAN_FILE
 
 
 @dataclass(frozen=True)
@@ -150,6 +154,28 @@ def maybe_run_nightly_alerts(
     return True
 
 
+def maybe_run_weekend_research(
+    *,
+    now: Optional[datetime] = None,
+    config_loader: Callable[[], dict] = ncfg.load_notification_config,
+    runner=None,
+    logger: Optional[logging.Logger] = None,
+) -> bool:
+    logger = logger or logging.getLogger(__name__)
+    now = now or datetime.now()
+    if runner is None:
+        from jobs.weekend_research import run_weekend_research as runner
+    try:
+        result = runner(now=now, force=False)
+    except Exception:
+        logger.exception("Weekend research run failed.")
+        return False
+    ran = bool(dict(result or {}).get("ran"))
+    if ran:
+        logger.info("Weekend research ran for cycle %s.", dict(result.get("snapshot", {}) or {}).get("generated_at") or now.isoformat())
+    return ran
+
+
 def _load_notification_config(config_loader, *, environ=None):
     try:
         base_config = config_loader()
@@ -176,7 +202,36 @@ def _latest_monthly_discipline_review_from_journal(*, journal_entries):
     return dict(latest_entry.get("monthly_discipline_review", {}) or {})
 
 
-def _build_pending_intraday_discipline_alert(*, change_feed, monthly_discipline_review, state_path):
+def _parse_iso_datetime(value):
+    text = str(value or "").strip()
+    if not text:
+        return None
+    for candidate in (text, text.replace("Z", "+00:00")):
+        try:
+            return datetime.fromisoformat(candidate)
+        except ValueError:
+            continue
+    return None
+
+
+def _change_feed_is_recent(change_feed, *, now, max_age_hours: float = 36.0) -> bool:
+    if not isinstance(now, datetime):
+        return False
+    payload = dict(change_feed or {})
+    generated_at = _parse_iso_datetime(payload.get("generated_at") or payload.get("updated_at"))
+    if generated_at is None:
+        return False
+    if generated_at.tzinfo is not None and now.tzinfo is None:
+        now = now.replace(tzinfo=generated_at.tzinfo)
+    elif generated_at.tzinfo is None and now.tzinfo is not None:
+        generated_at = generated_at.replace(tzinfo=now.tzinfo)
+    age_seconds = abs((now - generated_at).total_seconds())
+    return age_seconds <= float(max_age_hours) * 3600.0
+
+
+def _build_pending_intraday_discipline_alert(*, change_feed, monthly_discipline_review, state_path, now):
+    if not _change_feed_is_recent(change_feed, now=now):
+        return None
     alert = cfeed.build_intraday_discipline_month_alert(
         change_feed,
         monthly_discipline_review=monthly_discipline_review,
@@ -202,6 +257,14 @@ def _mark_intraday_discipline_alert_sent(*, alert, state_path, now):
     )
 
 
+def _load_latest_trade_plan_signature(path: str = DEFAULT_TRADE_PLAN_FILE) -> str:
+    try:
+        payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    except Exception:
+        return ""
+    return str(dict(payload or {}).get("decision_signature") or "").strip()
+
+
 def _record_intraday_discipline_event(
     *,
     alert,
@@ -214,6 +277,7 @@ def _record_intraday_discipline_event(
     send_context,
     skip_reason,
     journal_path,
+    trade_plan_signature,
 ):
     if not isinstance(alert, dict):
         return
@@ -226,6 +290,9 @@ def _record_intraday_discipline_event(
         was_alert_sent=bool(was_alert_sent),
         send_context=send_context,
         skip_reason=skip_reason,
+        plan_context_signature=trade_plan_signature,
+        discipline_regime_at_trigger=str(dict(discipline_snapshot or {}).get("regime") or "").strip(),
+        risk_regime_at_trigger=str(getattr(risk_decision, "regime", "") or dict(risk_decision or {}).get("regime") or "").strip(),
         payload={
             "alert_signature": str(alert.get("signature") or "").strip(),
             "alert_message": str(alert.get("message") or "").strip(),
@@ -263,6 +330,7 @@ def _record_intraday_classifier_events(
     send_context,
     skip_reason,
     journal_path,
+    trade_plan_signature,
 ):
     if not isinstance(alert, dict):
         return
@@ -288,6 +356,10 @@ def _record_intraday_classifier_events(
             was_alert_sent=bool(was_alert_sent),
             send_context=send_context,
             skip_reason=skip_reason,
+            plan_context_signature=trade_plan_signature,
+            discipline_regime_at_trigger=str(payload.get("discipline_regime") or "").strip() or None,
+            risk_regime_at_trigger=str(payload.get("risk_regime") or "").strip() or None,
+            event_regime_at_trigger=str(payload.get("event_regime") or "").strip() or None,
             payload=payload,
         )
         ij.append_intraday_event(entry, journal_path=journal_path)
@@ -335,6 +407,7 @@ def maybe_run_market_refresh(
     latest_change_feed = cfeed.load_change_feed() or {}
     latest_snapshot_journal = ss.load_snapshot_journal(limit=1)
     latest_trade_plan = np.load_next_day_trade_plan()
+    trade_plan_signature = str(dict(latest_trade_plan or {}).get("decision_signature") or "").strip()
     latest_monthly_discipline_review = _latest_monthly_discipline_review_from_journal(
         journal_entries=latest_snapshot_journal
     )
@@ -345,6 +418,7 @@ def maybe_run_market_refresh(
             change_feed=latest_change_feed,
             monthly_discipline_review=latest_monthly_discipline_review,
             state_path=intraday_alert_state_path,
+            now=now,
         )
         if intraday_alerts_enabled
         else None
@@ -555,6 +629,7 @@ def maybe_run_market_refresh(
                             send_context="hourly_market_summary",
                             skip_reason="",
                             journal_path=intraday_event_journal_path,
+                            trade_plan_signature=trade_plan_signature,
                         )
                         _mark_intraday_discipline_alert_sent(
                             alert=pending_intraday_discipline_alert,
@@ -569,6 +644,7 @@ def maybe_run_market_refresh(
                             send_context="hourly_market_summary",
                             skip_reason="",
                             journal_path=intraday_event_journal_path,
+                            trade_plan_signature=trade_plan_signature,
                         )
                         im.mark_intraday_alert_sent(
                             str(pending_intraday_classifier_alert.get("signature") or "").strip(),
@@ -590,6 +666,7 @@ def maybe_run_market_refresh(
                             send_context="hourly_market_summary",
                             skip_reason="delivery_failed",
                             journal_path=intraday_event_journal_path,
+                            trade_plan_signature=trade_plan_signature,
                         )
                     if pending_intraday_classifier_alert:
                         _record_intraday_classifier_events(
@@ -599,6 +676,7 @@ def maybe_run_market_refresh(
                             send_context="hourly_market_summary",
                             skip_reason="delivery_failed",
                             journal_path=intraday_event_journal_path,
+                            trade_plan_signature=trade_plan_signature,
                         )
             except Exception:
                 logger.exception("Hourly market refresh summary failed.")
@@ -631,6 +709,7 @@ def maybe_run_market_refresh(
                     send_context="intraday_alert",
                     skip_reason="" if delivered else "delivery_failed",
                     journal_path=intraday_event_journal_path,
+                    trade_plan_signature=trade_plan_signature,
                 )
                 if delivered:
                     _mark_intraday_discipline_alert_sent(
@@ -646,6 +725,7 @@ def maybe_run_market_refresh(
                     send_context="intraday_alert",
                     skip_reason="" if delivered else "delivery_failed",
                     journal_path=intraday_event_journal_path,
+                    trade_plan_signature=trade_plan_signature,
                 )
                 if delivered:
                     im.mark_intraday_alert_sent(
@@ -665,6 +745,128 @@ def maybe_run_market_refresh(
     return True
 
 
+def _build_intraday_tactical_runtime(*, data, now, price_cache_ttl_seconds: int = 300):
+    config = itac.load_intraday_tactical_config()
+    if not config.get("enabled", True):
+        snapshot = itac.build_intraday_tactical_snapshot(data=data, config=config, now=now)
+        itac.save_intraday_tactical_snapshot(snapshot)
+        return snapshot, []
+
+    tactical_symbols = sorted(
+        {
+            str(symbol).strip().upper()
+            for symbol in (
+                list(config.get("benchmark_symbols", []) or [])
+                + [dict(row or {}).get("symbol") for row in list(config.get("tactical_symbols", []) or [])]
+            )
+            if str(symbol or "").strip()
+        }
+    )
+    try:
+        raw_events = en.load_market_events(auto_bootstrap=True)
+        active_events = en.select_active_events(raw_events, symbols=tactical_symbols, now=now, verified_only=False)
+        event_decision = en.evaluate_event_risk_switch(active_events, verified_only=True, now=now, vix=None)
+    except Exception:
+        active_events = []
+        event_decision = None
+    discipline_snapshot = qdisc.load_discipline_snapshot() or {}
+    risk_proxy = None
+    risk_regime = str(discipline_snapshot.get("risk_regime") or "").strip().upper()
+    if risk_regime:
+        risk_proxy = SimpleNamespace(regime=risk_regime)
+    snapshot = itac.build_intraday_tactical_snapshot(
+        data=data,
+        config=config,
+        risk_gate=risk_proxy,
+        event_decision=event_decision,
+        active_events=active_events,
+        now=now,
+        price_fetcher=lambda symbols: data_storage.fetch_prices(
+            symbols,
+            use_cache=True,
+            cache_ttl=max(int(price_cache_ttl_seconds or 0), 60),
+            write_cache=True,
+        ),
+        history_loader=qa.get_historical_data,
+    )
+    itac.save_intraday_tactical_snapshot(snapshot)
+    return snapshot, itac.build_intraday_tactical_events(snapshot)
+
+
+def maybe_run_intraday_tactical_tick(
+    *,
+    now: Optional[datetime] = None,
+    loader: Callable[[], dict] = data_storage.load_data,
+    config_loader: Callable[[], dict] = ncfg.load_notification_config,
+    message_router: Callable[..., list] = dr.deliver_message,
+    slack_sender: Callable[..., tuple] = nch.send_slack_message,
+    email_sender: Callable[..., tuple] = nch.send_email_message,
+    intraday_event_alert_state_path: str = im.DEFAULT_INTRADAY_EVENT_ALERT_STATE_FILE,
+    intraday_event_journal_path: str = ij.DEFAULT_INTRADAY_EVENT_JOURNAL_FILE,
+    price_cache_ttl_seconds: int = DEFAULT_MARKET_REFRESH_POLL_SECONDS,
+    environ=None,
+    logger: Optional[logging.Logger] = None,
+) -> bool:
+    logger = logger or logging.getLogger(__name__)
+    now = now or datetime.now()
+    data = loader()
+    trade_plan_signature = _load_latest_trade_plan_signature()
+    snapshot, tactical_events = _build_intraday_tactical_runtime(
+        data=data,
+        now=now,
+        price_cache_ttl_seconds=price_cache_ttl_seconds,
+    )
+    if not tactical_events:
+        return False
+
+    config = _load_notification_config(config_loader, environ=environ)
+    if not bool(dict(config.get("alert_settings", {}) or {}).get("send_intraday_alerts", True)):
+        return False
+    pending_alert = _build_pending_intraday_classifier_alert(
+        events=tactical_events,
+        now=now,
+        state_path=intraday_event_alert_state_path,
+    )
+    if not pending_alert or not pending_alert.get("message"):
+        return False
+    if not _has_enabled_delivery_channel(config):
+        logger.info("Intraday tactical alert skipped because no delivery channel is enabled.")
+        return False
+    if not nr.is_us_market_session(now):
+        logger.info("Intraday tactical alert skipped outside regular US market hours.")
+        return False
+
+    delivery_results = message_router(
+        "intraday_alert",
+        subject=f"Intraday Tactical Alert {now.strftime('%Y-%m-%d %H:%M')}",
+        body=f"Tactical alert: {pending_alert['message']}",
+        config=config,
+        environ=environ,
+        slack_sender=slack_sender,
+        email_sender=email_sender,
+    )
+    delivered = dr.any_success(delivery_results)
+    _record_intraday_classifier_events(
+        alert=pending_alert,
+        now=now,
+        was_alert_sent=delivered,
+        send_context="intraday_tactical",
+        skip_reason="" if delivered else "delivery_failed",
+        journal_path=intraday_event_journal_path,
+        trade_plan_signature=trade_plan_signature,
+    )
+    if delivered:
+        im.mark_intraday_alert_sent(
+            str(pending_alert.get("signature") or "").strip(),
+            now=now,
+            path=intraday_event_alert_state_path,
+        )
+        logger.info("Intraday tactical alert sent.")
+    else:
+        logger.warning("Intraday tactical alert failed: %s", delivery_results)
+    return delivered
+
+
 def nightly_scheduler_loop(
     stop_event: threading.Event,
     *,
@@ -677,7 +879,9 @@ def nightly_scheduler_loop(
     logger = logger or logging.getLogger(__name__)
     while not stop_event.is_set():
         try:
-            maybe_run_nightly_alerts(now=now_func(), should_run=should_run, runner=runner, logger=logger)
+            tick_now = now_func()
+            maybe_run_nightly_alerts(now=tick_now, should_run=should_run, runner=runner, logger=logger)
+            maybe_run_weekend_research(now=tick_now, logger=logger)
         except Exception:
             logger.exception("Nightly scheduler tick failed.")
         if stop_event.wait(poll_seconds):
@@ -703,8 +907,9 @@ def market_refresh_loop(
     logger = logger or logging.getLogger(__name__)
     while not stop_event.is_set():
         try:
+            tick_now = now_func()
             maybe_run_market_refresh(
-                now=now_func(),
+                now=tick_now,
                 loader=loader,
                 refresher=refresher,
                 saver=saver,
@@ -714,6 +919,12 @@ def market_refresh_loop(
                 auto_quant_analysis_min_interval_seconds=auto_quant_analysis_min_interval_seconds,
                 auto_quant_analysis_price_jump_pct=auto_quant_analysis_price_jump_pct,
                 enable_auto_quant_analysis=enable_auto_quant_analysis,
+                logger=logger,
+            )
+            maybe_run_intraday_tactical_tick(
+                now=tick_now,
+                loader=loader,
+                price_cache_ttl_seconds=poll_seconds,
                 logger=logger,
             )
         except Exception:

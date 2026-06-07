@@ -431,5 +431,6 @@ def build_satellite_candidate_pool_snapshot(
         snapshot,
         policy=policy,
         discipline_snapshot=discipline_snapshot,
+        previous_snapshot=previous_snapshot,
         max_recommendations=int(universe.get("max_recommendations", 3) or 3),
     )

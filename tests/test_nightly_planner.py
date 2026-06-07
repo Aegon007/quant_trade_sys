@@ -24,6 +24,7 @@ class NightlyPlannerTests(unittest.TestCase):
 
         self.assertFalse(plan["has_actions"])
         self.assertEqual(plan["decision"], "NO_ACTION")
+        self.assertTrue(plan["decision_signature"])
         self.assertIn("无强信号", plan["summary_reason"])
         self.assertEqual(plan["items"], [])
 
@@ -62,6 +63,7 @@ class NightlyPlannerTests(unittest.TestCase):
 
         self.assertTrue(plan["has_actions"])
         self.assertEqual(plan["decision"], "ACTION")
+        self.assertTrue(plan["decision_signature"])
         self.assertEqual(len(plan["items"]), 2)
         first = plan["items"][0]
         second = plan["items"][1]
@@ -83,6 +85,7 @@ class NightlyPlannerTests(unittest.TestCase):
             {
                 "generated_at": "2026-05-13T23:00:00",
                 "decision": "ACTION",
+                "decision_signature": "abc123sig",
                 "has_actions": True,
                 "summary_reason": "明日有 1 条计划。",
                 "items": [
@@ -109,6 +112,7 @@ class NightlyPlannerTests(unittest.TestCase):
 
         self.assertIn("盘前简报", brief)
         self.assertIn("明日建议：有动作", brief)
+        self.assertIn("计划签名：abc123sig", brief)
         self.assertIn("VOO", brief)
         self.assertIn("执行复盘", brief)
 
@@ -144,6 +148,36 @@ class NightlyPlannerTests(unittest.TestCase):
         self.assertEqual(plan["items"][0]["symbol"], "MU")
         self.assertEqual(plan["items"][0]["plan_action"], "ACCUMULATE")
         self.assertIn("趋势、模型与回测共同确认", plan["items"][0]["reason"])
+
+    def test_build_next_day_trade_plan_blocks_new_entries_when_discipline_stop(self):
+        plan = self.module.build_next_day_trade_plan(
+            {
+                "generated_at": "2026-05-13T23:00:00",
+                "symbols": [
+                    {
+                        "symbol": "AAPL",
+                        "list_type": "holding",
+                        "signal": "BUY",
+                        "signal_reason": "趋势增强",
+                        "latest_price": 100.0,
+                        "position_advice": {
+                            "action": "ADD",
+                            "current_weight_pct": 8.0,
+                            "target_weight_pct": 15.0,
+                            "reason": "建议加仓",
+                        },
+                    }
+                ],
+            },
+            discipline_snapshot={"regime": "STOP", "can_open_new_core_positions": False, "can_open_new_satellite_positions": False},
+            now=datetime(2026, 5, 13, 23, 0, 0),
+        )
+
+        self.assertFalse(plan["has_actions"])
+        self.assertEqual(plan["decision"], "NO_ACTION")
+        self.assertEqual(plan["blocked_count"], 1)
+        self.assertEqual(plan["blocked_items"][0]["blocked_reason"], "discipline_stop")
+        self.assertIn("STOP", plan["summary_reason"])
 
 
 if __name__ == "__main__":

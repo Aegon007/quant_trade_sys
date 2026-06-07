@@ -41,8 +41,12 @@ class PackageImportTests(unittest.TestCase):
             "quant_core.execution.nightly_planner",
             "quant_core.execution.nightly_manifest",
             "quant_core.execution.post_close_review",
+            "quant_core.execution.decision_journal",
             "quant_core.monitoring.intraday_monitor",
+            "quant_core.monitoring.intraday_tactical",
             "quant_core.llm.openai_compatible",
+            "quant_core.research.weekend_research",
+            "quant_core.research.strategy_validation",
             "quant_core.snapshots.system_snapshot",
             "integrations.slack.command_parser",
             "integrations.slack.command_service",
@@ -85,8 +89,12 @@ class PackageImportTests(unittest.TestCase):
         nightly_planner = reload_module("quant_core.execution.nightly_planner")
         nightly_manifest = reload_module("quant_core.execution.nightly_manifest")
         post_close_review = reload_module("quant_core.execution.post_close_review")
+        decision_journal = reload_module("quant_core.execution.decision_journal")
         intraday_monitor = reload_module("quant_core.monitoring.intraday_monitor")
+        intraday_tactical = reload_module("quant_core.monitoring.intraday_tactical")
         llm_client = reload_module("quant_core.llm.openai_compatible")
+        weekend_research = reload_module("quant_core.research.weekend_research")
+        strategy_validation = reload_module("quant_core.research.strategy_validation")
         system_snapshot = reload_module("quant_core.snapshots.system_snapshot")
         parser = reload_module("integrations.slack.command_parser")
         service = reload_module("integrations.slack.command_service")
@@ -131,8 +139,12 @@ class PackageImportTests(unittest.TestCase):
         self.assertTrue(hasattr(nightly_planner, "build_next_day_trade_plan"))
         self.assertTrue(hasattr(nightly_manifest, "initialize_nightly_run_manifest"))
         self.assertTrue(hasattr(post_close_review, "build_execution_review"))
+        self.assertTrue(hasattr(decision_journal, "append_nightly_decision_journal"))
         self.assertTrue(hasattr(intraday_monitor, "classify_intraday_event"))
+        self.assertTrue(hasattr(intraday_tactical, "build_intraday_tactical_snapshot"))
         self.assertTrue(hasattr(llm_client, "call_openai_compatible_chat"))
+        self.assertTrue(hasattr(weekend_research, "should_run_weekend_research"))
+        self.assertTrue(hasattr(strategy_validation, "build_strategy_validation_snapshot"))
         self.assertTrue(hasattr(system_snapshot, "build_system_snapshot"))
         self.assertTrue(hasattr(parser, "parse_slack_command"))
         self.assertTrue(hasattr(service, "execute_slack_command"))

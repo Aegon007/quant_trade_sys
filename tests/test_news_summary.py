@@ -97,6 +97,58 @@ class NewsSummaryTests(unittest.TestCase):
         self.assertIn("总分", detail.explanation_zh)
         self.assertIn("Total", detail.explanation_en)
 
+    def test_summarize_news_events_builds_theme_focuses_and_signature(self):
+        from quant_core.events.event_news import MarketEvent
+        from quant_core.events.news_summary import (
+            build_news_summary_payload,
+            build_news_summary_signature,
+            summarize_news_events,
+        )
+
+        now = datetime(2026, 5, 9, 10, 0, 0)
+        events = [
+            MarketEvent(
+                event_id="macro-1",
+                title="FOMC uncertainty lifts volatility",
+                event_type="fomc",
+                severity="high",
+                sentiment="negative",
+                confidence_score=0.9,
+                confidence_level="high",
+                starts_at=now - timedelta(hours=1),
+                ends_at=now + timedelta(hours=2),
+                source="Reuters",
+                verified=True,
+                symbols=["QQQ", "SPY"],
+            ),
+            MarketEvent(
+                event_id="symbol-1",
+                title="NVDA supplier demand remains firm",
+                event_type="company",
+                severity="medium",
+                sentiment="positive",
+                confidence_score=0.7,
+                confidence_level="medium",
+                starts_at=now - timedelta(hours=1),
+                ends_at=now + timedelta(hours=2),
+                source="Bloomberg",
+                verified=True,
+                symbols=["NVDA"],
+            ),
+        ]
+
+        summary = summarize_news_events(events, lang="zh", max_headlines=2)
+        payload = build_news_summary_payload(summary)
+        signature = build_news_summary_signature(summary)
+
+        self.assertGreaterEqual(len(summary.theme_focuses), 2)
+        self.assertGreaterEqual(len(summary.focus_points), 1)
+        self.assertTrue(signature)
+        self.assertEqual(payload["event_count"], 2)
+        self.assertIn("theme_focuses", payload)
+        self.assertIn("focus_points", payload)
+        self.assertIn("FOMC", payload["theme_focuses"][0]["summary_zh"])
+
 
 if __name__ == "__main__":
     unittest.main()

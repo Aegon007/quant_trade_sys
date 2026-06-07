@@ -22,6 +22,7 @@ from quant_core.data import storage as du
 from quant_core.events import analyst_consensus as ac
 from quant_core.events import event_fetcher as ef
 from quant_core.events import event_news as en
+from quant_core.events import news_summary as enews
 from quant_core.execution import nightly_manifest as nman
 from quant_core.execution import nightly_planner as nplanner
 from quant_core.execution import post_close_review as pclose
@@ -44,6 +45,9 @@ from quant_core.risk.risk_gate import (
     merge_risk_gate_decisions,
 )
 from quant_core.snapshots import system_snapshot as ss
+from quant_core.monitoring import intraday_tactical as itac
+from quant_core.research import weekend_research as wres
+from quant_core.research import strategy_validation as sval
 from share_utils import format_share_quantity
 from signal_scoreboard import build_signal_scoreboard
 from strategies import ui as su
@@ -85,6 +89,10 @@ def load_cached_state_payloads(_state_signature):
         "intraday_event_rows": ij.load_intraday_events(limit=120),
         "core_etf_snapshot": cee.load_core_etf_snapshot(),
         "discipline_snapshot": qdisc.load_discipline_snapshot(),
+        "intraday_tactical_snapshot": itac.load_intraday_tactical_snapshot(),
+        "weekend_research_snapshot": wres.load_weekend_research_snapshot(),
+        "strategy_validation_snapshot": sval.load_strategy_validation_snapshot(),
+        "strategy_experiment_journal": sval.load_strategy_experiment_journal(limit=12),
         "satellite_candidate_snapshot": cpool.load_satellite_candidate_pool_snapshot(),
         "latest_report_snapshot": latest_report_snapshot,
     }
@@ -127,6 +135,10 @@ def _state_payload_signature():
         qpaths.NIGHTLY_RUN_MANIFEST_FILE,
         qpaths.CORE_ETF_SNAPSHOT_FILE,
         qpaths.DISCIPLINE_SNAPSHOT_FILE,
+        qpaths.INTRADAY_TACTICAL_SNAPSHOT_FILE,
+        qpaths.WEEKEND_RESEARCH_SNAPSHOT_FILE,
+        qpaths.STRATEGY_VALIDATION_SNAPSHOT_FILE,
+        qpaths.STRATEGY_EXPERIMENT_JOURNAL_FILE,
         qpaths.SATELLITE_CANDIDATE_POOL_FILE,
         ss.DEFAULT_NIGHTLY_JOURNAL_FILE,
         qpaths.INTRADAY_EVENT_JOURNAL_FILE,
@@ -221,6 +233,7 @@ def clear_runtime_caches():
     load_correlation_matrix_cached.clear()
     load_cached_state_payloads.clear()
     st.session_state.pop("_derived_ui_context_cache", None)
+    st.session_state.pop("news_summary_llm_narration", None)
 
 
 def _format_ts_for_status(value):
@@ -457,6 +470,30 @@ def handle_reload_editable_data():
         st.error(str(exc))
 
 
+def handle_run_weekend_research():
+    with st.spinner(ui_text("正在运行周末研究...", "Running weekend research...")):
+        from jobs.weekend_research import run_weekend_research
+
+        result = run_weekend_research(
+            now=datetime.now(),
+            force=True,
+            slack_sender=_noop_slack_sender,
+            email_sender=_noop_email_sender,
+            message_router=_noop_message_router,
+        )
+        clear_runtime_caches()
+        st.session_state["manual_refresh_notice"] = {
+            "level": "success" if result.get("ran") else "info",
+            "message": ui_text(
+                "周末研究已完成，研究快照与报告已更新。",
+                "Weekend research completed and the research snapshot/report has been refreshed.",
+            )
+            if result.get("ran")
+            else ui_text("周末研究当前未运行。", "Weekend research did not run."),
+        }
+        st.rerun()
+
+
 def handle_manual_tcn_retrain(deep_tcn_strategy):
     if not deep_tcn_strategy:
         st.info(ui_text("当前没有启用 TCN 默认策略。", "No default TCN strategy is configured right now."))
@@ -556,6 +593,31 @@ def explain_core_etf_row(row, *, discipline_snapshot, latest_change_feed):
     return ok, message, meta
 
 
+def explain_satellite_row(row, *, discipline_snapshot, latest_change_feed):
+    config = ncfg.load_notification_config()
+    ok, message, meta = lexp.explain_satellite_candidate(
+        candidate_row=row,
+        notification_config=config,
+        discipline_snapshot=discipline_snapshot,
+        change_feed=latest_change_feed,
+        complexity="explanation",
+    )
+    symbol = str(dict(row or {}).get("symbol") or "").strip().upper()
+    if ok and symbol:
+        explanations = dict(st.session_state.get("satellite_llm_explanations", {}) or {})
+        route_name = str((meta or {}).get("route_name") or "").strip()
+        model_name = str((meta or {}).get("model") or "").strip()
+        label_bits = [item for item in [route_name, model_name] if item]
+        if (meta or {}).get("cached"):
+            label_bits.append("cached")
+        explanations[symbol] = {
+            "text": str(message or "").strip(),
+            "label": " | ".join(label_bits),
+        }
+        st.session_state["satellite_llm_explanations"] = explanations
+    return ok, message, meta
+
+
 def _build_llm_route_label(meta):
     route_name = str((meta or {}).get("route_name") or "").strip()
     model_name = str((meta or {}).get("model") or "").strip()
@@ -607,6 +669,26 @@ def narrate_discipline_review(*, monthly_discipline_review, discipline_snapshot,
         st.session_state["discipline_review_llm_narration"] = {
             "text": str(message or "").strip(),
             "label": _build_llm_route_label(meta),
+        }
+    return ok, message, meta
+
+
+def narrate_news_summary(*, active_market_events, lang):
+    config = ncfg.load_notification_config()
+    summary = enews.summarize_news_events(
+        active_market_events,
+        lang="zh" if str(lang or "zh") == "zh" else "en",
+        max_headlines=3,
+    )
+    ok, message, meta = lexp.narrate_news_summary(
+        summary_payload=enews.build_news_summary_payload(summary),
+        notification_config=config,
+    )
+    if ok:
+        st.session_state["news_summary_llm_narration"] = {
+            "text": str(message or "").strip(),
+            "label": _build_llm_route_label(meta),
+            "signature": enews.build_news_summary_signature(summary),
         }
     return ok, message, meta
 
@@ -696,6 +778,10 @@ def get_or_build_derived_ui_context(
     nightly_snapshot_journal = list(state_payloads.get("nightly_snapshot_journal") or [])
     intraday_event_rows = list(state_payloads.get("intraday_event_rows") or [])
     intraday_event_summary = ij.summarize_intraday_events(intraday_event_rows)
+    intraday_tactical_snapshot = dict(state_payloads.get("intraday_tactical_snapshot") or {})
+    weekend_research_snapshot = dict(state_payloads.get("weekend_research_snapshot") or {})
+    strategy_validation_snapshot = dict(state_payloads.get("strategy_validation_snapshot") or {})
+    strategy_experiment_journal = list(state_payloads.get("strategy_experiment_journal") or [])
 
     market_risk_gate_decision = None
     market_risk_snapshot = None
@@ -966,6 +1052,10 @@ def get_or_build_derived_ui_context(
         "nightly_snapshot_journal": nightly_snapshot_journal,
         "intraday_event_rows": intraday_event_rows,
         "intraday_event_summary": intraday_event_summary,
+        "intraday_tactical_snapshot": intraday_tactical_snapshot,
+        "weekend_research_snapshot": weekend_research_snapshot,
+        "strategy_validation_snapshot": strategy_validation_snapshot,
+        "strategy_experiment_journal": strategy_experiment_journal,
         "market_risk_gate_decision": market_risk_gate_decision,
         "market_risk_snapshot": market_risk_snapshot,
         "portfolio_risk_advice": portfolio_risk_advice,
@@ -1137,6 +1227,10 @@ latest_change_feed = derived_context["latest_change_feed"]
 latest_nightly_manifest = derived_context["latest_nightly_manifest"]
 nightly_snapshot_journal = derived_context["nightly_snapshot_journal"]
 intraday_event_summary = derived_context["intraday_event_summary"]
+intraday_tactical_snapshot = derived_context["intraday_tactical_snapshot"]
+weekend_research_snapshot = derived_context["weekend_research_snapshot"]
+strategy_validation_snapshot = derived_context["strategy_validation_snapshot"]
+strategy_experiment_journal = derived_context["strategy_experiment_journal"]
 market_risk_gate_decision = derived_context["market_risk_gate_decision"]
 market_risk_snapshot = derived_context["market_risk_snapshot"]
 active_market_events = derived_context["active_market_events"]
@@ -1194,6 +1288,7 @@ if active_page == "dashboard":
         allocation_regime_decision=allocation_regime_decision,
         discipline_snapshot=discipline_snapshot,
         monthly_discipline_review=monthly_discipline_review,
+        strategy_validation_snapshot=strategy_validation_snapshot,
         live_scoreboard=live_scoreboard,
         market_risk_gate_decision=market_risk_gate_decision,
         market_risk_snapshot=market_risk_snapshot,
@@ -1201,7 +1296,13 @@ if active_page == "dashboard":
         active_market_events=active_market_events,
         event_risk_decision=event_risk_decision,
         event_source_reports=event_source_reports,
+        news_summary_narration=st.session_state.get("news_summary_llm_narration", {}),
+        narrate_news_summary_fn=lambda: narrate_news_summary(
+            active_market_events=active_market_events,
+            lang=st.session_state.get("lang", "zh"),
+        ),
         intraday_event_summary=intraday_event_summary,
+        intraday_tactical_snapshot=intraday_tactical_snapshot,
         L=L,
         core_etf_snapshot=core_etf_snapshot,
         satellite_candidate_snapshot=satellite_candidate_snapshot,
@@ -1240,9 +1341,22 @@ elif active_page == "satellite":
         satellite_candidate_snapshot=satellite_candidate_snapshot,
         satellite_holdings_df=satellite_holdings_df,
         ui_text=ui_text,
+        discipline_snapshot=discipline_snapshot,
+        latest_change_feed=latest_change_feed,
+        llm_explanations=st.session_state.get("satellite_llm_explanations", {}),
+        explain_satellite_fn=lambda row: explain_satellite_row(
+            row,
+            discipline_snapshot=discipline_snapshot,
+            latest_change_feed=latest_change_feed,
+        ),
         active_market_events=active_market_events,
         event_risk_decision=event_risk_decision,
         event_source_reports=event_source_reports,
+        news_summary_narration=st.session_state.get("news_summary_llm_narration", {}),
+        narrate_news_summary_fn=lambda: narrate_news_summary(
+            active_market_events=active_market_events,
+            lang=st.session_state.get("lang", "zh"),
+        ),
         L=L,
         st_module=st,
         lang=st.session_state.get("lang", "zh"),
@@ -1291,6 +1405,7 @@ elif active_page == "risk":
         latest_post_close_review=latest_post_close_review,
         snapshot_journal=nightly_snapshot_journal,
         intraday_event_summary=intraday_event_summary,
+        intraday_tactical_snapshot=intraday_tactical_snapshot,
         L=L,
         st_module=st,
     )
@@ -1330,6 +1445,10 @@ elif active_page == "ops":
             market_risk_gate_decision=market_risk_gate_decision,
             allocation_regime_decision=allocation_regime_decision,
         ),
+        latest_weekend_research_snapshot=weekend_research_snapshot,
+        latest_strategy_validation_snapshot=strategy_validation_snapshot,
+        latest_strategy_experiment_journal=strategy_experiment_journal,
+        run_weekend_research_fn=handle_run_weekend_research,
         st_module=st,
     )
 else:
@@ -1354,10 +1473,12 @@ else:
         refresh_news_fn=handle_refresh_news,
         reload_editable_data_fn=handle_reload_editable_data,
         manual_tcn_retrain_fn=(lambda: handle_manual_tcn_retrain(deep_tcn_strategy)) if deep_tcn_strategy else None,
+        run_weekend_research_fn=handle_run_weekend_research,
         nightly_retrain_status=st.session_state.get("nightly_retrain_status"),
         analyst_consensus_status=st.session_state.get("analyst_consensus_status"),
         last_price_refresh=data.get("prices_last_updated") or ui_text("尚未刷新", "Not refreshed yet"),
         last_news_refresh=(cached_event_bundle.get("fetched_at") if isinstance(cached_event_bundle, dict) else None),
+        last_weekend_research=(weekend_research_snapshot.get("generated_at") if isinstance(weekend_research_snapshot, dict) else None),
         st_module=st,
     )
 
@@ -1394,6 +1515,7 @@ st.session_state.latest_system_snapshot = ss.build_system_snapshot(
     satellite_candidate_snapshot=satellite_candidate_snapshot,
     discipline_snapshot=discipline_snapshot,
     monthly_discipline_review=monthly_discipline_review,
+    strategy_validation_snapshot=strategy_validation_snapshot,
     intraday_event_summary=intraday_event_summary,
     change_feed=latest_change_feed,
     nightly_manifest=latest_nightly_manifest,

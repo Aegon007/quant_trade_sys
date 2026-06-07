@@ -20,9 +20,11 @@ from quant_core.analytics import core_etf_rotation as cer
 from quant_core.analytics import candidate_pool as cpool
 from quant_core.execution import nightly_planner as np
 from quant_core.execution import post_close_review as pcr
+from quant_core.execution import decision_journal as djour
 from quant_core.execution import nightly_manifest as nman
 from quant_core.monitoring import intraday_journal as ij
 from quant_core.analytics.strategy_compare import compare_strategies_for_symbol
+from quant_core.research import strategy_validation as sval
 from quant_core.snapshots import system_snapshot as ss
 from quant_core.ledger import transactions as tx
 from signal_scoreboard import build_signal_scoreboard
@@ -63,6 +65,42 @@ def _extract_end_of_day_prices(data):
         if symbol and price is not None and symbol not in price_map:
             price_map[symbol] = price
     return price_map
+
+
+def _extract_market_day_ranges(symbols, *, review_day):
+    target_day = review_day.date() if isinstance(review_day, datetime) else review_day
+    ranges = {}
+    for symbol in list(symbols or []):
+        normalized = str(symbol or "").strip().upper()
+        if not normalized:
+            continue
+        try:
+            hist = qa.get_historical_data(normalized, period="1mo")
+        except Exception:
+            continue
+        if hist is None or hist.empty:
+            continue
+        for idx, row in hist.iterrows():
+            try:
+                row_day = idx.date()
+            except Exception:
+                try:
+                    row_day = datetime.fromisoformat(str(idx)).date()
+                except Exception:
+                    continue
+            if row_day != target_day:
+                continue
+            try:
+                ranges[normalized] = {
+                    "open": float(row.get("Open")) if row.get("Open") is not None else None,
+                    "high": float(row.get("High")) if row.get("High") is not None else None,
+                    "low": float(row.get("Low")) if row.get("Low") is not None else None,
+                    "close": float(row.get("Close")) if row.get("Close") is not None else None,
+                }
+            except Exception:
+                pass
+            break
+    return ranges
 
 
 def evaluate_current_market_risk(data, history_period="2y"):
@@ -157,6 +195,12 @@ def run_nightly_alerts(
     daily_recap = tx.summarize_daily_activity(transaction_rows, day=now)
     signal_attribution = nr.build_signal_attribution(transaction_rows, day=now)
     previous_trade_plan = plan_loader(path=trade_plan_path)
+    previous_trade_plan_symbols = [
+        str(item.get("symbol") or "").strip().upper()
+        for item in list(dict(previous_trade_plan or {}).get("items", []) or [])
+        if str(item.get("symbol") or "").strip()
+    ]
+    previous_trade_plan_ranges = _extract_market_day_ranges(previous_trade_plan_symbols, review_day=now)
     previous_core_etf_snapshot = cee.load_core_etf_snapshot()
     previous_discipline_snapshot = discipline.load_discipline_snapshot()
     previous_satellite_snapshot = cpool.load_satellite_candidate_pool_snapshot()
@@ -181,7 +225,12 @@ def run_nightly_alerts(
                 path=manifest_path,
                 now=now,
             )
-            execution_review = review_builder(previous_trade_plan, transaction_rows, day=now)
+            execution_review = review_builder(
+                previous_trade_plan,
+                transaction_rows,
+                day=now,
+                market_day_ranges=previous_trade_plan_ranges,
+            )
             review_saver(execution_review, path=post_close_review_path)
             manifest = nman.mark_step_completed(
                 manifest,
@@ -478,6 +527,7 @@ def run_nightly_alerts(
                 trade_plan = plan_builder(
                     quant_analysis_snapshot,
                     satellite_candidate_snapshot=satellite_candidate_snapshot,
+                    discipline_snapshot=discipline_snapshot,
                     now=now,
                 )
                 plan_saver(trade_plan, path=trade_plan_path)
@@ -500,10 +550,13 @@ def run_nightly_alerts(
         trade_plan = plan_builder(
             {"symbols": [], "allocation_regime": allocation_regime.to_dict() if hasattr(allocation_regime, "to_dict") else allocation_regime},
             satellite_candidate_snapshot=None,
+            discipline_snapshot=discipline_snapshot,
             now=now,
         )
         plan_saver(trade_plan, path=trade_plan_path)
         premarket_brief_text = premarket_brief_builder(trade_plan, execution_review=execution_review)
+
+    strategy_validation_snapshot = sval.load_strategy_validation_snapshot()
 
     snapshot = ss.build_system_snapshot(
         data=data,
@@ -529,6 +582,7 @@ def run_nightly_alerts(
         core_etf_snapshot=core_etf_snapshot,
         satellite_candidate_snapshot=satellite_candidate_snapshot,
         discipline_snapshot=discipline_snapshot,
+        strategy_validation_snapshot=strategy_validation_snapshot,
         intraday_event_summary=intraday_event_summary,
         generated_at=now,
     )
@@ -748,6 +802,23 @@ def run_nightly_alerts(
         output_file=snapshot_journal_path,
         input_version=manifest_input_version,
         metadata={"journal_path": journal_path},
+        path=manifest_path,
+        now=now,
+    )
+    manifest = nman.mark_step_started(
+        manifest,
+        step_name="decision_journal",
+        input_version=manifest_input_version,
+        path=manifest_path,
+        now=now,
+    )
+    decision_journal_path = djour.append_nightly_decision_journal(snapshot)
+    manifest = nman.mark_step_completed(
+        manifest,
+        step_name="decision_journal",
+        output_file=djour.DEFAULT_NIGHTLY_DECISION_JOURNAL_FILE,
+        input_version=manifest_input_version,
+        metadata={"journal_path": decision_journal_path, "decision_signature": snapshot.get("decision_signature")},
         path=manifest_path,
         now=now,
     )

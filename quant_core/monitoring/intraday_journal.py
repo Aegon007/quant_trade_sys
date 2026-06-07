@@ -58,9 +58,9 @@ def _infer_event_side(event: Mapping) -> Optional[str]:
     if explicit in {"BUY", "SELL"}:
         return explicit
     event_type = str((event or {}).get("event_type") or "").strip().upper()
-    if event_type in {"PLAN_BUY_ZONE_TRIGGER"}:
+    if event_type in {"PLAN_BUY_ZONE_TRIGGER", "TACTICAL_HEDGE_TRIGGER"}:
         return "BUY"
-    if event_type in {"PLAN_RISK_BREAK", "POSITION_SHARP_DROP", "MARKET_RISK_OFF"}:
+    if event_type in {"PLAN_RISK_BREAK", "POSITION_SHARP_DROP", "MARKET_RISK_OFF", "TACTICAL_DO_NOT_CHASE", "TACTICAL_REDUCE_RISK"}:
         return "SELL"
     return None
 
@@ -84,6 +84,10 @@ def build_intraday_event_entry(
     was_alert_sent: bool = False,
     send_context: Optional[str] = None,
     skip_reason: str = "",
+    plan_context_signature: Optional[str] = None,
+    discipline_regime_at_trigger: Optional[str] = None,
+    risk_regime_at_trigger: Optional[str] = None,
+    event_regime_at_trigger: Optional[str] = None,
     payload: Optional[Mapping] = None,
 ):
     now = now or datetime.now()
@@ -97,6 +101,10 @@ def build_intraday_event_entry(
         "was_alert_sent": bool(was_alert_sent),
         "send_context": str(send_context or "").strip() or None,
         "skip_reason": str(skip_reason or "").strip() or None,
+        "plan_context_signature": str(plan_context_signature or "").strip() or None,
+        "discipline_regime_at_trigger": str(discipline_regime_at_trigger or "").strip() or None,
+        "risk_regime_at_trigger": str(risk_regime_at_trigger or "").strip() or None,
+        "event_regime_at_trigger": str(event_regime_at_trigger or "").strip() or None,
         "payload": normalized_payload,
     }
 
@@ -165,6 +173,7 @@ def annotate_intraday_event_outcomes(
     journal_path: str = DEFAULT_INTRADAY_EVENT_JOURNAL_FILE,
     review_day=None,
     end_of_day_prices: Optional[Mapping] = None,
+    next_day_prices: Optional[Mapping] = None,
     transactions=None,
 ):
     target_day = _resolve_day(review_day)
@@ -184,6 +193,11 @@ def annotate_intraday_event_outcomes(
         for symbol, price in dict(end_of_day_prices or {}).items()
         if _normalize_symbol(symbol) and _safe_float(price) is not None
     }
+    next_day_prices = {
+        _normalize_symbol(symbol): float(price)
+        for symbol, price in dict(next_day_prices or {}).items()
+        if _normalize_symbol(symbol) and _safe_float(price) is not None
+    }
     normalized_transactions = []
     for row in list(transactions or []):
         record_dt = _parse_datetime((row or {}).get("date"))
@@ -193,6 +207,8 @@ def annotate_intraday_event_outcomes(
             {
                 "symbol": _normalize_symbol((row or {}).get("symbol")),
                 "side": str((row or {}).get("side") or (row or {}).get("event_type") or "").strip().upper(),
+                "price": _safe_float((row or {}).get("price")),
+                "shares": _safe_float((row or {}).get("shares")),
             }
         )
 
@@ -213,6 +229,7 @@ def annotate_intraday_event_outcomes(
         symbol = _normalize_symbol((row or {}).get("symbol"))
         trigger_price = _trigger_price(row)
         end_of_day_price = end_of_day_prices.get(symbol) if symbol else None
+        next_day_price = next_day_prices.get(symbol) if symbol else None
         action_side = _infer_event_side(row)
         matched_trades = [
             tx_row for tx_row in normalized_transactions
@@ -223,6 +240,7 @@ def annotate_intraday_event_outcomes(
 
         outcome_label = "UNSCORED"
         same_day_close_return_pct = None
+        next_day_close_return_pct = None
         if trigger_price is not None and end_of_day_price is not None and trigger_price > 0:
             same_day_close_return_pct = end_of_day_price / trigger_price - 1.0
             if action_side == "BUY":
@@ -241,13 +259,22 @@ def annotate_intraday_event_outcomes(
                     outcome_label = "NEUTRAL"
             else:
                 outcome_label = "NEUTRAL"
+        if trigger_price is not None and next_day_price is not None and trigger_price > 0:
+            next_day_close_return_pct = next_day_price / trigger_price - 1.0
 
         row["review_day"] = target_day.isoformat()
         row["outcome_reviewed_at"] = datetime.now().isoformat()
         row["matched_trade_count"] = len(matched_trades)
+        row["was_followed_by_trade"] = bool(matched_trades)
         row["matched_trade_side"] = action_side
+        trade_prices = [float(tx_row.get("price")) for tx_row in matched_trades if tx_row.get("price") is not None]
+        trade_shares = [float(tx_row.get("shares")) for tx_row in matched_trades if tx_row.get("shares") is not None]
+        row["matched_trade_price"] = (sum(trade_prices) / len(trade_prices)) if trade_prices else None
+        row["matched_trade_shares"] = sum(trade_shares) if trade_shares else None
         row["same_day_close_price"] = end_of_day_price
         row["same_day_close_return_pct"] = same_day_close_return_pct
+        row["next_day_close_price"] = next_day_price
+        row["next_day_close_return_pct"] = next_day_close_return_pct
         row["outcome_label"] = outcome_label
         summary["reviewed_count"] += 1
         key = f"{outcome_label.lower()}_count"

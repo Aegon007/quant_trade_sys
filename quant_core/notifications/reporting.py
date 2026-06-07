@@ -264,6 +264,7 @@ def build_nightly_report(snapshot: Mapping) -> str:
     satellite_candidate_snapshot = dict(snapshot.get("satellite_candidate_snapshot", {}) or {})
     discipline_snapshot = dict(snapshot.get("discipline_snapshot", {}) or {})
     monthly_discipline_review = dict(snapshot.get("monthly_discipline_review", {}) or {})
+    strategy_validation_snapshot = dict(snapshot.get("strategy_validation_snapshot", {}) or {})
     intraday_event_summary = dict(snapshot.get("intraday_event_summary", {}) or {})
     change_feed = dict(snapshot.get("change_feed", {}) or {})
     nightly_manifest = dict(snapshot.get("nightly_manifest", {}) or {})
@@ -304,6 +305,19 @@ def build_nightly_report(snapshot: Mapping) -> str:
             metric = leader.get("total_return")
         metric_text = _format_pct(metric, digits=2) if metric is not None else "-"
         lines.append(f"Strategy leader: {strategy_name} ({metric_text})")
+
+    if strategy_validation_snapshot:
+        validation_summary = dict(strategy_validation_snapshot.get("summary", {}) or {})
+        lines.append(
+            "Strategy validation: "
+            f"status={validation_summary.get('status') or '—'} "
+            f"coverage={int(_float(validation_summary.get('symbol_count'), 0) or 0)} "
+            f"validated={int(_float(validation_summary.get('validated_count'), 0) or 0)} "
+            f"warnings={len(list(validation_summary.get('warning_symbols', []) or []))}"
+        )
+        validation_message = str(validation_summary.get("message") or "").strip()
+        if validation_message:
+            lines.append(f"Strategy validation notes: {validation_message}")
 
     if quant_analysis_summary:
         lines.append(
@@ -364,6 +378,12 @@ def build_nightly_report(snapshot: Mapping) -> str:
             f"follow_pnl={_format_money(monthly_discipline_review.get('follow_realized_pl'))} | "
             f"ignore_pnl={_format_money(monthly_discipline_review.get('ignore_realized_pl'))}"
         )
+        lines.append(
+            "Discipline metrics: "
+            f"follow_hit={_format_pct(monthly_discipline_review.get('follow_directional_hit_rate'), scale=100.0)} | "
+            f"ignore_hit={_format_pct(monthly_discipline_review.get('ignore_directional_hit_rate'), scale=100.0)} | "
+            f"override_penalty={_format_pct(monthly_discipline_review.get('defensive_override_penalty_rate'), scale=100.0)}"
+        )
         discipline_month_summary = str(monthly_discipline_review.get("summary") or "").strip()
         if discipline_month_summary:
             lines.append(f"Discipline month summary: {discipline_month_summary}")
@@ -383,6 +403,8 @@ def build_nightly_report(snapshot: Mapping) -> str:
             f"Next-day plan: {'ACTION' if trade_plan.get('has_actions') else 'NO_ACTION'} | "
             f"items={int(_float(trade_plan.get('action_count'), 0) or 0)}"
         )
+        if str(trade_plan.get("decision_signature") or "").strip():
+            lines.append(f"Decision signature: {str(trade_plan.get('decision_signature') or '').strip()}")
         summary_reason = str(trade_plan.get("summary_reason") or "").strip()
         if summary_reason:
             lines.append(f"Plan summary: {summary_reason}")
@@ -393,6 +415,12 @@ def build_nightly_report(snapshot: Mapping) -> str:
             f"executed={int(_float(execution_review.get('executed_count'), 0) or 0)} | "
             f"missed={int(_float(execution_review.get('missed_count'), 0) or 0)} | "
             f"unplanned={int(_float(execution_review.get('unplanned_trade_count'), 0) or 0)}"
+        )
+        lines.append(
+            "Plan feasibility: "
+            f"reachable={int(_float(execution_review.get('reachable_count'), 0) or 0)} | "
+            f"missed_reachable={int(_float(execution_review.get('missed_reachable_count'), 0) or 0)} | "
+            f"price_failures={int(_float(execution_review.get('price_failure_count'), 0) or 0)}"
         )
 
     if change_feed:

@@ -140,6 +140,8 @@ def build_monthly_discipline_review(
     defensive_override_days = 0
     follow_realized_pl = 0.0
     ignore_realized_pl = 0.0
+    follow_positive_days = 0
+    ignore_positive_days = 0
     reviewed_symbols = set()
 
     for entry in month_entries:
@@ -159,6 +161,8 @@ def build_monthly_discipline_review(
         if state == "FOLLOW":
             follow_days += 1
             follow_realized_pl += realized_pl
+            if realized_pl > 0:
+                follow_positive_days += 1
             if has_actions:
                 follow_action_days += 1
             else:
@@ -166,6 +170,8 @@ def build_monthly_discipline_review(
         elif state == "IGNORE":
             ignore_days += 1
             ignore_realized_pl += realized_pl
+            if realized_pl > 0:
+                ignore_positive_days += 1
             if has_actions:
                 ignore_action_days += 1
             else:
@@ -182,6 +188,9 @@ def build_monthly_discipline_review(
     missed_count = int(_safe_float(latest_post_close_review.get("missed_count"), 0) or 0)
     unplanned_trade_count = int(_safe_float(latest_post_close_review.get("unplanned_trade_count"), 0) or 0)
     current_regime = str((discipline_snapshot or {}).get("regime") or "UNKNOWN").upper()
+    follow_directional_hit_rate = (follow_positive_days / follow_days) if follow_days > 0 else None
+    ignore_directional_hit_rate = (ignore_positive_days / ignore_days) if ignore_days > 0 else None
+    defensive_override_penalty_rate = (defensive_override_days / ignore_days) if ignore_days > 0 else None
 
     status = "MONITOR"
     summary = "当前月度纪律复盘样本仍不足，先继续观察。"
@@ -225,6 +234,18 @@ def build_monthly_discipline_review(
         {"检查项": "防守状态下仍交易", "观察": str(defensive_override_days)},
         {"检查项": "FOLLOW 组已实现盈亏", "观察": f"${follow_realized_pl:+,.2f}"},
         {"检查项": "IGNORE 组已实现盈亏", "观察": f"${ignore_realized_pl:+,.2f}"},
+        {
+            "检查项": "FOLLOW 命中率",
+            "观察": f"{float(follow_directional_hit_rate):.1%}" if follow_directional_hit_rate is not None else "—",
+        },
+        {
+            "检查项": "IGNORE 命中率",
+            "观察": f"{float(ignore_directional_hit_rate):.1%}" if ignore_directional_hit_rate is not None else "—",
+        },
+        {
+            "检查项": "防守违纪率",
+            "观察": f"{float(defensive_override_penalty_rate):.1%}" if defensive_override_penalty_rate is not None else "—",
+        },
         {"检查项": "最近一次计划执行", "观察": f"执行 {executed_count} / 错过 {missed_count} / 计划外 {unplanned_trade_count}"},
         {"检查项": "实时信号胜率", "观察": f"{float(win_rate):.2%}" if win_rate is not None else "—"},
         {"检查项": "实时期望收益", "观察": f"{float(expectancy):+.2%}" if expectancy is not None else "—"},
@@ -245,6 +266,9 @@ def build_monthly_discipline_review(
         "defensive_override_days": defensive_override_days,
         "follow_realized_pl": round(follow_realized_pl, 4),
         "ignore_realized_pl": round(ignore_realized_pl, 4),
+        "follow_directional_hit_rate": round(follow_directional_hit_rate, 6) if follow_directional_hit_rate is not None else None,
+        "ignore_directional_hit_rate": round(ignore_directional_hit_rate, 6) if ignore_directional_hit_rate is not None else None,
+        "defensive_override_penalty_rate": round(defensive_override_penalty_rate, 6) if defensive_override_penalty_rate is not None else None,
         "reviewed_symbols": sorted(reviewed_symbols),
         "executed_count": executed_count,
         "missed_count": missed_count,

@@ -153,37 +153,37 @@ def _format_optional_return(value):
     return f"{float(value):+.2%}" if value is not None else "—"
 
 
+def _truncate_text(value, limit=42):
+    text = str(value or "").strip()
+    if len(text) <= limit:
+        return text or "—"
+    return f"{text[: max(0, limit - 1)].rstrip()}…"
+
+
 def build_core_etf_display_dataframe(snapshot):
     rows = []
     for row in list((snapshot or {}).get("symbols", []) or []):
         backtest = dict(row.get("rotation_backtest", {}) or {})
+        buy_text = (
+            f"${float(row.get('recommended_buy_zone_low')):,.2f} ~ ${float(row.get('recommended_buy_zone_high')):,.2f}"
+            if row.get("recommended_buy_zone_low") is not None and row.get("recommended_buy_zone_high") is not None
+            else "—"
+        )
+        trim_text = (
+            f"${float(row.get('trim_zone_low')):,.2f} ~ ${float(row.get('trim_zone_high')):,.2f}"
+            if row.get("trim_zone_low") is not None and row.get("trim_zone_high") is not None
+            else "—"
+        )
         rows.append(
             {
                 "代码": row.get("symbol"),
-                "角色": row.get("role"),
                 "动作": row.get("action"),
-                "当前": _format_optional_pct(row.get("current_weight_pct")),
-                "目标": _format_optional_pct(row.get("target_weight_pct")),
-                "目标区间": (
-                    f"{float(row.get('target_weight_range_low_pct', 0.0)):.1f}% ~ "
-                    f"{float(row.get('target_weight_range_high_pct', 0.0)):.1f}%"
-                ),
+                "仓位": f"{_format_optional_pct(row.get('current_weight_pct'))} → {_format_optional_pct(row.get('target_weight_pct'))}",
                 "轮动分": f"{float(row.get('rotation_score', 0.0)):.1f}",
                 "3M预期": _format_optional_return(row.get("expected_return_3m")),
-                "12M预期": _format_optional_return(row.get("expected_return_12m")),
                 "回测差": _format_optional_return(backtest.get("excess_return")),
-                "对齐": row.get("regime_alignment"),
-                "买入": (
-                    f"${float(row.get('recommended_buy_zone_low')):,.2f} ~ ${float(row.get('recommended_buy_zone_high')):,.2f}"
-                    if row.get("recommended_buy_zone_low") is not None and row.get("recommended_buy_zone_high") is not None
-                    else "—"
-                ),
-                "减仓": (
-                    f"${float(row.get('trim_zone_low')):,.2f} ~ ${float(row.get('trim_zone_high')):,.2f}"
-                    if row.get("trim_zone_low") is not None and row.get("trim_zone_high") is not None
-                    else "—"
-                ),
-                "摘要": row.get("signal_reason", ""),
+                "价位": " | ".join(part for part in [buy_text if buy_text != "—" else "", trim_text if trim_text != "—" else ""] if part) or "—",
+                "摘要": _truncate_text(row.get("signal_reason", "")),
             }
         )
     return pd.DataFrame(rows)
@@ -204,8 +204,7 @@ def build_holdings_focus_dataframe(holding_records, *, include_symbols=None, exc
                 "代码": symbol,
                 "信号": row.get("信号"),
                 "建议": row.get("仓位建议"),
-                "当前": _format_optional_pct(row.get("当前仓位")),
-                "目标": _format_optional_pct(row.get("目标仓位")),
+                "仓位": f"{_format_optional_pct(row.get('当前仓位'))} → {_format_optional_pct(row.get('目标仓位'))}",
                 "回测": _format_optional_return(row.get("回测收益")),
                 "MC预期": _format_optional_return(row.get("MC预期")),
                 "退出": _format_money(row.get("退出参考")) if row.get("退出参考") is not None else "—",
@@ -234,14 +233,10 @@ def build_satellite_candidate_dataframe(snapshot, *, limit=None, top_only=False)
                 "状态": row.get("recommendation_status") or row.get("candidate_state"),
                 "动作": row.get("plan_action") or "WATCH",
                 "仓位": _format_optional_pct(row.get("suggested_weight_pct")),
-                "轻分": f"{float(row.get('light_score') or 0.0):.1f}",
                 "总分": f"{float(row.get('satellite_score') or 0.0):.1f}",
-                "信号": row.get("signal") or "HOLD",
-                "回测": _format_optional_return(backtest.get("total_return")),
-                "MC": _format_optional_return(monte_carlo.get("expected_return")),
-                "摘要": row.get("recommendation_reason") or row.get("signal_reason") or "",
-                "来源": ", ".join(list((row or {}).get("sources", []) or [])) or "—",
-                "更新": display_time,
+                "预期": f"{_format_optional_return(backtest.get('total_return'))} | {_format_optional_return(monte_carlo.get('expected_return'))}",
+                "亮点": _truncate_text(row.get("recommendation_reason") or row.get("signal_reason") or ""),
+                "更新": display_time if top_only else display_time,
             }
         )
     if limit is not None:

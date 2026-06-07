@@ -52,6 +52,8 @@ class SlackCommandServiceTests(unittest.TestCase):
         self.service.CORE_ETF_SNAPSHOT_FILE = str(self.core_etf_path)
         self.service.SATELLITE_CANDIDATE_POOL_FILE = str(self.satellite_path)
         self.service.NIGHTLY_JOURNAL_FILE = str(self.journal_path)
+        self.validation_path = root / "strategy_validation_snapshot.json"
+        self.service.STRATEGY_VALIDATION_SNAPSHOT_FILE = str(self.validation_path)
 
     def _write_json(self, path: Path, payload):
         path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -189,6 +191,40 @@ class SlackCommandServiceTests(unittest.TestCase):
         self.assertIn("VOO | ACCUMULATE", result.message)
         self.assertIn("目标 45.0%", result.message)
 
+    def test_validation_command_reads_strategy_validation_snapshot(self):
+        self._write_json(
+            self.validation_path,
+            {
+                "summary": {
+                    "status": "REVIEW",
+                    "symbol_count": 3,
+                    "validated_count": 1,
+                    "review_count": 1,
+                    "caution_count": 1,
+                    "low_sample_count": 0,
+                    "warning_symbols": ["QQQ", "MU"],
+                    "message": "默认策略在核心标的上未能保持领先。",
+                },
+                "symbols": [
+                    {
+                        "symbol": "QQQ",
+                        "focus_role": "core",
+                        "status": "REVIEW",
+                        "default_rank": 2,
+                        "best_strategy_name": "MACD",
+                    }
+                ],
+            },
+        )
+
+        result = self.service.execute_slack_command("策略验证")
+
+        self.assertTrue(result.ok)
+        self.assertIn("策略验证", result.message)
+        self.assertIn("状态: REVIEW", result.message)
+        self.assertIn("重点复核: QQQ, MU", result.message)
+        self.assertIn("QQQ | core | REVIEW", result.message)
+
     def test_satellite_command_reads_satellite_snapshot(self):
         self._write_json(
             self.satellite_path,
@@ -258,6 +294,16 @@ class SlackCommandServiceTests(unittest.TestCase):
                 "summary": {"top_symbols": ["MU", "NVDA"]},
             },
         )
+        self._write_json(
+            self.validation_path,
+            {
+                "summary": {
+                    "status": "CAUTION",
+                    "symbol_count": 2,
+                    "warning_symbols": ["QQQ"],
+                }
+            },
+        )
         self._append_journal(
             {
                 "monthly_discipline_review": {
@@ -274,6 +320,7 @@ class SlackCommandServiceTests(unittest.TestCase):
         self.assertIn("系统概览", result.message)
         self.assertIn("计划: ACTION", result.message)
         self.assertIn("卫星雷达 Top: MU, NVDA", result.message)
+        self.assertIn("策略验证: CAUTION", result.message)
         self.assertIn("月度纪律: ALIGNED", result.message)
 
     def test_buy_command_moves_watchlist_to_holdings_and_writes_audit_log(self):

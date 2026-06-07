@@ -45,8 +45,14 @@
     "send_hourly_market_summary": true,
     "send_hourly_market_summary_market_hours_only": true,
     "send_quant_analysis_change_summary": true,
+    "send_weekend_research_summary": true,
     "enable_auto_quant_analysis": true,
     "auto_quant_analysis_min_interval_seconds": 7200,
-    "auto_quant_analysis_price_jump_pct": 0.03
+    "auto_quant_analysis_price_jump_pct": 0.03,
+    "enable_weekend_research": true,
+    "weekend_research_day_local": "sunday",
+    "weekend_research_hour_local": 11,
+    "weekend_research_minute_local": 0,
+    "weekend_research_history_period": "5y"
   }
 }

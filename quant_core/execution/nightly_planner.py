@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import datetime, time, timedelta
 from pathlib import Path
@@ -194,10 +195,66 @@ def _build_plan_item(row: Mapping, *, plan_valid_until: datetime) -> Optional[di
     }
 
 
+def _decision_signature(*, plan_date: str, decision: str, items, allocation_regime: Mapping):
+    payload = {
+        "plan_date": str(plan_date or "").strip(),
+        "decision": str(decision or "").strip().upper(),
+        "allocation_regime": str(dict(allocation_regime or {}).get("regime") or "").strip().upper(),
+        "items": [
+            {
+                "symbol": str(item.get("symbol") or "").strip().upper(),
+                "plan_action": str(item.get("plan_action") or "").strip().upper(),
+                "plan_weight_delta_pct": _safe_float(item.get("plan_weight_delta_pct"), 0.0) or 0.0,
+                "buy_zone_low": _safe_float(item.get("buy_zone_low")),
+                "buy_zone_high": _safe_float(item.get("buy_zone_high")),
+                "trim_zone_low": _safe_float(item.get("trim_zone_low")),
+                "trim_zone_high": _safe_float(item.get("trim_zone_high")),
+                "risk_break_level": _safe_float(item.get("risk_break_level")),
+            }
+            for item in list(items or [])
+        ],
+    }
+    return hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()[:16]
+
+
+def _apply_discipline_constraints(items, *, discipline_snapshot: Optional[Mapping] = None):
+    snapshot = dict(discipline_snapshot or {})
+    regime = str(snapshot.get("regime") or "").strip().upper()
+    can_open_core = bool(snapshot.get("can_open_new_core_positions", True))
+    can_open_satellite = bool(snapshot.get("can_open_new_satellite_positions", True))
+
+    if not items:
+        return [], []
+
+    filtered = []
+    blocked = []
+    for item in list(items or []):
+        row = dict(item or {})
+        action = str(row.get("plan_action") or "").strip().upper()
+        list_type = str(row.get("list_type") or "").strip().lower()
+        is_buy = action in _BUY_ACTIONS
+        blocked_reason = ""
+
+        if regime == "STOP" and is_buy:
+            blocked_reason = "discipline_stop"
+        elif is_buy and list_type in {"candidate_pool", "watchlist"} and not can_open_satellite:
+            blocked_reason = "discipline_blocks_new_satellite"
+        elif is_buy and list_type in {"holding", "core"} and not can_open_core:
+            blocked_reason = "discipline_blocks_new_core"
+
+        if blocked_reason:
+            row["blocked_reason"] = blocked_reason
+            blocked.append(row)
+            continue
+        filtered.append(row)
+    return filtered, blocked
+
+
 def build_next_day_trade_plan(
     snapshot: Mapping,
     *,
     satellite_candidate_snapshot: Optional[Mapping] = None,
+    discipline_snapshot: Optional[Mapping] = None,
     now: Optional[datetime] = None,
     max_items: int = 12,
 ) -> dict:
@@ -231,25 +288,43 @@ def build_next_day_trade_plan(
             seen_symbols.add(item["symbol"])
     items.sort(key=lambda row: (row["execution_priority"], row["symbol"]))
     items = items[: max(0, int(max_items or 0))]
+    items, blocked_items = _apply_discipline_constraints(items, discipline_snapshot=discipline_snapshot)
 
     allocation_regime = dict(snapshot.get("allocation_regime", {}) or {})
     has_actions = bool(items)
     if has_actions:
         summary_reason = f"明日有 {len(items)} 条可执行计划。"
+        if blocked_items:
+            summary_reason += f" 另有 {len(blocked_items)} 条因纪律层限制被压制。"
         decision = "ACTION"
     else:
         reasons = list(allocation_regime.get("reasons", []) or [])
-        trailing = f" 原因：{'；'.join(reasons[:2])}" if reasons else ""
+        discipline_regime = str(dict(discipline_snapshot or {}).get("regime") or "").strip().upper()
+        if blocked_items and discipline_regime == "STOP":
+            trailing = " 原因：纪律层当前为 STOP，所有新建仓动作已被压制。"
+        elif blocked_items:
+            trailing = f" 原因：纪律层压制了 {len(blocked_items)} 条建仓建议。"
+        else:
+            trailing = f" 原因：{'；'.join(reasons[:2])}" if reasons else ""
         summary_reason = f"当前无强信号，建议持仓不动。{trailing}".strip()
         decision = "NO_ACTION"
+    decision_signature = _decision_signature(
+        plan_date=plan_valid_until.date().isoformat(),
+        decision=decision,
+        items=items,
+        allocation_regime=dict(snapshot.get("allocation_regime", {}) or {}),
+    )
 
     return {
         "generated_at": now.isoformat(),
         "plan_date": plan_valid_until.date().isoformat(),
         "decision": decision,
+        "decision_signature": decision_signature,
         "has_actions": has_actions,
         "summary_reason": summary_reason,
         "items": items,
+        "blocked_items": blocked_items,
+        "blocked_count": len(blocked_items),
         "action_count": len(items),
     }
 
@@ -260,6 +335,7 @@ def build_premarket_brief(plan: Mapping, *, execution_review: Optional[Mapping] 
         "盘前简报",
         f"生成时间：{str(plan.get('generated_at') or '')}",
         f"明日建议：{'有动作' if plan.get('has_actions') else '无动作'}",
+        f"计划签名：{str(plan.get('decision_signature') or '—')}",
         str(plan.get("summary_reason") or "").strip(),
     ]
 
