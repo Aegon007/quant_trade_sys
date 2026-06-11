@@ -1,4 +1,5 @@
 import json
+import math
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional
@@ -66,7 +67,13 @@ def supported_commands_text() -> str:
 def _format_currency(value) -> str:
     if value is None:
         return "—"
-    return f"${float(value):,.2f}"
+    try:
+        amount = float(value)
+    except (TypeError, ValueError):
+        return "—"
+    if not math.isfinite(amount):
+        return "—"
+    return f"${amount:,.2f}"
 
 
 def _find_record(records, symbol: str):
@@ -80,19 +87,35 @@ def _find_record(records, symbol: str):
 def _format_pct(value, *, scale=1.0) -> str:
     if value is None:
         return "—"
-    return f"{float(value) * scale:.1f}%"
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return "—"
+    if not math.isfinite(number):
+        return "—"
+    return f"{number * scale:.1f}%"
 
 
 def _format_price(value) -> str:
     if value is None:
         return "—"
-    return f"${float(value):,.2f}"
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return "—"
+    if not math.isfinite(number):
+        return "—"
+    return f"${number:,.2f}"
 
 
 def _format_price_range(low, high) -> str:
     if low is None or high is None:
         return "—"
-    return f"{_format_price(low)} - {_format_price(high)}"
+    low_text = _format_price(low)
+    high_text = _format_price(high)
+    if low_text == "—" or high_text == "—":
+        return "—"
+    return f"{low_text} - {high_text}"
 
 
 def _load_snapshot(data=None):

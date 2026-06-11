@@ -1,4 +1,5 @@
 import json
+import math
 import os
 import time
 from datetime import datetime
@@ -66,7 +67,7 @@ def _load_runtime_data():
     else:
         data = _default_data()
     data["account"] = _normalize_account(data.get("account"), _default_account())
-    data.setdefault("holdings", [])
+    data["holdings"] = _sanitize_holding_records(data.get("holdings") or [])
     data.setdefault("watchlist", [])
     data.setdefault("last_updated", None)
     data.setdefault("prices_last_updated", None)
@@ -87,15 +88,21 @@ def _coerce_optional_float(value, field_name):
     if value in (None, ""):
         return None
     try:
-        return float(value)
+        coerced = float(value)
     except (TypeError, ValueError) as exc:
         raise ValueError(f"{field_name} must be a number or null") from exc
+    if not math.isfinite(coerced):
+        return None
+    return coerced
 
 def _coerce_required_float(value, field_name):
     try:
-        return float(value)
+        coerced = float(value)
     except (TypeError, ValueError) as exc:
         raise ValueError(f"{field_name} must be a number") from exc
+    if not math.isfinite(coerced):
+        raise ValueError(f"{field_name} must be a finite number")
+    return coerced
 
 def _coerce_optional_non_negative_float(value, field_name):
     if value in (None, ""):
@@ -172,6 +179,18 @@ def _normalize_editable_holding(record, index, existing_by_symbol):
         "sector": str(record.get("sector", existing.get("sector", ""))).strip()
     }
 
+def _normalize_runtime_holding(record, index):
+    if not isinstance(record, dict):
+        raise ValueError(f"holdings[{index}] must be an object")
+    symbol = _normalize_symbol(record.get("symbol"), "holdings", index)
+    return {
+        "symbol": symbol,
+        "shares": validate_share_quantity(record.get("shares"), field_name=f"holdings[{index}].shares"),
+        "cost": _coerce_required_float(record.get("cost"), f"holdings[{index}].cost"),
+        "current_price": _coerce_optional_float(record.get("current_price"), f"holdings[{index}].current_price"),
+        "sector": str(record.get("sector", "") or "").strip(),
+    }
+
 def _normalize_watch_record(record, index, existing_by_symbol=None):
     if not isinstance(record, dict):
         raise ValueError(f"watchlist[{index}] must be an object")
@@ -192,6 +211,12 @@ def _normalize_watch_record(record, index, existing_by_symbol=None):
 def _sanitize_watchlist_records(records, existing_by_symbol=None):
     return [
         _normalize_watch_record(record, index, existing_by_symbol)
+        for index, record in enumerate(records)
+    ]
+
+def _sanitize_holding_records(records):
+    return [
+        _normalize_runtime_holding(record, index)
         for index, record in enumerate(records)
     ]
 
@@ -232,6 +257,7 @@ def load_data(force_editable_sync=False):
 
 def save_data(data):
     data["account"] = _normalize_account(data.get("account"), _default_account())
+    data["holdings"] = _sanitize_holding_records(data.get("holdings") or [])
     data["watchlist"] = _sanitize_watchlist_records(data.get("watchlist") or [])
     data["last_updated"] = datetime.now().isoformat()
     with open(DATA_FILE, "w", encoding="utf-8") as f:
@@ -241,6 +267,7 @@ def save_data(data):
 def build_editable_portfolio_payload(data=None):
     runtime_data = data or _load_runtime_data()
     runtime_data["account"] = _normalize_account(runtime_data.get("account"), _default_account())
+    runtime_data["holdings"] = _sanitize_holding_records(runtime_data.get("holdings") or [])
     runtime_data["watchlist"] = _sanitize_watchlist_records(runtime_data.get("watchlist") or [])
     holdings = []
     for record in list(runtime_data.get("holdings", []) or []):
@@ -373,9 +400,12 @@ def _normalize_symbols(symbols):
 
 def _coerce_price(value):
     try:
-        return float(value)
+        coerced = float(value)
     except (TypeError, ValueError):
         return None
+    if not math.isfinite(coerced):
+        return None
+    return coerced
 
 
 def _cache_dict_to_frame(cache_dict):

@@ -410,6 +410,35 @@ class DataUtilsFractionalShareTests(unittest.TestCase):
         self.assertEqual(status["prices"]["primary_symbols"], 1)
         self.assertEqual(status["prices"]["fallback_symbols"], 0)
 
+    def test_fetch_prices_discards_nan_values_from_provider(self):
+        self.data_utils.CUSTOM_PRICE_PROVIDERS = {
+            "nan_source": lambda symbols: {"AAPL": float("nan")},
+        }
+        self.data_utils.DEFAULT_PRICE_SOURCE_ORDER = ("nan_source",)
+
+        prices = self.data_utils.fetch_prices(["AAPL"], use_cache=False)
+
+        self.assertEqual(prices, {})
+
+    def test_load_data_sanitizes_nan_runtime_prices(self):
+        payload = {
+            "account": {},
+            "holdings": [
+                {"symbol": "AAPL", "shares": 1.0, "cost": 100.0, "current_price": float("nan"), "sector": "Tech"}
+            ],
+            "watchlist": [
+                {"symbol": "MSFT", "notes": "watch", "last_price": float("nan")}
+            ],
+            "last_updated": None,
+            "prices_last_updated": None,
+        }
+        Path(self.data_utils.DATA_FILE).write_text(json.dumps(payload, allow_nan=True), encoding="utf-8")
+
+        data = self.data_utils.load_data()
+
+        self.assertIsNone(data["holdings"][0]["current_price"])
+        self.assertIsNone(data["watchlist"][0]["last_price"])
+
     def test_move_holding_to_watchlist_moves_position_and_uses_latest_price(self):
         self.data_utils.save_data({
             "holdings": [

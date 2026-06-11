@@ -408,6 +408,53 @@ class SlackCommandServiceTests(unittest.TestCase):
         self.assertEqual(calls, [True])
         self.assertIn("已强制刷新行情数据", result.message)
 
+    def test_current_holdings_command_hides_nan_price(self):
+        self.data_utils.save_data(
+            {
+                "account": {"cash_available": 1000.0},
+                "holdings": [
+                    {"symbol": "AAPL", "shares": 1.0, "cost": 100.0, "current_price": float("nan"), "sector": "Tech"}
+                ],
+                "watchlist": [],
+            }
+        )
+
+        result = self.service.execute_slack_command("当前持仓")
+
+        self.assertTrue(result.ok)
+        self.assertNotIn("nan", result.message.lower())
+        self.assertIn("现价 —", result.message)
+
+    def test_core_command_hides_nan_price_ranges(self):
+        self._write_json(
+            self.core_etf_path,
+            {
+                "risk_regime": "NORMAL",
+                "allocation_regime": "LIGHT",
+                "summary": {"total_symbols": 1, "accumulate_count": 1, "trim_count": 0},
+                "symbols": [
+                    {
+                        "symbol": "VOO",
+                        "action": "ACCUMULATE",
+                        "current_weight_pct": 40.0,
+                        "target_weight_pct": 45.0,
+                        "rotation_score": 77.0,
+                        "recommended_buy_zone_low": float("nan"),
+                        "recommended_buy_zone_high": float("nan"),
+                        "trim_zone_low": float("nan"),
+                        "trim_zone_high": float("nan"),
+                        "risk_break_level": float("nan"),
+                    }
+                ],
+            },
+        )
+
+        result = self.service.execute_slack_command("核心ETF")
+
+        self.assertTrue(result.ok)
+        self.assertNotIn("nan", result.message.lower())
+        self.assertIn("买 — | 减 — | 破位 —", result.message)
+
     def test_add_watch_command_appends_symbol_to_watchlist(self):
         self.data_utils.save_data(
             {

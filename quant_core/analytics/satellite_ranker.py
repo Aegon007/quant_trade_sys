@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from copy import deepcopy
 from typing import Mapping, Optional
 
@@ -10,9 +11,12 @@ def _safe_float(value, default=None):
     try:
         if value is None:
             return default
-        return float(value)
+        number = float(value)
     except (TypeError, ValueError):
         return default
+    if not math.isfinite(number):
+        return default
+    return number
 
 
 def _clamp(value, low, high):
