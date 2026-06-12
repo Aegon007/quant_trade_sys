@@ -10,6 +10,9 @@ class PackageImportTests(unittest.TestCase):
         clear_modules(
             "quant_core.paths",
             "quant_core.data.storage",
+            "quant_core.data.data_health",
+            "quant_core.common.share_utils",
+            "quant_core.common.signal_approval",
             "quant_core.ledger.transactions",
             "quant_core.ledger.robinhood_csv",
             "quant_core.portfolio.actions",
@@ -26,6 +29,7 @@ class PackageImportTests(unittest.TestCase):
             "quant_core.analytics.candidate_pool",
             "quant_core.analytics.satellite_ranker",
             "quant_core.analytics.portfolio_analysis",
+            "quant_core.analytics.signal_scoreboard",
             "quant_core.risk.risk_gate",
             "quant_core.events.event_news",
             "quant_core.events.event_fetcher",
@@ -42,21 +46,34 @@ class PackageImportTests(unittest.TestCase):
             "quant_core.execution.nightly_manifest",
             "quant_core.execution.post_close_review",
             "quant_core.execution.decision_journal",
+            "quant_core.execution.plan_quality",
             "quant_core.monitoring.intraday_monitor",
             "quant_core.monitoring.intraday_tactical",
+            "quant_core.monitoring.market_monitor",
             "quant_core.llm.openai_compatible",
             "quant_core.research.weekend_research",
             "quant_core.research.strategy_validation",
+            "quant_core.research.strategy_governance",
+            "quant_core.research.evidence_collector",
+            "quant_core.models.interfaces",
+            "quant_core.models.registry",
             "quant_core.snapshots.system_snapshot",
+            "quant_core.api.schemas",
+            "quant_core.api.snapshot_loader",
+            "quant_core.api.actions",
+            "quant_core.jobs.job_registry",
+            "jobs.api_server",
             "integrations.slack.command_parser",
             "integrations.slack.command_service",
-            "app.ui.components",
             "strategies.ui",
             "strategies.registry",
         )
 
     def test_package_paths_are_importable(self):
         storage = reload_module("quant_core.data.storage")
+        data_health = reload_module("quant_core.data.data_health")
+        share_utils = reload_module("quant_core.common.share_utils")
+        signal_approval = reload_module("quant_core.common.signal_approval")
         market_data = reload_module("quant_core.data.market_data")
         ledger = reload_module("quant_core.ledger.transactions")
         robinhood_csv = reload_module("quant_core.ledger.robinhood_csv")
@@ -74,6 +91,7 @@ class PackageImportTests(unittest.TestCase):
         candidate_pool = reload_module("quant_core.analytics.candidate_pool")
         satellite_ranker = reload_module("quant_core.analytics.satellite_ranker")
         portfolio_analysis = reload_module("quant_core.analytics.portfolio_analysis")
+        signal_scoreboard = reload_module("quant_core.analytics.signal_scoreboard")
         risk_gate = reload_module("quant_core.risk.risk_gate")
         event_news = reload_module("quant_core.events.event_news")
         finbert_sentiment = reload_module("quant_core.events.finbert_sentiment")
@@ -90,19 +108,32 @@ class PackageImportTests(unittest.TestCase):
         nightly_manifest = reload_module("quant_core.execution.nightly_manifest")
         post_close_review = reload_module("quant_core.execution.post_close_review")
         decision_journal = reload_module("quant_core.execution.decision_journal")
+        plan_quality = reload_module("quant_core.execution.plan_quality")
         intraday_monitor = reload_module("quant_core.monitoring.intraday_monitor")
         intraday_tactical = reload_module("quant_core.monitoring.intraday_tactical")
+        market_monitor = reload_module("quant_core.monitoring.market_monitor")
         llm_client = reload_module("quant_core.llm.openai_compatible")
         weekend_research = reload_module("quant_core.research.weekend_research")
         strategy_validation = reload_module("quant_core.research.strategy_validation")
+        strategy_governance = reload_module("quant_core.research.strategy_governance")
+        evidence_collector = reload_module("quant_core.research.evidence_collector")
+        model_interfaces = reload_module("quant_core.models.interfaces")
+        model_registry = reload_module("quant_core.models.registry")
         system_snapshot = reload_module("quant_core.snapshots.system_snapshot")
+        api_schemas = reload_module("quant_core.api.schemas")
+        api_snapshot_loader = reload_module("quant_core.api.snapshot_loader")
+        api_actions = reload_module("quant_core.api.actions")
+        job_registry = reload_module("quant_core.jobs.job_registry")
+        api_server = reload_module("jobs.api_server")
         parser = reload_module("integrations.slack.command_parser")
         service = reload_module("integrations.slack.command_service")
-        ui_components = reload_module("app.ui.components")
         strategy_ui = reload_module("strategies.ui")
         strategy_registry = reload_module("strategies.registry")
 
         self.assertTrue(hasattr(storage, "load_data"))
+        self.assertTrue(hasattr(data_health, "build_data_health_snapshot"))
+        self.assertTrue(hasattr(share_utils, "validate_share_quantity"))
+        self.assertTrue(hasattr(signal_approval, "approve_signal"))
         self.assertTrue(hasattr(market_data, "fetch_stooq_history"))
         self.assertTrue(hasattr(ledger, "add_transaction"))
         self.assertTrue(hasattr(ledger, "import_robinhood_activity_csv"))
@@ -122,6 +153,7 @@ class PackageImportTests(unittest.TestCase):
         self.assertTrue(hasattr(candidate_pool, "build_satellite_candidate_pool_snapshot"))
         self.assertTrue(hasattr(satellite_ranker, "rank_satellite_candidates"))
         self.assertTrue(hasattr(portfolio_analysis, "build_portfolio_quant_analysis_snapshot"))
+        self.assertTrue(hasattr(signal_scoreboard, "build_signal_scoreboard"))
         self.assertTrue(hasattr(portfolio_analysis, "save_quant_analysis_snapshot"))
         self.assertTrue(hasattr(portfolio_analysis, "evaluate_auto_refresh_trigger"))
         self.assertTrue(hasattr(risk_gate, "evaluate_market_risk_gate"))
@@ -140,15 +172,25 @@ class PackageImportTests(unittest.TestCase):
         self.assertTrue(hasattr(nightly_manifest, "initialize_nightly_run_manifest"))
         self.assertTrue(hasattr(post_close_review, "build_execution_review"))
         self.assertTrue(hasattr(decision_journal, "append_nightly_decision_journal"))
+        self.assertTrue(hasattr(plan_quality, "build_plan_quality_snapshot"))
         self.assertTrue(hasattr(intraday_monitor, "classify_intraday_event"))
         self.assertTrue(hasattr(intraday_tactical, "build_intraday_tactical_snapshot"))
+        self.assertTrue(hasattr(market_monitor, "build_market_monitor_snapshot"))
         self.assertTrue(hasattr(llm_client, "call_openai_compatible_chat"))
         self.assertTrue(hasattr(weekend_research, "should_run_weekend_research"))
         self.assertTrue(hasattr(strategy_validation, "build_strategy_validation_snapshot"))
+        self.assertTrue(hasattr(strategy_governance, "build_strategy_governance_snapshot"))
+        self.assertTrue(hasattr(evidence_collector, "build_evidence_layer"))
+        self.assertTrue(hasattr(model_interfaces, "ModelPrediction"))
+        self.assertTrue(hasattr(model_registry, "load_model_registry"))
         self.assertTrue(hasattr(system_snapshot, "build_system_snapshot"))
+        self.assertTrue(hasattr(api_schemas, "build_api_response"))
+        self.assertTrue(hasattr(api_snapshot_loader, "load_dashboard_response"))
+        self.assertTrue(hasattr(api_actions, "refresh_market_data_now"))
+        self.assertTrue(hasattr(job_registry, "update_job_status"))
+        self.assertTrue(hasattr(api_server, "create_app"))
         self.assertTrue(hasattr(parser, "parse_slack_command"))
         self.assertTrue(hasattr(service, "execute_slack_command"))
-        self.assertTrue(hasattr(ui_components, "build_watchlist_records"))
         self.assertTrue(hasattr(strategy_ui, "load_strategies"))
         self.assertTrue(hasattr(strategy_registry, "create_strategy"))
 
@@ -178,6 +220,12 @@ class PackageImportTests(unittest.TestCase):
             "ui_components",
             "strategy_ui",
             "strategy_registry",
+            "ml_strategy",
+            "deep_learning_strategy",
+            "share_utils",
+            "signal_approval",
+            "signal_scoreboard",
+            "locales",
         ]
         for module_name in removed:
             with self.assertRaises(ModuleNotFoundError):

@@ -17,7 +17,7 @@ import time
 import numpy as np
 import pandas as pd
 
-from ml_strategy import compute_features
+from strategies.ml_utils import compute_features
 from quant_core.analytics import quant_analysis as qa
 
 warnings.filterwarnings("ignore", category=UserWarning)

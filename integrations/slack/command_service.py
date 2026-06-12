@@ -6,14 +6,16 @@ from typing import Optional
 
 from quant_core import paths as qpaths
 from quant_core.analytics import candidate_pool as cpool
+from quant_core.data import data_health as dhealth
 from quant_core.portfolio import actions as pactions
 from quant_core.portfolio import core_etf_engine as cee
 from quant_core.portfolio import discipline as qdisc
 from quant_core.research import strategy_validation as sval
 from quant_core.data import storage as du
 from quant_core.execution import nightly_planner as nplanner
+from quant_core.execution import plan_quality as pquality
 from quant_core.snapshots import system_snapshot as ss
-from share_utils import format_share_quantity, validate_share_quantity
+from quant_core.common.share_utils import format_share_quantity, validate_share_quantity
 from integrations.slack.command_parser import ParsedSlackCommand, parse_slack_command
 
 qpaths.bootstrap_storage_paths()
@@ -25,6 +27,8 @@ CORE_ETF_SNAPSHOT_FILE = qpaths.CORE_ETF_SNAPSHOT_FILE
 SATELLITE_CANDIDATE_POOL_FILE = qpaths.SATELLITE_CANDIDATE_POOL_FILE
 NIGHTLY_JOURNAL_FILE = ss.DEFAULT_NIGHTLY_JOURNAL_FILE
 STRATEGY_VALIDATION_SNAPSHOT_FILE = qpaths.STRATEGY_VALIDATION_SNAPSHOT_FILE
+DATA_HEALTH_SNAPSHOT_FILE = qpaths.DATA_HEALTH_SNAPSHOT_FILE
+PLAN_QUALITY_SNAPSHOT_FILE = qpaths.PLAN_QUALITY_SNAPSHOT_FILE
 
 
 @dataclass(frozen=True)
@@ -44,6 +48,8 @@ def supported_commands_text() -> str:
             "- 系统概览",
             "- 今日计划 / 明日计划",
             "- 风险状态 / 纪律状态",
+            "- 数据状态",
+            "- 计划质量",
             "- 策略验证",
             "- 核心ETF",
             "- 卫星雷达 / top3",
@@ -224,6 +230,14 @@ def _load_satellite_snapshot():
 
 def _load_strategy_validation_snapshot():
     return sval.load_strategy_validation_snapshot(path=STRATEGY_VALIDATION_SNAPSHOT_FILE)
+
+
+def _load_data_health_snapshot():
+    return dhealth.load_data_health_snapshot(path=DATA_HEALTH_SNAPSHOT_FILE)
+
+
+def _load_plan_quality_snapshot():
+    return pquality.load_plan_quality_snapshot(path=PLAN_QUALITY_SNAPSHOT_FILE)
 
 
 def _load_latest_monthly_review():
@@ -422,6 +436,53 @@ def _format_strategy_validation_message(snapshot) -> str:
     return "\n".join(lines)
 
 
+def _format_data_health_message(snapshot) -> str:
+    snapshot = dict(snapshot or {})
+    summary = dict(snapshot.get("summary", {}) or {})
+    if not summary:
+        return "尚未生成数据健康快照。请先刷新行情或运行 nightly。"
+    lines = [
+        "数据状态",
+        f"- 状态: {summary.get('status') or snapshot.get('status') or '—'}",
+        f"- 跟踪标的: {int(summary.get('tracked_symbol_count') or 0)} | 缺失 {int(summary.get('missing_price_count') or 0)} | 无效 {int(summary.get('invalid_price_count') or 0)} | 过期 {int(summary.get('stale_price_count') or 0)}",
+        f"- 主源命中: {int(summary.get('primary_symbol_count') or 0)} | fallback: {int(summary.get('fallback_symbol_count') or 0)}",
+    ]
+    missing = list(snapshot.get("missing_symbols", []) or [])
+    invalid = list(snapshot.get("invalid_symbols", []) or [])
+    stale = list(snapshot.get("stale_symbols", []) or [])
+    if missing:
+        lines.append(f"- 缺失价格: {', '.join(missing[:8])}")
+    if invalid:
+        lines.append(f"- 无效价格: {', '.join(invalid[:8])}")
+    if stale:
+        lines.append(f"- 过期缓存: {', '.join(stale[:8])}")
+    if summary.get("last_error"):
+        lines.append(f"- 最近错误: {summary.get('last_error')}")
+    return "\n".join(lines)
+
+
+def _format_plan_quality_message(snapshot) -> str:
+    snapshot = dict(snapshot or {})
+    summary = dict(snapshot.get("summary", {}) or {})
+    if not summary:
+        return "尚未生成计划质量快照。请先运行 nightly 或导入 Robinhood CSV 后复盘。"
+    execution_rate = summary.get("execution_rate")
+    rate_text = "—" if execution_rate is None else f"{float(execution_rate) * 100:.1f}%"
+    lines = [
+        "计划质量",
+        f"- 状态: {summary.get('status') or snapshot.get('status') or '—'} | 复盘数: {int(summary.get('review_count') or 0)}",
+        f"- 执行率: {rate_text} | 已执行 {int(summary.get('executed_count') or 0)} | 错过 {int(summary.get('missed_count') or 0)} | 计划外 {int(summary.get('unplanned_trade_count') or 0)}",
+        f"- 可触达未执行: {int(summary.get('missed_reachable_count') or 0)} | 跳空/失效 {int(summary.get('invalidated_count') or 0)} | 区间未到 {int(summary.get('unreachable_count') or 0)}",
+    ]
+    groups = dict(snapshot.get("groups", {}) or {})
+    for name in ("core", "satellite", "tactical"):
+        row = dict(groups.get(name, {}) or {})
+        lines.append(
+            f"- {name}: planned {int(row.get('planned_count') or 0)} | executed {int(row.get('executed_count') or 0)} | missed reachable {int(row.get('missed_reachable_count') or 0)}"
+        )
+    return "\n".join(lines)
+
+
 def _format_overview_message(
     data,
     snapshot,
@@ -430,6 +491,8 @@ def _format_overview_message(
     core_snapshot,
     satellite_snapshot,
     strategy_validation_snapshot=None,
+    data_health_snapshot=None,
+    plan_quality_snapshot=None,
     monthly_review=None,
 ) -> str:
     account = dict((snapshot or {}).get("account", {}) or {})
@@ -455,6 +518,20 @@ def _format_overview_message(
             f"- 策略验证: {validation_summary.get('status') or '—'} | "
             f"覆盖 {int(validation_summary.get('symbol_count') or 0)} | "
             f"预警 {len(list(validation_summary.get('warning_symbols', []) or []))}"
+        )
+    data_health_summary = dict((data_health_snapshot or {}).get("summary", {}) or {})
+    if data_health_summary:
+        lines.append(
+            f"- 数据健康: {data_health_summary.get('status') or '—'} | "
+            f"缺失 {int(data_health_summary.get('missing_price_count') or 0)} | "
+            f"无效 {int(data_health_summary.get('invalid_price_count') or 0)}"
+        )
+    plan_quality_summary = dict((plan_quality_snapshot or {}).get("summary", {}) or {})
+    if plan_quality_summary:
+        lines.append(
+            f"- 计划质量: {plan_quality_summary.get('status') or '—'} | "
+            f"已执行 {int(plan_quality_summary.get('executed_count') or 0)} | "
+            f"可触达未执行 {int(plan_quality_summary.get('missed_reachable_count') or 0)}"
         )
     if monthly_review:
         lines.append(
@@ -539,6 +616,12 @@ def execute_slack_command(text) -> CommandExecutionResult:
                 _format_risk_message(_load_discipline_snapshot(), monthly_review=_load_latest_monthly_review()),
             )
 
+        if command.name == "SHOW_DATA_HEALTH":
+            return _result(True, command, _format_data_health_message(_load_data_health_snapshot()))
+
+        if command.name == "SHOW_PLAN_QUALITY":
+            return _result(True, command, _format_plan_quality_message(_load_plan_quality_snapshot()))
+
         if command.name == "SHOW_VALIDATION":
             return _result(True, command, _format_strategy_validation_message(_load_strategy_validation_snapshot()))
 
@@ -562,6 +645,8 @@ def execute_slack_command(text) -> CommandExecutionResult:
                     _load_core_etf_snapshot(),
                     _load_satellite_snapshot(),
                     _load_strategy_validation_snapshot(),
+                    _load_data_health_snapshot(),
+                    _load_plan_quality_snapshot(),
                     monthly_review=_load_latest_monthly_review(),
                 ),
                 data=data,

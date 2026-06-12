@@ -4,7 +4,7 @@ import unittest
 class SignalApprovalTests(unittest.TestCase):
     def test_approve_signal_blocks_buy_when_risk_gate_blocks_new_buys(self):
         from quant_core.risk.risk_gate import MarketRiskGateDecision
-        from signal_approval import approve_signal
+        from quant_core.common.signal_approval import approve_signal
 
         approval = approve_signal(
             "BUY",
@@ -24,7 +24,7 @@ class SignalApprovalTests(unittest.TestCase):
 
     def test_approve_signal_keeps_sell_when_risk_gate_blocks_new_buys(self):
         from quant_core.risk.risk_gate import MarketRiskGateDecision
-        from signal_approval import approve_signal
+        from quant_core.common.signal_approval import approve_signal
 
         approval = approve_signal(
             "SELL",
@@ -42,7 +42,7 @@ class SignalApprovalTests(unittest.TestCase):
         self.assertFalse(approval.blocked)
 
     def test_approve_signal_normalizes_unknown_to_hold(self):
-        from signal_approval import approve_signal
+        from quant_core.common.signal_approval import approve_signal
 
         approval = approve_signal("mystery")
 

@@ -3,7 +3,7 @@ from typing import Any, Dict, Optional
 import pandas as pd
 
 from engine.base import BaseStrategy
-import deep_learning_strategy as dl_utils
+from strategies import deep_learning_utils as dl_utils
 
 
 class DeepTCNStrategy(BaseStrategy):

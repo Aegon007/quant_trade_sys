@@ -17,13 +17,13 @@ class StrategyRegistryTests(unittest.TestCase):
         install_fake_yfinance()
         clear_modules(
             "quant_analysis",
-            "ml_strategy",
             "strategies",
             "strategies.classic_strategies",
+            "strategies.ml_utils",
             "strategies.ml_strategy",
             "strategies.ensemble_strategy",
+            "strategies.deep_learning_utils",
             "strategies.deep_learning_strategy",
-            "deep_learning_strategy",
             "strategies.registry",
         )
         self.strategy_registry = reload_module("strategies.registry")
@@ -68,10 +68,6 @@ class StrategyRegistryTests(unittest.TestCase):
         self.assertEqual(strategy.params["device"], "auto")
 
     def test_get_signal_uses_configured_signal_function_without_code_edit(self):
-        import sys
-        import types
-
-        sys.modules["streamlit"] = types.ModuleType("streamlit")
         clear_modules("strategies.ui")
         strategy_ui = reload_module("strategies.ui")
 

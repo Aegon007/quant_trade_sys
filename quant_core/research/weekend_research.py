@@ -135,13 +135,18 @@ def build_weekend_research_snapshot(
     satellite_snapshot: Optional[Mapping] = None,
     strategy_research_rows=None,
     strategy_validation_snapshot: Optional[Mapping] = None,
+    strategy_governance_snapshot: Optional[Mapping] = None,
+    evidence_layer: Optional[Mapping] = None,
 ):
     core_rotation_snapshot = dict(core_rotation_snapshot or {})
     core_snapshot = dict(core_snapshot or {})
     satellite_snapshot = dict(satellite_snapshot or {})
     strategy_research_rows = list(strategy_research_rows or [])
     strategy_validation_snapshot = dict(strategy_validation_snapshot or {})
+    strategy_governance_snapshot = dict(strategy_governance_snapshot or {})
+    evidence_layer = dict(evidence_layer or {})
     validation_summary = dict(strategy_validation_snapshot.get("summary", {}) or {})
+    governance_summary = dict(strategy_governance_snapshot.get("summary", {}) or {})
 
     risk_regime = str(getattr(risk_gate, "regime", "") or dict(risk_gate or {}).get("regime") or "UNKNOWN").strip().upper()
     allocation_name = str(getattr(allocation_regime, "regime", "") or dict(allocation_regime or {}).get("regime") or "UNKNOWN").strip().upper()
@@ -176,6 +181,10 @@ def build_weekend_research_snapshot(
         recommendations.append(
             f"默认策略验证: {validation_status}（覆盖 {int(validation_summary.get('symbol_count', 0) or 0)}，预警 {len(list(validation_summary.get('warning_symbols', []) or []))}）"
         )
+    if governance_summary:
+        recommendations.append(
+            f"策略治理: {governance_summary.get('status') or '—'}（promotion watch {int(governance_summary.get('promotion_watch_count', 0) or 0)}）"
+        )
 
     summary_message = {
         "DEFENSIVE": "下周优先防守，减少主动进攻和高波动新仓。",
@@ -195,6 +204,7 @@ def build_weekend_research_snapshot(
             "core_focus_count": len(focus_symbols),
             "satellite_top_count": len(top_recommendations),
             "strategy_compare_count": len(strategy_research_rows),
+            "evidence_count": int(evidence_layer.get("evidence_count", 0) or 0),
             "message": summary_message,
         },
         "core_rotation_snapshot": core_rotation_snapshot,
@@ -202,6 +212,8 @@ def build_weekend_research_snapshot(
         "satellite_snapshot": satellite_snapshot,
         "strategy_research_rows": strategy_research_rows,
         "strategy_validation_snapshot": strategy_validation_snapshot,
+        "strategy_governance_snapshot": strategy_governance_snapshot,
+        "evidence_layer": evidence_layer,
         "recommendations": recommendations,
     }
 
@@ -255,6 +267,29 @@ def build_weekend_research_report(snapshot: Mapping) -> str:
         warnings = ", ".join(list(validation_summary.get("warning_symbols", []) or []))
         if warnings:
             lines.append(f"- Warning symbols: {warnings}")
+        lines.append("")
+    governance_snapshot = dict(snapshot.get("strategy_governance_snapshot", {}) or {})
+    governance_summary = dict(governance_snapshot.get("summary", {}) or {})
+    if governance_summary:
+        lines.append("## Strategy Governance")
+        lines.append("")
+        lines.append(
+            "- "
+            f"Status: {governance_summary.get('status') or '—'} | "
+            f"Default: {governance_summary.get('default_strategy_id') or '—'} | "
+            f"Review: {int(_safe_float(governance_summary.get('review_count'), 0) or 0)} | "
+            f"Promotion watch: {int(_safe_float(governance_summary.get('promotion_watch_count'), 0) or 0)}"
+        )
+        lines.append("")
+    evidence_layer = dict(snapshot.get("evidence_layer", {}) or {})
+    evidence_rows = list(evidence_layer.get("evidence", []) or [])
+    if evidence_rows:
+        lines.append("## Evidence Layer")
+        lines.append("")
+        for row in evidence_rows[:8]:
+            lines.append(
+                f"- [{row.get('confidence') or 'unknown'}] {row.get('source') or 'source'}: {row.get('summary') or '—'}"
+            )
         lines.append("")
     return "\n".join(lines).strip() + "\n"
 

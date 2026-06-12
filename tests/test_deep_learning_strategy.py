@@ -26,11 +26,11 @@ class DeepLearningStrategyTests(unittest.TestCase):
     def setUp(self):
         install_fake_yfinance({"AAPL": make_ohlcv(100)})
         clear_modules(
-            "ml_strategy",
-            "deep_learning_strategy",
+            "strategies.ml_utils",
+            "strategies.deep_learning_utils",
             "strategies.deep_learning_strategy",
         )
-        self.deep_learning_strategy = reload_module("deep_learning_strategy")
+        self.deep_learning_strategy = reload_module("strategies.deep_learning_utils")
         import tempfile
 
         self.temp_dir = tempfile.TemporaryDirectory()

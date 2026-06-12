@@ -11,7 +11,7 @@ from tests.support import clear_modules, install_fake_yfinance, reload_module
 class DataUtilsFractionalShareTests(unittest.TestCase):
     def setUp(self):
         install_fake_yfinance()
-        clear_modules("share_utils", "quant_core.data.storage")
+        clear_modules("quant_core.common.share_utils", "quant_core.data.storage")
         self.data_utils = reload_module("quant_core.data.storage")
         self.temp_dir = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp_dir.cleanup)

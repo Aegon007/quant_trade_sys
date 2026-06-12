@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "timezone": "America/New_York",
+  "trading_hours": {
+    "enabled": true,
+    "market_monitor_interval_seconds": 1800,
+    "tactical_watchlist_interval_seconds": 600,
+    "data_health_interval_seconds": 1800,
+    "market_hours_only": true
+  },
+  "nightly": {
+    "enabled": true,
+    "poll_seconds": 300,
+    "run_window_local": {
+      "start": "23:00",
+      "end": "01:00"
+    }
+  },
+  "weekend_research": {
+    "enabled": true,
+    "run_window_local": {
+      "day": "Saturday",
+      "start": "10:00",
+      "end": "18:00"
+    }
+  },
+  "notifications": {
+    "send_market_summary": true,
+    "send_market_summary_market_hours_only": true,
+    "send_nightly_digest": true,
+    "send_weekend_digest": true
+  }
+}

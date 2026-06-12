@@ -5,7 +5,7 @@ import pandas as pd
 
 class SignalScoreboardTests(unittest.TestCase):
     def test_build_signal_scoreboard_summarizes_round_trips(self):
-        from signal_scoreboard import build_signal_scoreboard
+        from quant_core.analytics.signal_scoreboard import build_signal_scoreboard
 
         trade_log = [
             {"date": pd.Timestamp("2026-01-02"), "action": "BUY", "price": 100.0, "shares": 1.0},
@@ -33,7 +33,7 @@ class SignalScoreboardTests(unittest.TestCase):
         self.assertEqual(scoreboard.regime_breakdown[0].regime, "ALL")
 
     def test_build_signal_scoreboard_handles_empty_trade_log(self):
-        from signal_scoreboard import build_signal_scoreboard
+        from quant_core.analytics.signal_scoreboard import build_signal_scoreboard
 
         scoreboard = build_signal_scoreboard([], equity_curve=[100000.0])
 
@@ -46,7 +46,7 @@ class SignalScoreboardTests(unittest.TestCase):
         self.assertEqual(scoreboard.regime_breakdown, [])
 
     def test_build_signal_scoreboard_includes_volatility_regime_breakdown(self):
-        from signal_scoreboard import build_signal_scoreboard
+        from quant_core.analytics.signal_scoreboard import build_signal_scoreboard
 
         trade_log = [
             {"date": pd.Timestamp("2026-01-05"), "action": "BUY", "price": 100.0, "shares": 1.0},
@@ -71,7 +71,7 @@ class SignalScoreboardTests(unittest.TestCase):
         self.assertEqual(scoreboard.regime_breakdown[0].trades, 1)
 
     def test_build_signal_scoreboard_supports_transaction_records_shape(self):
-        from signal_scoreboard import build_signal_scoreboard
+        from quant_core.analytics.signal_scoreboard import build_signal_scoreboard
 
         trade_log = [
             {

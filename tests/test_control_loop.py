@@ -1,6 +1,6 @@
 import unittest
 
-from signal_scoreboard import SignalScoreboard
+from quant_core.analytics.signal_scoreboard import SignalScoreboard
 from quant_core.risk.risk_gate import MarketRiskGateDecision
 
 
@@ -103,4 +103,3 @@ class ControlLoopTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

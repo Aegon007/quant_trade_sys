@@ -8,10 +8,6 @@ from tests.support import clear_modules, reload_module
 
 class StrategyUITests(unittest.TestCase):
     def setUp(self):
-        import sys
-        import types
-
-        sys.modules["streamlit"] = types.ModuleType("streamlit")
         clear_modules("strategies.ui")
         self.strategy_ui = reload_module("strategies.ui")
         self.temp_dir = tempfile.TemporaryDirectory()

@@ -26,4 +26,3 @@ def validate_share_quantity(value, *, field_name="shares") -> float:
 def format_share_quantity(value) -> str:
     normalized = normalize_share_quantity(value)
     return f"{normalized:,.{SHARE_DISPLAY_PLACES}f}"
-

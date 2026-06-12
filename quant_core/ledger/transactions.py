@@ -2,7 +2,7 @@ import json
 import os
 import hashlib
 from datetime import datetime
-from share_utils import validate_share_quantity
+from quant_core.common.share_utils import validate_share_quantity
 from quant_core import paths as qpaths
 
 qpaths.bootstrap_storage_paths()

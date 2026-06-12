@@ -66,6 +66,52 @@ class ChangeFeedTests(unittest.TestCase):
         self.assertIn("Discipline month:", alert["message"])
         self.assertTrue(alert["signature"].startswith("2026-05-14T06:00:00"))
 
+    def test_build_change_feed_surfaces_step3_health_and_governance(self):
+        feed = self.module.build_change_feed(
+            previous_state={
+                "data_health_snapshot": {"status": "OK", "summary": {"status": "OK"}},
+                "plan_quality_snapshot": {"status": "OK", "summary": {"status": "OK"}},
+                "strategy_governance_snapshot": {"status": "OK", "summary": {"status": "OK"}},
+            },
+            current_state={
+                "data_health_snapshot": {
+                    "status": "BROKEN",
+                    "summary": {
+                        "status": "BROKEN",
+                        "tracked_symbol_count": 3,
+                        "missing_price_count": 2,
+                        "invalid_price_count": 1,
+                        "stale_price_count": 0,
+                        "fallback_symbol_count": 0,
+                    },
+                },
+                "plan_quality_snapshot": {
+                    "status": "DEGRADED",
+                    "summary": {
+                        "status": "DEGRADED",
+                        "missed_reachable_count": 2,
+                        "unplanned_trade_count": 0,
+                        "execution_rate": 0.5,
+                    },
+                },
+                "strategy_governance_snapshot": {
+                    "status": "REVIEW",
+                    "summary": {
+                        "status": "REVIEW",
+                        "review_count": 1,
+                        "promotion_watch_count": 1,
+                    },
+                },
+            },
+        )
+
+        titles = [row["title"] for row in feed["high_items"]]
+        self.assertIn("数据健康异常", titles)
+        self.assertIn("计划执行质量下降", titles)
+        self.assertIn("策略治理需要复核", titles)
+        categories = {row["category"] for row in feed["items"]}
+        self.assertTrue({"data_health", "plan_quality", "strategy_governance"}.issubset(categories))
+
 
 if __name__ == "__main__":
     unittest.main()

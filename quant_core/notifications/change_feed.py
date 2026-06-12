@@ -117,6 +117,16 @@ def _discipline_month_rank(status: str) -> int:
     return ranks.get(normalized, 1)
 
 
+def _status_text(snapshot: Optional[Mapping]) -> str:
+    snapshot = dict(snapshot or {})
+    summary = dict(snapshot.get("summary", {}) or {})
+    return str(summary.get("status") or snapshot.get("status") or "").strip().upper()
+
+
+def _summary_int(summary: Mapping, key: str) -> int:
+    return int(_safe_float(dict(summary or {}).get(key), 0) or 0)
+
+
 def select_priority_items(
     feed: Optional[Mapping],
     *,
@@ -442,6 +452,104 @@ def build_change_feed(
             explanation_bullets=[
                 f"昨日防守状态下交易天数: {prev_defensive_override}",
                 f"今日防守状态下交易天数: {curr_defensive_override}",
+            ],
+        )
+
+    prev_health_status = _status_text(previous_state.get("data_health_snapshot"))
+    curr_health = dict(current_state.get("data_health_snapshot", {}) or {})
+    curr_health_summary = dict(curr_health.get("summary", {}) or {})
+    curr_health_status = _status_text(curr_health)
+    missing_price_count = _summary_int(curr_health_summary, "missing_price_count")
+    invalid_price_count = _summary_int(curr_health_summary, "invalid_price_count")
+    stale_price_count = _summary_int(curr_health_summary, "stale_price_count")
+    fallback_symbol_count = _summary_int(curr_health_summary, "fallback_symbol_count")
+    tracked_symbol_count = _summary_int(curr_health_summary, "tracked_symbol_count")
+    if curr_health_status in {"BROKEN", "DEGRADED"}:
+        hard_price_issue_count = missing_price_count + invalid_price_count
+        priority = "HIGH" if curr_health_status == "BROKEN" or hard_price_issue_count else "MEDIUM"
+        title = "数据健康异常" if priority == "HIGH" else "数据源降级"
+        _add_item(
+            items,
+            priority=priority,
+            category="data_health",
+            title=title,
+            message=(
+                f"数据健康为 {curr_health_status}；跟踪 {tracked_symbol_count} 个标的，"
+                f"缺失 {missing_price_count}，异常 {invalid_price_count}，过期 {stale_price_count}，"
+                f"备用源 {fallback_symbol_count}。"
+            ),
+            reason_codes=["data_health_degraded"],
+            before_value=prev_health_status or None,
+            after_value=curr_health_status,
+            explanation_summary=(
+                "价格或数据源存在异常，建议先强制刷新并确认数据源状态，再参考买卖/仓位建议。"
+                if priority == "HIGH"
+                else "系统正在使用备用源或存在部分过期数据，建议降低对实时价位的依赖。"
+            ),
+            explanation_bullets=[
+                f"当前状态: {curr_health_status}",
+                f"缺失价格: {missing_price_count}",
+                f"异常价格: {invalid_price_count}",
+                f"过期价格: {stale_price_count}",
+                f"备用源命中: {fallback_symbol_count}",
+            ],
+        )
+
+    prev_plan_quality_status = _status_text(previous_state.get("plan_quality_snapshot"))
+    curr_plan_quality = dict(current_state.get("plan_quality_snapshot", {}) or {})
+    curr_plan_quality_summary = dict(curr_plan_quality.get("summary", {}) or {})
+    curr_plan_quality_status = _status_text(curr_plan_quality)
+    missed_reachable_count = _summary_int(curr_plan_quality_summary, "missed_reachable_count")
+    unplanned_trade_count = _summary_int(curr_plan_quality_summary, "unplanned_trade_count")
+    execution_rate = _safe_float(curr_plan_quality_summary.get("execution_rate"))
+    if curr_plan_quality_status == "DEGRADED" or missed_reachable_count or unplanned_trade_count:
+        priority = "HIGH" if unplanned_trade_count or missed_reachable_count >= 2 else "MEDIUM"
+        _add_item(
+            items,
+            priority=priority,
+            category="plan_quality",
+            title="计划执行质量下降",
+            message=(
+                f"计划质量为 {curr_plan_quality_status or 'UNKNOWN'}；"
+                f"计划外交易 {unplanned_trade_count}，可达但未执行 {missed_reachable_count}。"
+            ),
+            reason_codes=["plan_quality_degraded"],
+            before_value=prev_plan_quality_status or None,
+            after_value=curr_plan_quality_status or None,
+            explanation_summary="交易记录与系统计划出现偏离，后续复盘需要优先看这些偏离是否改善收益或增加风险。",
+            explanation_bullets=[
+                f"当前状态: {curr_plan_quality_status or 'UNKNOWN'}",
+                f"计划外交易: {unplanned_trade_count}",
+                f"可达但未执行: {missed_reachable_count}",
+                f"执行率: {execution_rate:.0%}" if execution_rate is not None else "执行率: 暂无",
+            ],
+        )
+
+    prev_governance_status = _status_text(previous_state.get("strategy_governance_snapshot"))
+    curr_governance = dict(current_state.get("strategy_governance_snapshot", {}) or {})
+    curr_governance_summary = dict(curr_governance.get("summary", {}) or {})
+    curr_governance_status = _status_text(curr_governance)
+    promotion_watch_count = _summary_int(curr_governance_summary, "promotion_watch_count")
+    review_count = _summary_int(curr_governance_summary, "review_count")
+    if curr_governance_status == "REVIEW" or promotion_watch_count:
+        priority = "HIGH" if curr_governance_status == "REVIEW" and review_count else "MEDIUM"
+        _add_item(
+            items,
+            priority=priority,
+            category="strategy_governance",
+            title="策略治理需要复核",
+            message=(
+                f"策略治理为 {curr_governance_status or 'UNKNOWN'}；"
+                f"默认策略复核 {review_count}，候选晋级观察 {promotion_watch_count}。"
+            ),
+            reason_codes=["strategy_governance_review"],
+            before_value=prev_governance_status or None,
+            after_value=curr_governance_status or None,
+            explanation_summary="策略层出现需要人工复核的信号；系统不会自动切换默认策略，先看验证证据再决定。",
+            explanation_bullets=[
+                f"当前状态: {curr_governance_status or 'UNKNOWN'}",
+                f"默认策略复核项: {review_count}",
+                f"候选晋级观察: {promotion_watch_count}",
             ],
         )
 

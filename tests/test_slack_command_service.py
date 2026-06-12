@@ -10,7 +10,7 @@ class SlackCommandServiceTests(unittest.TestCase):
     def setUp(self):
         install_fake_yfinance()
         clear_modules(
-            "share_utils",
+            "quant_core.common.share_utils",
             "quant_core.data.storage",
             "quant_core.ledger.transactions",
             "quant_core.portfolio.actions",
@@ -54,6 +54,10 @@ class SlackCommandServiceTests(unittest.TestCase):
         self.service.NIGHTLY_JOURNAL_FILE = str(self.journal_path)
         self.validation_path = root / "strategy_validation_snapshot.json"
         self.service.STRATEGY_VALIDATION_SNAPSHOT_FILE = str(self.validation_path)
+        self.data_health_path = root / "data_health_snapshot.json"
+        self.plan_quality_path = root / "plan_quality_snapshot.json"
+        self.service.DATA_HEALTH_SNAPSHOT_FILE = str(self.data_health_path)
+        self.service.PLAN_QUALITY_SNAPSHOT_FILE = str(self.plan_quality_path)
 
     def _write_json(self, path: Path, payload):
         path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -155,6 +159,65 @@ class SlackCommandServiceTests(unittest.TestCase):
         self.assertIn("纪律与风险状态", result.message)
         self.assertIn("纪律状态: LIGHT", result.message)
         self.assertIn("月度纪律: CAUTION", result.message)
+
+    def test_data_health_command_reads_health_snapshot(self):
+        self._write_json(
+            self.data_health_path,
+            {
+                "status": "DEGRADED",
+                "summary": {
+                    "status": "DEGRADED",
+                    "tracked_symbol_count": 3,
+                    "missing_price_count": 1,
+                    "invalid_price_count": 1,
+                    "stale_price_count": 0,
+                    "primary_symbol_count": 1,
+                    "fallback_symbol_count": 1,
+                },
+                "missing_symbols": ["VOO"],
+                "invalid_symbols": ["MU"],
+            },
+        )
+
+        result = self.service.execute_slack_command("数据状态")
+
+        self.assertTrue(result.ok)
+        self.assertIn("数据状态", result.message)
+        self.assertIn("状态: DEGRADED", result.message)
+        self.assertIn("缺失价格: VOO", result.message)
+        self.assertIn("无效价格: MU", result.message)
+
+    def test_plan_quality_command_reads_quality_snapshot(self):
+        self._write_json(
+            self.plan_quality_path,
+            {
+                "status": "DEGRADED",
+                "summary": {
+                    "status": "DEGRADED",
+                    "review_count": 2,
+                    "executed_count": 1,
+                    "missed_count": 1,
+                    "missed_reachable_count": 1,
+                    "unplanned_trade_count": 1,
+                    "invalidated_count": 0,
+                    "unreachable_count": 0,
+                    "execution_rate": 0.5,
+                },
+                "groups": {
+                    "core": {"planned_count": 1, "executed_count": 1, "missed_reachable_count": 0},
+                    "satellite": {"planned_count": 1, "executed_count": 0, "missed_reachable_count": 1},
+                    "tactical": {"planned_count": 0, "executed_count": 0, "missed_reachable_count": 0},
+                },
+            },
+        )
+
+        result = self.service.execute_slack_command("计划质量")
+
+        self.assertTrue(result.ok)
+        self.assertIn("计划质量", result.message)
+        self.assertIn("状态: DEGRADED", result.message)
+        self.assertIn("执行率: 50.0%", result.message)
+        self.assertIn("satellite", result.message)
 
     def test_core_command_reads_core_etf_snapshot(self):
         self._write_json(
@@ -304,6 +367,14 @@ class SlackCommandServiceTests(unittest.TestCase):
                 }
             },
         )
+        self._write_json(
+            self.data_health_path,
+            {"summary": {"status": "OK", "missing_price_count": 0, "invalid_price_count": 0}},
+        )
+        self._write_json(
+            self.plan_quality_path,
+            {"summary": {"status": "OK", "executed_count": 1, "missed_reachable_count": 0}},
+        )
         self._append_journal(
             {
                 "monthly_discipline_review": {
@@ -321,6 +392,8 @@ class SlackCommandServiceTests(unittest.TestCase):
         self.assertIn("计划: ACTION", result.message)
         self.assertIn("卫星雷达 Top: MU, NVDA", result.message)
         self.assertIn("策略验证: CAUTION", result.message)
+        self.assertIn("数据健康: OK", result.message)
+        self.assertIn("计划质量: OK", result.message)
         self.assertIn("月度纪律: ALIGNED", result.message)
 
     def test_buy_command_moves_watchlist_to_holdings_and_writes_audit_log(self):

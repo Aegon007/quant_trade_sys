@@ -4,6 +4,9 @@ __pycache__/
 .venv/
 catboost_info/
 trained_models/
+reports/
+frontend/node_modules/
+frontend/dist/
 storage/state/
 storage/state/price_cache.json
 storage/state/analyst_consensus_cache.json

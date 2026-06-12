@@ -8,6 +8,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 STORAGE_DIR = PROJECT_ROOT / "storage"
 STATE_DIR = STORAGE_DIR / "state"
 CONFIG_DIR = STORAGE_DIR / "config"
+JOURNALS_DIR = STORAGE_DIR / "journals"
 
 PORTFOLIO_DATA_FILE = str(STATE_DIR / "portfolio_data.json")
 PORTFOLIO_INPUT_FILE = str(STATE_DIR / "portfolio_input.json")
@@ -36,6 +37,11 @@ WEEKEND_RESEARCH_STATE_FILE = str(STATE_DIR / "weekend_research_state.json")
 STRATEGY_VALIDATION_SNAPSHOT_FILE = str(STATE_DIR / "strategy_validation_snapshot.json")
 STRATEGY_EXPERIMENT_JOURNAL_FILE = str(STATE_DIR / "strategy_experiment_journal.jsonl")
 NIGHTLY_DECISION_JOURNAL_FILE = str(STATE_DIR / "nightly_decision_journal.jsonl")
+DATA_HEALTH_SNAPSHOT_FILE = str(STATE_DIR / "data_health_snapshot.json")
+PLAN_QUALITY_SNAPSHOT_FILE = str(STATE_DIR / "plan_quality_snapshot.json")
+MARKET_MONITOR_SNAPSHOT_FILE = str(STATE_DIR / "market_monitor_snapshot.json")
+STRATEGY_REGISTRY_STATE_FILE = str(STATE_DIR / "strategy_registry_state.json")
+WEEKEND_RESEARCH_JOURNAL_FILE = str(JOURNALS_DIR / "weekend_research_journal.jsonl")
 
 MARKET_EVENTS_EXAMPLE_FILE = str(CONFIG_DIR / "market_events.example.json")
 NOTIFICATION_CONFIG_EXAMPLE_FILE = str(CONFIG_DIR / "notification_config.example.json")
@@ -44,6 +50,9 @@ CORE_ETF_UNIVERSE_FILE = str(CONFIG_DIR / "core_etf_universe.json")
 SATELLITE_UNIVERSE_FILE = str(CONFIG_DIR / "satellite_universe.json")
 ENGINE_POLICY_FILE = str(CONFIG_DIR / "engine_policy.json")
 INTRADAY_TACTICAL_CONFIG_FILE = str(CONFIG_DIR / "intraday_tactical_overlay.json")
+RUNTIME_SCHEDULE_CONFIG_FILE = str(CONFIG_DIR / "runtime_schedule.json")
+MODEL_REGISTRY_CONFIG_FILE = str(CONFIG_DIR / "model_registry.json")
+JOB_STATUS_FILE = str(STATE_DIR / "job_status.json")
 
 EVENT_SOURCES_CONFIG_FILE = str(PROJECT_ROOT / "config" / "event_sources.json")
 STRATEGY_CONFIG_FILE = str(PROJECT_ROOT / "config" / "strategies.json")
@@ -76,6 +85,7 @@ def _ensure_parent(path: str):
 def ensure_storage_layout():
     os.makedirs(str(STATE_DIR), exist_ok=True)
     os.makedirs(str(CONFIG_DIR), exist_ok=True)
+    os.makedirs(str(JOURNALS_DIR), exist_ok=True)
 
 
 def migrate_legacy_files(file_map: Iterable[Tuple[str, str]] = LEGACY_TO_NEW_FILE_MAP):

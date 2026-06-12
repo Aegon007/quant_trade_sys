@@ -8,8 +8,8 @@ from tests.support import clear_modules, install_fake_yfinance, reload_module
 class CreateTargetTests(unittest.TestCase):
     def setUp(self):
         install_fake_yfinance()
-        clear_modules("ml_strategy")
-        self.ml_strategy = reload_module("ml_strategy")
+        clear_modules("strategies.ml_utils")
+        self.ml_strategy = reload_module("strategies.ml_utils")
 
     def test_create_target_marks_tail_rows_as_unknown(self):
         dataframe = pd.DataFrame({"Close": [10, 11, 12, 13, 14]})
@@ -22,4 +22,3 @@ class CreateTargetTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

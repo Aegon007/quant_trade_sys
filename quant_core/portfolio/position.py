@@ -4,8 +4,8 @@ from typing import Iterable, Mapping, Optional
 
 import pandas as pd
 
-from share_utils import MIN_SHARE_QUANTITY, normalize_share_quantity
-from signal_approval import approve_signal, normalize_signal_direction
+from quant_core.common.share_utils import MIN_SHARE_QUANTITY, normalize_share_quantity
+from quant_core.common.signal_approval import approve_signal, normalize_signal_direction
 
 
 @dataclass(frozen=True)

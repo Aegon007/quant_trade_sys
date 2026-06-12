@@ -17,10 +17,12 @@ from quant_core.notifications import notification_config as ncfg
 from quant_core.portfolio import core_etf_engine as cee
 from quant_core.portfolio.control_loop import evaluate_allocation_regime
 from quant_core.research import strategy_validation as sval
+from quant_core.research import strategy_governance as sgov
+from quant_core.research import evidence_collector as evid
 from quant_core.research import weekend_research as wr
 from quant_core.snapshots import system_snapshot as ss
 from quant_core.ledger import transactions as tx
-from signal_scoreboard import build_signal_scoreboard
+from quant_core.analytics.signal_scoreboard import build_signal_scoreboard
 from strategies import ui as su
 from strategies.registry import create_strategy
 
@@ -169,6 +171,18 @@ def run_weekend_research(
     )
     sval.save_strategy_validation_snapshot(strategy_validation_snapshot)
     sval.append_strategy_experiment_journal(strategy_validation_snapshot)
+    strategy_governance_snapshot = sgov.build_strategy_governance_snapshot(
+        strategies=strategies,
+        validation_snapshot=strategy_validation_snapshot,
+        now=now,
+    )
+    sgov.save_strategy_registry_state(strategy_governance_snapshot)
+    evidence_layer = evid.build_evidence_layer(
+        core_snapshot=core_snapshot,
+        satellite_snapshot=satellite_snapshot,
+        strategy_validation_snapshot=strategy_validation_snapshot,
+        now=now,
+    )
 
     snapshot = wr.build_weekend_research_snapshot(
         now=now,
@@ -180,8 +194,11 @@ def run_weekend_research(
         satellite_snapshot=satellite_snapshot,
         strategy_research_rows=strategy_rows,
         strategy_validation_snapshot=strategy_validation_snapshot,
+        strategy_governance_snapshot=strategy_governance_snapshot,
+        evidence_layer=evidence_layer,
     )
     wr.save_weekend_research_snapshot(snapshot, path=snapshot_path)
+    evid.append_weekend_research_journal(snapshot)
     report_text = wr.build_weekend_research_report(snapshot)
     report_files = wr.save_weekend_research_report_files(snapshot, report_text=report_text, reports_dir=reports_dir)
     wr.mark_weekend_research_done(now=now, alert_settings=alert_settings, snapshot=snapshot, state_path=state_path)

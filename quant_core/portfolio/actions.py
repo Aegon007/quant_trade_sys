@@ -1,7 +1,7 @@
 from quant_core.data import storage as du
 from quant_core.ledger import transactions as tx
 from . import reconciliation as pr
-from share_utils import MIN_SHARE_QUANTITY, normalize_share_quantity, validate_share_quantity
+from quant_core.common.share_utils import MIN_SHARE_QUANTITY, normalize_share_quantity, validate_share_quantity
 
 
 def _normalize_symbol(symbol: str) -> str:

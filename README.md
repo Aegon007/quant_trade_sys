@@ -1,6 +1,6 @@
 # 量化持仓追踪与策略回测系统
 
-一个基于 Streamlit 的本地量化投资组合工具，用于管理持仓、维护观察列表、刷新行情、生成量化信号、执行策略回测，并在组合层面提示行业集中度和相关性风险。
+一个本地量化投资组合辅助决策系统，用于管理持仓、维护观察列表、刷新行情、生成量化信号、执行策略回测，并在组合层面提示行业集中度和相关性风险。V3 已切换为 `FastAPI + React` 前后端分离架构：后端按计划生成快照，前端快速读取结果，不再使用 Streamlit rerun 模式。
 
 > 说明：本项目用于研究、学习和辅助决策，不构成投资建议。真实交易前请结合账户风险、税务、流动性和券商规则独立判断。
 
@@ -32,6 +32,7 @@
 python -m venv ~/venv
 source ~/venv/bin/activate
 pip install -r requirements.txt
+cd frontend && npm install && cd ..
 ```
 
 ### 2. 启动应用
@@ -40,19 +41,15 @@ pip install -r requirements.txt
 ~/venv/bin/python -m jobs.run_all
 ```
 
-这个命令会尽量一次性启动：
+默认这个命令会尽量一次性启动：
 
-- Streamlit UI
+- FastAPI snapshot API: `http://127.0.0.1:8710`
+- React frontend: `http://127.0.0.1:5173`
 - Slack bot
 - nightly scheduler
+- market refresh worker
 
-如果你只想单独看页面，也可以继续直接运行：
-
-```bash
-streamlit run main.py
-```
-
-启动后在浏览器中打开 Streamlit 提供的本地地址。默认界面支持中文和英文切换。
+新架构下，前端只读取后端快照，不在页面切换时触发重型量化计算。需要立即补齐数据或重跑流程时，请在 React 前端的 `Operations` 页面触发 `Force Fresh Market Data`、`Run Full Nightly Pipeline` 或 `Run Weekend Research`。
 
 ### 3. 运行测试
 
@@ -66,7 +63,7 @@ PYTHONPYCACHEPREFIX=/tmp/pycache ~/venv/bin/python -m unittest discover -s tests
 
 当前版本更偏向“少而硬”的交易辅助，而不是堆很多花哨模型。默认工作流如下：
 
-1. 白天运行 Streamlit 页面时，系统会自动刷新过期价格，并使用已训练好的 TCN 模型做推理。
+1. 白天运行统一入口时，后台 worker 会自动刷新过期价格，并使用已训练好的 TCN 模型做推理。
 2. 当前默认历史窗口为 `2y`，默认策略为 `deep_tcn`。
 3. TCN 默认只在夜间窗口训练，当前代码按 `23:00` 到次日 `00:59` 的周期执行夜间重训；白天只推理不训练。
 4. 如果需要立即更新模型，可在侧边栏手动触发一次 TCN 重训。
@@ -460,10 +457,10 @@ export SLACK_APP_TOKEN="xapp-..."
 ~/venv/bin/python -m jobs.run_all
 ```
 
-如果你不想同时启动页面，可以加 `--no-ui`。如果只想单独起 bot，也可以继续运行：
+如果你不想同时启动页面，可以加 `--no-ui`。如果只想单独起 bot，也可以运行：
 
 ```bash
-~/venv/bin/python -m jobs.slack_bot
+~/venv/bin/python -m integrations.slack.bot
 ```
 
 最重要的一点是：**token 不要写进代码里**。请把它们放在运行 bot 的那台服务器环境变量里。
@@ -490,7 +487,7 @@ export SLACK_APP_TOKEN="xapp-..."
    - 如果你准备发到公开频道：订阅 `message.channels`
    - 如果你准备发到私有频道：订阅 `message.groups`
 6. 把 App 安装到你的 workspace，拿到 `Bot Token`，形如 `xoxb-...`。
-7. 在服务器上导出 `SLACK_BOT_TOKEN` 和 `SLACK_APP_TOKEN`，再启动 `python -m jobs.slack_bot`。
+7. 在服务器上导出 `SLACK_BOT_TOKEN` 和 `SLACK_APP_TOKEN`，再启动 `python -m integrations.slack.bot`，或直接用 `python -m jobs.run_all` 统一启动。
 
 这一模式下，配置位置分工如下：
 
@@ -579,13 +576,12 @@ export SLACK_APP_TOKEN="xapp-..."
 
 ```text
 .
-├── main.py                                # Streamlit 应用入口（编排）
-├── app/                                   # UI 渲染与运行编排
+├── frontend/                              # React/Vite 前端
 ├── quant_core/                            # 核心业务（数据/风控/组合/通知/快照）
-├── integrations/                          # 外部集成（Slack 命令与 Bot）
+├── integrations/                          # 外部集成（Slack Socket Mode bot / command service）
 ├── strategies/                            # 策略配置加载与策略类
 ├── engine/                                # Backtrader 回测适配器
-├── jobs/                                  # run_all / nightly_alerts / slack_bot
+├── jobs/                                  # api_server / run_all / nightly_alerts / weekend_research
 ├── config/strategies.json                 # 策略配置
 ├── storage/config/*.example.json          # 示例配置
 ├── storage/state/*.json                   # 本地运行态数据（不提交）

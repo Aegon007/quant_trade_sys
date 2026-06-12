@@ -1,6 +1,6 @@
 from engine.base import BaseStrategy
 import pandas as pd
-import ml_strategy as ml_utils
+from strategies import ml_utils
 
 class EnsembleVotingStrategy(BaseStrategy):
     """集成投票策略"""

@@ -269,6 +269,10 @@ def build_nightly_report(snapshot: Mapping) -> str:
     discipline_snapshot = dict(snapshot.get("discipline_snapshot", {}) or {})
     monthly_discipline_review = dict(snapshot.get("monthly_discipline_review", {}) or {})
     strategy_validation_snapshot = dict(snapshot.get("strategy_validation_snapshot", {}) or {})
+    data_health_snapshot = dict(snapshot.get("data_health_snapshot", {}) or {})
+    plan_quality_snapshot = dict(snapshot.get("plan_quality_snapshot", {}) or {})
+    market_monitor_snapshot = dict(snapshot.get("market_monitor_snapshot", {}) or {})
+    strategy_governance_snapshot = dict(snapshot.get("strategy_governance_snapshot", {}) or {})
     intraday_event_summary = dict(snapshot.get("intraday_event_summary", {}) or {})
     change_feed = dict(snapshot.get("change_feed", {}) or {})
     nightly_manifest = dict(snapshot.get("nightly_manifest", {}) or {})
@@ -322,6 +326,49 @@ def build_nightly_report(snapshot: Mapping) -> str:
         validation_message = str(validation_summary.get("message") or "").strip()
         if validation_message:
             lines.append(f"Strategy validation notes: {validation_message}")
+
+    if strategy_governance_snapshot:
+        governance_summary = dict(strategy_governance_snapshot.get("summary", {}) or {})
+        lines.append(
+            "Strategy governance: "
+            f"status={governance_summary.get('status') or '—'} "
+            f"default={governance_summary.get('default_strategy_id') or '—'} "
+            f"review={int(_float(governance_summary.get('review_count'), 0) or 0)} "
+            f"promotion_watch={int(_float(governance_summary.get('promotion_watch_count'), 0) or 0)}"
+        )
+
+    if data_health_snapshot:
+        data_health_summary = dict(data_health_snapshot.get("summary", {}) or {})
+        lines.append(
+            "Data health: "
+            f"status={data_health_summary.get('status') or data_health_snapshot.get('status') or '—'} "
+            f"tracked={int(_float(data_health_summary.get('tracked_symbol_count'), 0) or 0)} "
+            f"missing={int(_float(data_health_summary.get('missing_price_count'), 0) or 0)} "
+            f"invalid={int(_float(data_health_summary.get('invalid_price_count'), 0) or 0)} "
+            f"stale={int(_float(data_health_summary.get('stale_price_count'), 0) or 0)} "
+            f"fallback={int(_float(data_health_summary.get('fallback_symbol_count'), 0) or 0)}"
+        )
+
+    if plan_quality_snapshot:
+        plan_quality_summary = dict(plan_quality_snapshot.get("summary", {}) or {})
+        lines.append(
+            "Plan quality: "
+            f"status={plan_quality_summary.get('status') or plan_quality_snapshot.get('status') or '—'} "
+            f"reviews={int(_float(plan_quality_summary.get('review_count'), 0) or 0)} "
+            f"executed={int(_float(plan_quality_summary.get('executed_count'), 0) or 0)} "
+            f"missed_reachable={int(_float(plan_quality_summary.get('missed_reachable_count'), 0) or 0)} "
+            f"unplanned={int(_float(plan_quality_summary.get('unplanned_trade_count'), 0) or 0)}"
+        )
+
+    if market_monitor_snapshot:
+        monitor_summary = dict(market_monitor_snapshot.get("summary", {}) or {})
+        lines.append(
+            "Market monitor: "
+            f"status={market_monitor_snapshot.get('status') or '—'} "
+            f"state={monitor_summary.get('state') or '—'} "
+            f"action={monitor_summary.get('recommended_action') or '—'} "
+            f"symbol={monitor_summary.get('recommended_symbol') or '—'}"
+        )
 
     if quant_analysis_summary:
         lines.append(

@@ -3,6 +3,7 @@ from datetime import datetime
 
 from quant_core.data import storage as du
 from quant_core.data import market_data as md
+from quant_core.data import data_health as dhealth
 from quant_core.notifications import alert_engine as ae
 from quant_core.notifications import notification_channels as nch
 from quant_core.events import analyst_consensus as ac
@@ -19,15 +20,18 @@ from quant_core.analytics import portfolio_analysis as qpa
 from quant_core.analytics import core_etf_rotation as cer
 from quant_core.analytics import candidate_pool as cpool
 from quant_core.execution import nightly_planner as np
+from quant_core.execution import plan_quality as pqual
 from quant_core.execution import post_close_review as pcr
 from quant_core.execution import decision_journal as djour
 from quant_core.execution import nightly_manifest as nman
 from quant_core.monitoring import intraday_journal as ij
+from quant_core.monitoring import market_monitor as mmonitor
 from quant_core.analytics.strategy_compare import compare_strategies_for_symbol
 from quant_core.research import strategy_validation as sval
+from quant_core.research import strategy_governance as sgov
 from quant_core.snapshots import system_snapshot as ss
 from quant_core.ledger import transactions as tx
-from signal_scoreboard import build_signal_scoreboard
+from quant_core.analytics.signal_scoreboard import build_signal_scoreboard
 from quant_core.risk.risk_gate import build_market_risk_snapshot_from_histories, evaluate_market_risk_gate
 from strategies.registry import create_strategy
 from strategies import ui as su
@@ -557,6 +561,52 @@ def run_nightly_alerts(
         premarket_brief_text = premarket_brief_builder(trade_plan, execution_review=execution_review)
 
     strategy_validation_snapshot = sval.load_strategy_validation_snapshot()
+    try:
+        data_health_snapshot = dhealth.build_data_health_snapshot(
+            data,
+            data_sources=md.get_market_data_status_snapshot(),
+            now=now,
+        )
+        dhealth.save_data_health_snapshot(data_health_snapshot)
+    except Exception:
+        data_health_snapshot = {}
+    try:
+        prior_reviews = [
+            dict((row or {}).get("execution_review", {}) or {})
+            for row in list(prior_snapshot_journal or [])
+            if dict((row or {}).get("execution_review", {}) or {})
+        ]
+        core_symbols_for_quality = [
+            str((row or {}).get("symbol") or "").strip().upper()
+            for row in list((core_etf_snapshot or {}).get("symbols", []) or [])
+            if str((row or {}).get("symbol") or "").strip()
+        ]
+        plan_quality_snapshot = pqual.build_plan_quality_snapshot(
+            trade_plan=trade_plan,
+            latest_review=execution_review,
+            review_history=prior_reviews,
+            core_symbols=core_symbols_for_quality,
+            now=now,
+        )
+        pqual.save_plan_quality_snapshot(plan_quality_snapshot)
+    except Exception:
+        plan_quality_snapshot = {}
+    try:
+        strategy_governance_snapshot = sgov.build_strategy_governance_snapshot(
+            validation_snapshot=strategy_validation_snapshot,
+            now=now,
+        )
+        sgov.save_strategy_registry_state(strategy_governance_snapshot)
+    except Exception:
+        strategy_governance_snapshot = {}
+    try:
+        market_monitor_snapshot = mmonitor.build_market_monitor_snapshot(
+            data_health_snapshot=data_health_snapshot,
+            now=now,
+        )
+        mmonitor.save_market_monitor_snapshot(market_monitor_snapshot)
+    except Exception:
+        market_monitor_snapshot = {}
 
     snapshot = ss.build_system_snapshot(
         data=data,
@@ -583,6 +633,10 @@ def run_nightly_alerts(
         satellite_candidate_snapshot=satellite_candidate_snapshot,
         discipline_snapshot=discipline_snapshot,
         strategy_validation_snapshot=strategy_validation_snapshot,
+        data_health_snapshot=data_health_snapshot,
+        plan_quality_snapshot=plan_quality_snapshot,
+        market_monitor_snapshot=market_monitor_snapshot,
+        strategy_governance_snapshot=strategy_governance_snapshot,
         intraday_event_summary=intraday_event_summary,
         generated_at=now,
     )
@@ -626,6 +680,9 @@ def run_nightly_alerts(
             "discipline_snapshot": previous_discipline_snapshot,
             "trade_plan": previous_trade_plan,
             "monthly_discipline_review": dict((prior_snapshot_journal[-1] if prior_snapshot_journal else {}).get("monthly_discipline_review", {}) or {}),
+            "data_health_snapshot": dict((prior_snapshot_journal[-1] if prior_snapshot_journal else {}).get("data_health_snapshot", {}) or {}),
+            "plan_quality_snapshot": dict((prior_snapshot_journal[-1] if prior_snapshot_journal else {}).get("plan_quality_snapshot", {}) or {}),
+            "strategy_governance_snapshot": dict((prior_snapshot_journal[-1] if prior_snapshot_journal else {}).get("strategy_governance_snapshot", {}) or {}),
         },
         current_state={
             "core_etf_snapshot": core_etf_snapshot,
@@ -633,6 +690,9 @@ def run_nightly_alerts(
             "discipline_snapshot": discipline_snapshot,
             "trade_plan": trade_plan,
             "monthly_discipline_review": monthly_discipline_review,
+            "data_health_snapshot": data_health_snapshot,
+            "plan_quality_snapshot": plan_quality_snapshot,
+            "strategy_governance_snapshot": strategy_governance_snapshot,
         },
         now=now,
     )

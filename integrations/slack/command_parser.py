@@ -45,6 +45,10 @@ def parse_slack_command(text) -> ParsedSlackCommand:
         return _command("SHOW_PLAN", raw_text, normalized)
     if lowered in {"风险状态", "纪律状态", "risk"}:
         return _command("SHOW_RISK", raw_text, normalized)
+    if lowered in {"数据状态", "数据健康", "data", "data health"}:
+        return _command("SHOW_DATA_HEALTH", raw_text, normalized)
+    if lowered in {"计划质量", "plan quality"}:
+        return _command("SHOW_PLAN_QUALITY", raw_text, normalized)
     if lowered in {"策略验证", "策略状态", "validation"}:
         return _command("SHOW_VALIDATION", raw_text, normalized)
     if lowered in {"核心etf", "核心 etf", "core"}:

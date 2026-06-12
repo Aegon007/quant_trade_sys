@@ -25,6 +25,20 @@ class SlackCommandParserTests(unittest.TestCase):
 
         self.assertEqual(command.name, "SHOW_RISK")
 
+    def test_parse_data_health_command(self):
+        from integrations.slack.command_parser import parse_slack_command
+
+        command = parse_slack_command("数据状态")
+
+        self.assertEqual(command.name, "SHOW_DATA_HEALTH")
+
+    def test_parse_plan_quality_command(self):
+        from integrations.slack.command_parser import parse_slack_command
+
+        command = parse_slack_command("计划质量")
+
+        self.assertEqual(command.name, "SHOW_PLAN_QUALITY")
+
     def test_parse_validation_command(self):
         from integrations.slack.command_parser import parse_slack_command
 

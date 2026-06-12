@@ -1,6 +1,6 @@
 from typing import Callable, Iterable, List, Mapping, Optional
 
-from signal_scoreboard import build_signal_scoreboard
+from quant_core.analytics.signal_scoreboard import build_signal_scoreboard
 
 
 def _float(value, default=0.0) -> float:
@@ -86,4 +86,3 @@ def compare_strategies_for_symbol(
 
     rows.sort(key=lambda item: _float(item.get("composite_score"), float("-inf")), reverse=True)
     return rows
-

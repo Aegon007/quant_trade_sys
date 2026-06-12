@@ -1,9 +1,10 @@
-"""Unified supervisor that starts the UI, Slack bot, and nightly scheduler."""
+"""Unified supervisor that starts the API/frontend, Slack bot, and schedulers."""
 
 from __future__ import annotations
 
 import argparse
 import copy
+import importlib.util
 import json
 import logging
 import os
@@ -19,7 +20,9 @@ from typing import Callable, List, Optional
 
 from quant_core.analytics import quant_analysis as qa
 from quant_core.analytics import portfolio_analysis as qpa
+from quant_core.api import snapshot_loader as api_snapshots
 from quant_core.data import market_data as md
+from quant_core.data import data_health as dhealth
 from quant_core.data import storage as data_storage
 from quant_core.events.analyst_consensus import should_run_nightly_consensus_update
 from quant_core.events import event_news as en
@@ -28,6 +31,7 @@ from quant_core.ledger import transactions as tx
 from quant_core.monitoring import intraday_journal as ij
 from quant_core.monitoring import intraday_monitor as im
 from quant_core.monitoring import intraday_tactical as itac
+from quant_core.monitoring import market_monitor as mmonitor
 from quant_core.notifications import change_feed as cfeed
 from quant_core.notifications import notification_channels as nch
 from quant_core.notifications import notification_config as ncfg
@@ -35,9 +39,10 @@ from quant_core.notifications import delivery_router as dr
 from quant_core.notifications import reporting as nr
 from quant_core.portfolio import discipline as qdisc
 from quant_core.portfolio.control_loop import evaluate_allocation_regime
+from quant_core.jobs import job_registry
 from quant_core.snapshots import system_snapshot as ss
 from jobs.nightly_alerts import evaluate_current_market_risk, run_nightly_alerts
-from signal_scoreboard import build_signal_scoreboard
+from quant_core.analytics.signal_scoreboard import build_signal_scoreboard
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -48,6 +53,10 @@ DEFAULT_MARKET_REFRESH_INTERVAL_SECONDS = 3600
 DEFAULT_AUTO_QUANT_ANALYSIS_MIN_INTERVAL_SECONDS = ncfg.DEFAULT_AUTO_QUANT_ANALYSIS_MIN_INTERVAL_SECONDS
 DEFAULT_AUTO_QUANT_ANALYSIS_PRICE_JUMP_PCT = ncfg.DEFAULT_AUTO_QUANT_ANALYSIS_PRICE_JUMP_PCT
 DEFAULT_TRADE_PLAN_FILE = np.DEFAULT_TRADE_PLAN_FILE
+DEFAULT_API_HOST = "127.0.0.1"
+DEFAULT_API_PORT = 8710
+DEFAULT_FRONTEND_HOST = "127.0.0.1"
+DEFAULT_FRONTEND_PORT = 5173
 
 
 @dataclass(frozen=True)
@@ -84,28 +93,48 @@ def build_service_specs(
     *,
     with_ui: bool = True,
     with_slack: bool = True,
-    verbose_ui_startup: bool = False,
     python_executable: Optional[str] = None,
     project_root: Optional[Path] = None,
+    api_host: str = DEFAULT_API_HOST,
+    api_port: int = DEFAULT_API_PORT,
+    frontend_host: str = DEFAULT_FRONTEND_HOST,
+    frontend_port: int = DEFAULT_FRONTEND_PORT,
 ) -> List[ServiceSpec]:
     project_root = Path(project_root or PROJECT_ROOT)
     python_executable = python_executable or sys.executable
     specs: List[ServiceSpec] = []
 
     if with_ui:
-        ui_env = {
-            "QUANT_UI_SKIP_STARTUP_REFRESH": "1",
-            "QUANT_UI_DEFER_INITIAL_EVENT_FETCH": "1",
-            "QUANT_RUN_ALL_MODE": "1",
-        }
-        if verbose_ui_startup:
-            ui_env["QUANT_VERBOSE_UI_STARTUP"] = "1"
         specs.append(
             ServiceSpec(
-                name="streamlit-ui",
-                command=[python_executable, "-m", "streamlit", "run", str(project_root / "main.py")],
+                name="api-server",
+                command=[
+                    python_executable,
+                    "-m",
+                    "jobs.api_server",
+                    "--host",
+                    str(api_host),
+                    "--port",
+                    str(int(api_port)),
+                ],
                 cwd=str(project_root),
-                env=ui_env,
+            )
+        )
+        specs.append(
+            ServiceSpec(
+                name="react-frontend",
+                command=[
+                    "npm",
+                    "run",
+                    "dev",
+                    "--",
+                    "--host",
+                    str(frontend_host),
+                    "--port",
+                    str(int(frontend_port)),
+                ],
+                cwd=str(project_root / "frontend"),
+                env={"VITE_API_BASE_URL": f"http://{api_host}:{int(api_port)}"},
             )
         )
 
@@ -113,7 +142,7 @@ def build_service_specs(
         specs.append(
             ServiceSpec(
                 name="slack-bot",
-                command=[python_executable, "-m", "jobs.slack_bot"],
+                command=[python_executable, "-m", "integrations.slack.bot"],
                 cwd=str(project_root),
             )
         )
@@ -127,6 +156,24 @@ def start_service_process(spec: ServiceSpec, *, popen=subprocess.Popen):
         env = os.environ.copy()
         env.update({str(key): str(value) for key, value in spec.env.items()})
     return popen(spec.command, cwd=spec.cwd, env=env)
+
+
+def _service_skip_reason(spec: ServiceSpec) -> str:
+    if spec.name == "api-server":
+        missing = [
+            module_name
+            for module_name in ("fastapi", "uvicorn")
+            if importlib.util.find_spec(module_name) is None
+        ]
+        if missing:
+            return f"Missing Python package(s): {', '.join(missing)}. Run ~/venv/bin/pip install -r requirements.txt."
+    if spec.name == "react-frontend":
+        frontend_dir = Path(spec.cwd)
+        if not (frontend_dir / "package.json").exists():
+            return f"Missing frontend/package.json at {frontend_dir}."
+        if not (frontend_dir / "node_modules" / ".bin" / "vite").exists():
+            return "Frontend dependencies are not installed. Run npm install in ./frontend."
+    return ""
 
 
 def emit_startup_summary(statuses, *, printer=print):
@@ -401,6 +448,15 @@ def maybe_run_market_refresh(
     if not refreshed:
         return False
     saver(refreshed_data)
+    try:
+        data_health_snapshot = dhealth.build_data_health_snapshot(
+            refreshed_data,
+            data_sources=md.get_market_data_status_snapshot(),
+            now=now,
+        )
+        dhealth.save_data_health_snapshot(data_health_snapshot)
+    except Exception:
+        logger.exception("Data health snapshot update failed.")
     config = _load_notification_config(config_loader, environ=environ)
     alert_settings = config.get("alert_settings", {}) if isinstance(config, dict) else {}
     slack_config = config.get("slack", {}) if isinstance(config, dict) else {}
@@ -790,6 +846,17 @@ def _build_intraday_tactical_runtime(*, data, now, price_cache_ttl_seconds: int 
         history_loader=qa.get_historical_data,
     )
     itac.save_intraday_tactical_snapshot(snapshot)
+    try:
+        data_health_snapshot = dhealth.load_data_health_snapshot()
+        mmonitor.save_market_monitor_snapshot(
+            mmonitor.build_market_monitor_snapshot(
+                tactical_snapshot=snapshot,
+                data_health_snapshot=data_health_snapshot,
+                now=now,
+            )
+        )
+    except Exception:
+        logging.getLogger(__name__).exception("Market monitor snapshot update failed.")
     return snapshot, itac.build_intraday_tactical_events(snapshot)
 
 
@@ -949,7 +1016,6 @@ def run_supervisor(
     with_slack: bool = True,
     with_nightly: bool = True,
     with_market_refresh: bool = True,
-    verbose_ui_startup: bool = False,
     monitor_seconds: int = DEFAULT_MONITOR_SECONDS,
     nightly_poll_seconds: int = DEFAULT_NIGHTLY_POLL_SECONDS,
     market_refresh_poll_seconds: int = DEFAULT_MARKET_REFRESH_POLL_SECONDS,
@@ -957,6 +1023,11 @@ def run_supervisor(
     auto_quant_analysis_min_interval_seconds: Optional[int] = None,
     auto_quant_analysis_price_jump_pct: Optional[float] = None,
     enable_auto_quant_analysis: Optional[bool] = None,
+    api_host: str = DEFAULT_API_HOST,
+    api_port: int = DEFAULT_API_PORT,
+    frontend_host: str = DEFAULT_FRONTEND_HOST,
+    frontend_port: int = DEFAULT_FRONTEND_PORT,
+    job_status_path: str = job_registry.DEFAULT_JOB_STATUS_FILE,
     python_executable: Optional[str] = None,
     project_root: Optional[Path] = None,
     popen=subprocess.Popen,
@@ -1000,12 +1071,16 @@ def run_supervisor(
         service_specs = build_service_specs(
             with_ui=with_ui,
             with_slack=effective_with_slack,
-            verbose_ui_startup=verbose_ui_startup,
             python_executable=python_executable,
             project_root=project_root,
+            api_host=api_host,
+            api_port=api_port,
+            frontend_host=frontend_host,
+            frontend_port=frontend_port,
         )
         if not with_nightly and not with_market_refresh and not service_specs:
             logger.warning("No services were requested; nothing to start.")
+            job_registry.record_startup_statuses(startup_statuses, path=job_status_path, now=now_func())
             emit_startup_summary(startup_statuses, printer=status_printer)
             return {
                 "services": [],
@@ -1014,6 +1089,17 @@ def run_supervisor(
             }
 
         for spec in service_specs:
+            skip_reason = _service_skip_reason(spec)
+            if skip_reason:
+                logger.warning("%s skipped: %s", spec.name, skip_reason)
+                startup_statuses.append(
+                    ServiceStartupStatus(
+                        name=spec.name,
+                        state="skipped",
+                        detail=skip_reason,
+                    )
+                )
+                continue
             try:
                 process = start_service_process(spec, popen=popen)
             except Exception as exc:
@@ -1091,6 +1177,7 @@ def run_supervisor(
                 )
             )
 
+        job_registry.record_startup_statuses(startup_statuses, path=job_status_path, now=now_func())
         emit_startup_summary(startup_statuses, printer=status_printer)
         if not launched_processes and scheduler_thread is None and market_refresh_thread is None:
             return {
@@ -1105,16 +1192,49 @@ def run_supervisor(
                 if code is not None and spec.name not in reported_exits:
                     reported_exits.add(spec.name)
                     logger.warning("%s exited with code %s", spec.name, code)
+                    job_registry.update_job_status(
+                        spec.name,
+                        state="stopped" if code == 0 else "failed",
+                        detail=f"exited with code {code}",
+                        pid=getattr(process, "pid", None),
+                        path=job_status_path,
+                        now=now_func(),
+                    )
             if stop_event.wait(monitor_seconds):
                 break
     finally:
         stop_event.set()
         for spec, process in launched_processes:
             _terminate_process(process)
+            if spec.name not in reported_exits:
+                job_registry.update_job_status(
+                    spec.name,
+                    state="stopped",
+                    detail="stopped by supervisor shutdown",
+                    pid=getattr(process, "pid", None),
+                    path=job_status_path,
+                    now=now_func(),
+                )
         if scheduler_thread is not None and scheduler_thread.is_alive():
             scheduler_thread.join(timeout=2.0)
+        if scheduler_thread is not None:
+            job_registry.update_job_status(
+                "nightly-scheduler",
+                state="stopped",
+                detail="stopped by supervisor shutdown",
+                path=job_status_path,
+                now=now_func(),
+            )
         if market_refresh_thread is not None and market_refresh_thread.is_alive():
             market_refresh_thread.join(timeout=2.0)
+        if market_refresh_thread is not None:
+            job_registry.update_job_status(
+                "market-refresh",
+                state="stopped",
+                detail="stopped by supervisor shutdown",
+                path=job_status_path,
+                now=now_func(),
+            )
         if install_signal_handlers:
             signal.signal(signal.SIGTERM, previous_sigterm)
             signal.signal(signal.SIGINT, previous_sigint)
@@ -1127,20 +1247,41 @@ def run_supervisor(
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description="Start the Streamlit UI, Slack bot, and nightly scheduler together.")
-    parser.add_argument("--no-ui", action="store_true", help="Do not start Streamlit UI.")
+    parser = argparse.ArgumentParser(description="Start the Quant Trade UI/API, Slack bot, and schedulers together.")
+    parser.add_argument("--no-ui", action="store_true", help="Do not start the UI/API frontend stack.")
+    parser.add_argument("--api-host", default=DEFAULT_API_HOST, help="FastAPI bind host.")
+    parser.add_argument("--api-port", type=int, default=DEFAULT_API_PORT, help="FastAPI bind port.")
+    parser.add_argument("--frontend-host", default=DEFAULT_FRONTEND_HOST, help="React/Vite bind host.")
+    parser.add_argument("--frontend-port", type=int, default=DEFAULT_FRONTEND_PORT, help="React/Vite bind port.")
     parser.add_argument("--no-slack", action="store_true", help="Do not start the Slack bot.")
     parser.add_argument("--no-nightly", action="store_true", help="Do not start the nightly scheduler.")
     parser.add_argument("--no-market-refresh", action="store_true", help="Do not start the hourly market cache refresher.")
-    parser.add_argument("--verbose-ui-startup", action="store_true", help="Print detailed UI startup stages from the Streamlit process.")
     parser.add_argument("--monitor-seconds", type=int, default=DEFAULT_MONITOR_SECONDS, help="How often to check child processes.")
-    parser.add_argument("--nightly-poll-seconds", type=int, default=DEFAULT_NIGHTLY_POLL_SECONDS, help="How often to check whether nightly alerts are due.")
-    parser.add_argument("--market-refresh-poll-seconds", type=int, default=DEFAULT_MARKET_REFRESH_POLL_SECONDS, help="How often to check whether market cache refresh is due.")
-    parser.add_argument("--market-refresh-interval-seconds", type=int, default=DEFAULT_MARKET_REFRESH_INTERVAL_SECONDS, help="Minimum interval between market cache refreshes.")
+    parser.add_argument("--nightly-poll-seconds", type=int, default=None, help="How often to check whether nightly alerts are due. Defaults to Settings runtime schedule.")
+    parser.add_argument("--market-refresh-poll-seconds", type=int, default=None, help="How often to check whether market cache refresh is due. Defaults to Settings runtime schedule.")
+    parser.add_argument("--market-refresh-interval-seconds", type=int, default=None, help="Minimum interval between market cache refreshes. Defaults to Settings runtime schedule.")
     parser.add_argument("--auto-quant-analysis-min-interval-seconds", type=int, default=None, help="Override config-page minimum interval between auto-triggered full quant analysis runs.")
     parser.add_argument("--auto-quant-analysis-price-jump-pct", type=float, default=None, help="Override config-page absolute price change threshold that triggers auto full quant analysis.")
     parser.add_argument("--disable-auto-quant-analysis", action="store_true", help="Do not auto-run full quant analysis during market refresh.")
     args = parser.parse_args(argv)
+    runtime_schedule = api_snapshots.load_runtime_schedule()
+    trading_schedule = dict(runtime_schedule.get("trading_hours", {}) or {})
+    nightly_schedule = dict(runtime_schedule.get("nightly", {}) or {})
+    nightly_poll_seconds = (
+        args.nightly_poll_seconds
+        if args.nightly_poll_seconds is not None
+        else int(nightly_schedule.get("poll_seconds") or DEFAULT_NIGHTLY_POLL_SECONDS)
+    )
+    market_refresh_poll_seconds = (
+        args.market_refresh_poll_seconds
+        if args.market_refresh_poll_seconds is not None
+        else int(trading_schedule.get("market_monitor_interval_seconds") or DEFAULT_MARKET_REFRESH_POLL_SECONDS)
+    )
+    market_refresh_interval_seconds = (
+        args.market_refresh_interval_seconds
+        if args.market_refresh_interval_seconds is not None
+        else int(trading_schedule.get("data_health_interval_seconds") or DEFAULT_MARKET_REFRESH_INTERVAL_SECONDS)
+    )
 
     logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"), format="%(asctime)s %(levelname)s %(message)s")
     result = run_supervisor(
@@ -1148,14 +1289,17 @@ def main(argv=None):
         with_slack=not args.no_slack,
         with_nightly=not args.no_nightly,
         with_market_refresh=not args.no_market_refresh,
-        verbose_ui_startup=args.verbose_ui_startup,
         monitor_seconds=args.monitor_seconds,
-        nightly_poll_seconds=args.nightly_poll_seconds,
-        market_refresh_poll_seconds=args.market_refresh_poll_seconds,
-        market_refresh_interval_seconds=args.market_refresh_interval_seconds,
+        nightly_poll_seconds=nightly_poll_seconds,
+        market_refresh_poll_seconds=market_refresh_poll_seconds,
+        market_refresh_interval_seconds=market_refresh_interval_seconds,
         auto_quant_analysis_min_interval_seconds=args.auto_quant_analysis_min_interval_seconds,
         auto_quant_analysis_price_jump_pct=args.auto_quant_analysis_price_jump_pct,
         enable_auto_quant_analysis=False if args.disable_auto_quant_analysis else None,
+        api_host=args.api_host,
+        api_port=args.api_port,
+        frontend_host=args.frontend_host,
+        frontend_port=args.frontend_port,
     )
     print(f"Supervisor exited. services={result['services']} launch_count={result['launch_count']}")
     return 0

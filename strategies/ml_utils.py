@@ -1,6 +1,4 @@
-"""
-ML 策略核心模块：基于 LightGBM + Walk-Forward 的机器学习策略
-"""
+"""LightGBM / ensemble strategy utilities used by strategy adapters."""
 
 import numpy as np
 import pandas as pd

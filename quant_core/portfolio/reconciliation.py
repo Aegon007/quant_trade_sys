@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from share_utils import MIN_SHARE_QUANTITY, normalize_share_quantity
+from quant_core.common.share_utils import MIN_SHARE_QUANTITY, normalize_share_quantity
 
 
 def _parse_dt(value):

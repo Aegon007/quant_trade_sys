@@ -11,9 +11,9 @@ from quant_core import paths as qpaths
 from quant_core.analytics.monte_carlo import simulate_return_distribution
 from quant_core.portfolio.metrics import summarize_holdings
 from quant_core.portfolio.position import recommend_position_action, summarize_backtest_guidance
-from share_utils import format_share_quantity
-from signal_approval import approve_signal
-from signal_scoreboard import build_signal_scoreboard
+from quant_core.common.share_utils import format_share_quantity
+from quant_core.common.signal_approval import approve_signal
+from quant_core.analytics.signal_scoreboard import build_signal_scoreboard
 
 
 DEFAULT_QUANT_ANALYSIS_SNAPSHOT_FILE = qpaths.QUANT_ANALYSIS_SNAPSHOT_FILE
@@ -451,7 +451,7 @@ def build_portfolio_quant_analysis_snapshot(
 
         create_strategy_fn = create_strategy
     if tcn_profile_fn is None:
-        import deep_learning_strategy as dl_utils
+        from strategies import deep_learning_utils as dl_utils
 
         tcn_profile_fn = dl_utils.get_deep_tcn_signal_profile
     if engine_factory_fn is None:

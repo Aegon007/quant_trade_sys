@@ -14,7 +14,7 @@ class RunAllTests(unittest.TestCase):
         clear_modules("jobs.run_all")
         self.module = reload_module("jobs.run_all")
 
-    def test_build_service_specs_includes_slack_and_streamlit(self):
+    def test_build_service_specs_defaults_to_api_react_and_slack(self):
         specs = self.module.build_service_specs(
             with_ui=True,
             with_slack=True,
@@ -22,40 +22,30 @@ class RunAllTests(unittest.TestCase):
             project_root=Path("/repo"),
         )
 
-        self.assertEqual([spec.name for spec in specs], ["streamlit-ui", "slack-bot"])
-        self.assertEqual(specs[0].command, ["/opt/python", "-m", "streamlit", "run", "/repo/main.py"])
+        self.assertEqual([spec.name for spec in specs], ["api-server", "react-frontend", "slack-bot"])
         self.assertEqual(
-            specs[0].env,
-            {
-                "QUANT_UI_SKIP_STARTUP_REFRESH": "1",
-                "QUANT_UI_DEFER_INITIAL_EVENT_FETCH": "1",
-                "QUANT_RUN_ALL_MODE": "1",
-            },
+            specs[0].command,
+            ["/opt/python", "-m", "jobs.api_server", "--host", "127.0.0.1", "--port", "8710"],
         )
-        self.assertEqual(specs[1].command, ["/opt/python", "-m", "jobs.slack_bot"])
+        self.assertEqual(
+            specs[1].command,
+            ["npm", "run", "dev", "--", "--host", "127.0.0.1", "--port", "5173"],
+        )
+        self.assertEqual(specs[1].cwd, "/repo/frontend")
+        self.assertEqual(specs[1].env, {"VITE_API_BASE_URL": "http://127.0.0.1:8710"})
+        self.assertEqual(specs[2].command, ["/opt/python", "-m", "integrations.slack.bot"])
 
     def test_build_service_specs_can_disable_everything(self):
         specs = self.module.build_service_specs(with_ui=False, with_slack=False)
 
         self.assertEqual(specs, [])
 
-    def test_build_service_specs_can_enable_verbose_ui_startup(self):
-        specs = self.module.build_service_specs(
-            with_ui=True,
-            with_slack=False,
-            verbose_ui_startup=True,
-            python_executable="/opt/python",
-            project_root=Path("/repo"),
-        )
-
-        self.assertEqual(specs[0].env["QUANT_VERBOSE_UI_STARTUP"], "1")
-
     def test_emit_startup_summary_formats_each_service(self):
         statuses = [
             self.module.ServiceStartupStatus(
                 name="slack-bot",
                 state="started",
-                detail="python -m jobs.slack_bot",
+                detail="python -m integrations.slack.bot",
                 pid=4321,
             ),
             self.module.ServiceStartupStatus(
@@ -64,7 +54,7 @@ class RunAllTests(unittest.TestCase):
                 detail="running in-process; poll=300s.",
             ),
             self.module.ServiceStartupStatus(
-                name="streamlit-ui",
+                name="react-frontend",
                 state="skipped",
                 detail="disabled by flag.",
             ),
@@ -77,9 +67,9 @@ class RunAllTests(unittest.TestCase):
             lines,
             [
                 "Startup status:",
-                "[OK] slack-bot pid=4321 - python -m jobs.slack_bot",
+                "[OK] slack-bot pid=4321 - python -m integrations.slack.bot",
                 "[OK] nightly-scheduler - running in-process; poll=300s.",
-                "[SKIP] streamlit-ui - disabled by flag.",
+                "[SKIP] react-frontend - disabled by flag.",
             ],
         )
 

@@ -9,7 +9,7 @@ class PortfolioActionsTests(unittest.TestCase):
     def setUp(self):
         install_fake_yfinance()
         clear_modules(
-            "share_utils",
+            "quant_core.common.share_utils",
             "quant_core.data.storage",
             "quant_core.ledger.transactions",
             "quant_core.portfolio.actions",

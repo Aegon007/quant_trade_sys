@@ -63,11 +63,11 @@ def install_fake_slack_bolt():
 class SlackBotTests(unittest.TestCase):
     def setUp(self):
         FakeSocketModeHandler.instances.clear()
-        clear_modules("jobs.slack_bot", "slack_bolt", "slack_bolt.adapter", "slack_bolt.adapter.socket_mode")
+        clear_modules("integrations.slack.bot", "slack_bolt", "slack_bolt.adapter", "slack_bolt.adapter.socket_mode")
         install_fake_slack_bolt()
 
     def test_build_slack_app_registers_quant_command(self):
-        bot = reload_module("jobs.slack_bot")
+        bot = reload_module("integrations.slack.bot")
 
         def execute_command(text):
             return SimpleNamespace(message=f"handled:{text}")
@@ -91,7 +91,7 @@ class SlackBotTests(unittest.TestCase):
         self.assertEqual(result.message, "handled:当前持仓")
 
     def test_build_slack_app_registers_csv_upload_handler(self):
-        bot = reload_module("jobs.slack_bot")
+        bot = reload_module("integrations.slack.bot")
         said = []
 
         app = bot.build_slack_app(
@@ -122,7 +122,7 @@ class SlackBotTests(unittest.TestCase):
         self.assertIn("synced:activity.csv:csv-body", said[0]["text"])
 
     def test_file_upload_handler_ignores_non_csv_files(self):
-        bot = reload_module("jobs.slack_bot")
+        bot = reload_module("integrations.slack.bot")
         said = []
 
         app = bot.build_slack_app(
@@ -151,7 +151,7 @@ class SlackBotTests(unittest.TestCase):
         self.assertEqual(said, [])
 
     def test_run_slack_bot_uses_env_tokens_and_starts_handler(self):
-        bot = reload_module("jobs.slack_bot")
+        bot = reload_module("integrations.slack.bot")
 
         with patch.dict(
             "os.environ",
@@ -173,10 +173,10 @@ if __name__ == "__main__":
 
 
 class SlackBotEntryPointTests(unittest.TestCase):
-    def test_jobs_slack_bot_help_routes_to_real_entrypoint(self):
+    def test_slack_bot_help_entrypoint(self):
         project_root = Path(__file__).resolve().parents[1]
         proc = subprocess.run(
-            [sys.executable, "-m", "jobs.slack_bot", "--help"],
+            [sys.executable, "-m", "integrations.slack.bot", "--help"],
             cwd=str(project_root),
             capture_output=True,
             text=True,

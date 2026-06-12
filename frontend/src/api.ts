@@ -1,0 +1,38 @@
+export type ApiEnvelope<TPayload = unknown> = {
+  schema_version: number;
+  name: string;
+  generated_at: string;
+  source: string;
+  freshness_status: string;
+  is_stale: boolean;
+  summary: Record<string, unknown>;
+  items: unknown[];
+  errors: string[];
+  warnings: string[];
+  data_quality: Record<string, unknown>;
+  next_update_hint: string | null;
+  payload: TPayload;
+};
+
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://127.0.0.1:8710";
+
+export async function fetchApi<TPayload>(path: string): Promise<ApiEnvelope<TPayload>> {
+  const response = await fetch(`${API_BASE_URL}${path}`);
+  if (!response.ok) {
+    throw new Error(`API ${path} failed with ${response.status}`);
+  }
+  return response.json() as Promise<ApiEnvelope<TPayload>>;
+}
+
+export async function postApi<TPayload = unknown>(path: string, payload?: unknown): Promise<TPayload> {
+  const response = await fetch(`${API_BASE_URL}${path}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload ?? {}),
+  });
+  if (!response.ok) {
+    const text = await response.text().catch(() => "");
+    throw new Error(`API ${path} failed with ${response.status}${text ? `: ${text}` : ""}`);
+  }
+  return response.json() as Promise<TPayload>;
+}

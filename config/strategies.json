@@ -62,7 +62,7 @@
       "description": "**🧠 Temporal CNN 深度学习策略 (仅做多)**\n- **逻辑**：把最近一段 OHLCV 技术特征序列输入一维时序卷积网络，预测未来多个交易日的上涨概率和条件预期收益。\n- **平台适配**：设备参数默认为 `auto`，会自动选择 CUDA、Apple Silicon MPS 或 CPU，无需为不同部署平台改代码。\n- **交易规则**：\n    - **买入信号**：上涨概率高于阈值，且预期收益超过最低收益要求。\n    - **卖出信号**：上涨概率低于阈值、预期收益转负，或持仓超过最大持有天数。",
       "function": "backtest_deep_tcn",
       "strategy_class": "strategies.deep_learning_strategy.DeepTCNStrategy",
-      "signal_function": "deep_learning_strategy.get_deep_tcn_signal",
+      "signal_function": "strategies.deep_learning_utils.get_deep_tcn_signal",
       "params_mode": "dict",
       "params": {
         "sequence_length": 60,

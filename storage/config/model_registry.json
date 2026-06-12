@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "models": [
+    {
+      "model_id": "deep_tcn",
+      "display_name": "Deep TCN",
+      "role": "default_quant_signal",
+      "adapter_path": "strategies.deep_learning_strategy.DeepTCNStrategy",
+      "enabled": true,
+      "is_default": true,
+      "params": {
+        "device": "auto",
+        "period": "2y",
+        "epochs": 50
+      }
+    }
+  ]
+}

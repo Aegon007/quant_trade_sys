@@ -11,7 +11,7 @@ DEFAULT_SIGNAL_FUNCTIONS = {
     "bollinger": "quant_core.analytics.quant_analysis.get_signal_bollinger",
     "macd": "quant_core.analytics.quant_analysis.get_signal_macd",
     "rsi": "quant_core.analytics.quant_analysis.get_signal_rsi",
-    "deep_tcn": "deep_learning_strategy.get_deep_tcn_signal",
+    "deep_tcn": "strategies.deep_learning_utils.get_deep_tcn_signal",
 }
 
 
@@ -39,27 +39,6 @@ def get_default_strategy_id(strategies):
     if not strategies:
         return None
     return strategies[0]["id"]
-
-def render_strategy_selector(strategies, default_strategy_id=None):
-    import streamlit as st
-
-    if not strategies:
-        return None
-    strategy_names = [s["name"] for s in strategies]
-    strategy_ids = [s["id"] for s in strategies]
-    if default_strategy_id in strategy_ids:
-        default_index = strategy_ids.index(default_strategy_id)
-    else:
-        default_index = 0
-    selected_name = st.selectbox("选择策略", strategy_names, index=default_index)
-    selected_strategy = next((s for s in strategies if s["name"] == selected_name), None)
-    return selected_strategy
-
-def display_strategy_description(strategy):
-    import streamlit as st
-
-    if strategy and "description" in strategy:
-        st.info(strategy["description"])
 
 def get_signal(strategy, symbol):
     """统一的信号获取接口"""

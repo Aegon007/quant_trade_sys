@@ -6,7 +6,7 @@ from datetime import datetime
 
 import pandas as pd
 import yfinance as yf
-from share_utils import MIN_SHARE_QUANTITY, normalize_share_quantity, validate_share_quantity
+from quant_core.common.share_utils import MIN_SHARE_QUANTITY, normalize_share_quantity, validate_share_quantity
 from quant_core import paths as qpaths
 from quant_core.data import market_data as md
 
