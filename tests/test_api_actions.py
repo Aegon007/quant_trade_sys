@@ -55,6 +55,7 @@ class ApiActionsTests(unittest.TestCase):
 
         for path in [
             "/api/dashboard",
+            "/api/portfolio",
             "/api/core-etfs",
             "/api/satellite-radar",
             "/api/risk",
@@ -69,6 +70,65 @@ class ApiActionsTests(unittest.TestCase):
             "/api/actions/run-weekend-research-once",
         ]:
             self.assertIn(path, route_paths)
+
+    def test_robinhood_import_followup_updates_review_and_plan_quality(self):
+        review_saved = []
+        quality_saved = []
+        original_load_transactions = self.actions.transactions.load_transactions
+        original_load_plan = self.actions.nightly_planner.load_next_day_trade_plan
+        original_save_review = self.actions.post_close_review.save_post_close_review
+        original_save_quality = self.actions.plan_quality.save_plan_quality_snapshot
+        self.addCleanup(setattr, self.actions.transactions, "load_transactions", original_load_transactions)
+        self.addCleanup(setattr, self.actions.nightly_planner, "load_next_day_trade_plan", original_load_plan)
+        self.addCleanup(setattr, self.actions.post_close_review, "save_post_close_review", original_save_review)
+        self.addCleanup(setattr, self.actions.plan_quality, "save_plan_quality_snapshot", original_save_quality)
+        self.actions.transactions.load_transactions = lambda: [
+            {
+                "record_type": "TRADE",
+                "event_type": "BUY",
+                "side": "BUY",
+                "date": "2026-06-10 09:30",
+                "symbol": "AAPL",
+                "shares": 1.0,
+                "price": 100.0,
+            }
+        ]
+        self.actions.nightly_planner.load_next_day_trade_plan = lambda: {
+            "plan_date": "2026-06-10",
+            "decision_signature": "abc",
+            "items": [
+                {
+                    "symbol": "AAPL",
+                    "plan_action": "PROBE",
+                    "buy_zone_low": 95.0,
+                    "buy_zone_high": 105.0,
+                }
+            ],
+        }
+        self.actions.post_close_review.save_post_close_review = lambda review: review_saved.append(review) or "review.json"
+        self.actions.plan_quality.save_plan_quality_snapshot = lambda quality: quality_saved.append(quality) or "quality.json"
+
+        followup = self.actions.build_robinhood_import_followup(
+            {
+                "records": [
+                    {
+                        "record_type": "TRADE",
+                        "event_type": "BUY",
+                        "side": "BUY",
+                        "date": "2026-06-10 09:30",
+                        "symbol": "AAPL",
+                        "shares": 1.0,
+                        "price": 100.0,
+                    }
+                ]
+            }
+        )
+
+        self.assertTrue(followup["post_close_review_updated"])
+        self.assertTrue(followup["plan_quality_updated"])
+        self.assertEqual(followup["review_day"], "2026-06-10")
+        self.assertEqual(review_saved[0]["executed_count"], 1)
+        self.assertEqual(quality_saved[0]["summary"]["executed_count"], 1)
 
 
 if __name__ == "__main__":

@@ -22,11 +22,21 @@
 - FinBERT 情绪分析：事件/新闻可选用 FinBERT 进行情绪打分；未安装时自动回退为关键词情绪规则。
 - Monte Carlo 预期收益分布：可基于历史波动生成收益分布、VaR/CVaR 和区间预期，辅助决定仓位与止盈止损。
 - 通知与夜间任务：支持 Slack / Email 强信号告警，并提供独立 `jobs.nightly_alerts` 入口用于定时调度。
+- Robinhood 导入闭环：在 `Operations` 上传 Account Activity CSV 后，系统会去重导入交易记录、reconcile 当前持仓/现金，并在 `Portfolio` 页面展示持仓、关注、最近交易、导入日摘要、post-close review 和 plan-quality。
 - 本地数据文件：持仓、观察列表、交易记录、价格缓存都保存在本地 JSON 文件中，无需数据库。
 
 ## 快速开始
 
 ### 1. 创建环境
+
+前端使用 Vite 6，需要 `Node.js >= 18`。如果新电脑上 `npm run dev` 报 `Unexpected token '.'` 或 Vite 启动后马上退出，通常就是 Node 版本太旧。先确认：
+
+```bash
+node --version
+npm --version
+```
+
+如果 Node 低于 18，请先升级 Node，再安装前端依赖。
 
 ```bash
 python -m venv ~/venv

@@ -60,6 +60,10 @@ def create_app():
     def dashboard():
         return loader.load_dashboard_response()
 
+    @app.get("/api/portfolio")
+    def portfolio():
+        return loader.load_portfolio_response()
+
     @app.get("/api/core-etfs")
     def core_etfs():
         return loader.load_snapshot_response("core-etfs", loader.SNAPSHOT_PATHS["core-etfs"])

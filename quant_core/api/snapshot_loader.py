@@ -14,7 +14,10 @@ from typing import Mapping, Optional
 
 from quant_core import paths as qpaths
 from quant_core.api.schemas import build_api_response, now_iso
+from quant_core.execution import plan_quality as pq
+from quant_core.execution import post_close_review as pcr
 from quant_core.jobs import job_registry
+from quant_core.ledger import transactions as tx
 from quant_core.snapshots import system_snapshot as ss
 
 
@@ -162,6 +165,82 @@ def _top_satellite_symbols(snapshot: Mapping) -> list[str]:
         return [str(symbol).upper() for symbol in symbols[:3]]
     rows = list(snapshot.get("top_recommendations", []) or snapshot.get("symbols", []) or [])
     return [str(dict(row or {}).get("symbol") or "").upper() for row in rows[:3] if dict(row or {}).get("symbol")]
+
+
+def _parse_record_dt(record: Mapping):
+    try:
+        return pcr._parse_datetime(dict(record or {}).get("date"))
+    except Exception:
+        return None
+
+
+def _recent_transactions(records, *, limit: int = 50) -> list[dict]:
+    rows = [dict(row or {}) for row in tx.normalize_transactions(records)]
+    rows.sort(key=lambda row: _parse_record_dt(row) or datetime.min, reverse=True)
+    return rows[: max(int(limit), 0)]
+
+
+def _latest_transaction_day(records) -> Optional[str]:
+    latest = None
+    for row in tx.normalize_transactions(records):
+        parsed = _parse_record_dt(row)
+        if parsed is None:
+            continue
+        if latest is None or parsed > latest:
+            latest = parsed
+    return latest.date().isoformat() if latest is not None else None
+
+
+def load_portfolio_response(*, now: Optional[datetime] = None) -> dict:
+    data = _load_portfolio_payload()
+    account = ss.build_account_snapshot(data) if data else {}
+    transaction_rows = tx.load_transactions()
+    recent_transactions = _recent_transactions(transaction_rows, limit=50)
+    latest_day = _latest_transaction_day(transaction_rows)
+    daily_activity = tx.summarize_daily_activity(transaction_rows, day=latest_day) if latest_day else {}
+    post_close_review = pcr.load_post_close_review() or {}
+    plan_quality_snapshot = pq.load_plan_quality_snapshot()
+    quant_analysis_payload, _ = safe_read_json(qpaths.QUANT_ANALYSIS_SNAPSHOT_FILE)
+    quant_analysis_payload = quant_analysis_payload if isinstance(quant_analysis_payload, dict) else {}
+
+    holdings = list(data.get("holdings", []) or []) if isinstance(data, Mapping) else []
+    watchlist = list(data.get("watchlist", []) or []) if isinstance(data, Mapping) else []
+    summary = {
+        "holding_count": len(holdings),
+        "watchlist_count": len(watchlist),
+        "transaction_count": len(transaction_rows),
+        "recent_transaction_count": len(recent_transactions),
+        "latest_transaction_day": latest_day,
+        "latest_trade_count": daily_activity.get("trade_count"),
+        "latest_buy_count": daily_activity.get("buy_count"),
+        "latest_sell_count": daily_activity.get("sell_count"),
+        "latest_realized_pl": daily_activity.get("realized_pl"),
+        "post_close_review_status": post_close_review.get("status"),
+        "unplanned_trade_count": post_close_review.get("unplanned_trade_count"),
+        "plan_quality_status": plan_quality_snapshot.get("status") or dict(plan_quality_snapshot.get("summary", {}) or {}).get("status"),
+        "quant_analysis_generated_at": quant_analysis_payload.get("generated_at"),
+    }
+    payload = {
+        "account": account,
+        "holdings": holdings,
+        "watchlist": watchlist,
+        "recent_transactions": recent_transactions,
+        "daily_activity": daily_activity,
+        "post_close_review": post_close_review,
+        "plan_quality_snapshot": plan_quality_snapshot,
+        "quant_analysis_snapshot": quant_analysis_payload,
+    }
+    return build_api_response(
+        name="portfolio",
+        source="composed:portfolio+transactions",
+        freshness_status="OK",
+        is_stale=False,
+        summary=summary,
+        items=recent_transactions,
+        data_quality={"status": "OK"},
+        payload=payload,
+        generated_at=now_iso(now),
+    )
 
 
 def load_dashboard_response(*, now: Optional[datetime] = None) -> dict:

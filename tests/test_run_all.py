@@ -40,6 +40,25 @@ class RunAllTests(unittest.TestCase):
 
         self.assertEqual(specs, [])
 
+    def test_node_version_check_rejects_old_node(self):
+        def fake_runner(*args, **kwargs):
+            return SimpleNamespace(stdout="v12.22.9\n", stderr="")
+
+        ok, message = self.module._check_node_version(runner=fake_runner)
+
+        self.assertFalse(ok)
+        self.assertIn("too old", message)
+        self.assertIn("Node.js 18+", message)
+
+    def test_node_version_check_accepts_modern_node(self):
+        def fake_runner(*args, **kwargs):
+            return SimpleNamespace(stdout="v20.11.1\n", stderr="")
+
+        ok, message = self.module._check_node_version(runner=fake_runner)
+
+        self.assertTrue(ok)
+        self.assertEqual(message, "")
+
     def test_emit_startup_summary_formats_each_service(self):
         statuses = [
             self.module.ServiceStartupStatus(

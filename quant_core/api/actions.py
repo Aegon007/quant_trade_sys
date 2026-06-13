@@ -16,6 +16,9 @@ from quant_core.api import snapshot_loader
 from quant_core.data import data_health
 from quant_core.data import market_data
 from quant_core.data import storage as data_storage
+from quant_core.execution import nightly_planner
+from quant_core.execution import plan_quality
+from quant_core.execution import post_close_review
 from quant_core.jobs import job_registry
 from quant_core.ledger import transactions
 from quant_core.notifications import notification_config
@@ -143,11 +146,66 @@ def import_robinhood_csv_text(csv_text: str, *, filename: str = "") -> dict:
         reconciled = portfolio_actions.reconcile_portfolio_from_robinhood_imports(force_price_refresh=False)
     except Exception as exc:
         reconcile_error = f"{type(exc).__name__}: {exc}"
+    followup = build_robinhood_import_followup(imported)
     return {
         "message": "robinhood csv imported",
         "import": imported,
         "reconciliation": reconciled or {},
         "reconciliation_error": reconcile_error,
+        "followup": followup,
+    }
+
+
+def _latest_trade_day(records) -> Optional[str]:
+    latest = None
+    for record in transactions.normalize_transactions(records):
+        if str(record.get("record_type") or "").strip().upper() != "TRADE":
+            continue
+        parsed = post_close_review._parse_datetime(record.get("date"))
+        if parsed is None:
+            continue
+        if latest is None or parsed > latest:
+            latest = parsed
+    return latest.date().isoformat() if latest is not None else None
+
+
+def build_robinhood_import_followup(imported: Mapping) -> dict:
+    """Update lightweight review snapshots after Robinhood CSV import."""
+
+    imported = dict(imported or {})
+    transaction_rows = transactions.load_transactions()
+    latest_day = _latest_trade_day(imported.get("records") or transaction_rows)
+    if not latest_day:
+        return {
+            "message": "no trade day found",
+            "post_close_review_updated": False,
+            "plan_quality_updated": False,
+        }
+
+    trade_plan = nightly_planner.load_next_day_trade_plan() or {}
+    review = post_close_review.build_execution_review(
+        trade_plan,
+        transaction_rows,
+        day=latest_day,
+    )
+    post_close_review.save_post_close_review(review)
+    quality = plan_quality.build_plan_quality_snapshot(
+        trade_plan=trade_plan,
+        latest_review=review,
+    )
+    plan_quality.save_plan_quality_snapshot(quality)
+    return {
+        "message": "post-close review and plan quality updated",
+        "review_day": latest_day,
+        "post_close_review_updated": True,
+        "plan_quality_updated": True,
+        "review": {
+            "status": review.get("status"),
+            "executed_count": review.get("executed_count"),
+            "missed_count": review.get("missed_count"),
+            "unplanned_trade_count": review.get("unplanned_trade_count"),
+        },
+        "plan_quality": dict(quality.get("summary", {}) or {}),
     }
 
 

@@ -57,6 +57,7 @@ DEFAULT_API_HOST = "127.0.0.1"
 DEFAULT_API_PORT = 8710
 DEFAULT_FRONTEND_HOST = "127.0.0.1"
 DEFAULT_FRONTEND_PORT = 5173
+MIN_FRONTEND_NODE_MAJOR = 18
 
 
 @dataclass(frozen=True)
@@ -173,7 +174,47 @@ def _service_skip_reason(spec: ServiceSpec) -> str:
             return f"Missing frontend/package.json at {frontend_dir}."
         if not (frontend_dir / "node_modules" / ".bin" / "vite").exists():
             return "Frontend dependencies are not installed. Run npm install in ./frontend."
+        node_ok, node_message = _check_node_version(min_major=MIN_FRONTEND_NODE_MAJOR)
+        if not node_ok:
+            return node_message
     return ""
+
+
+def _parse_node_major(version_text: str) -> Optional[int]:
+    text = str(version_text or "").strip()
+    if text.startswith("v"):
+        text = text[1:]
+    major_text = text.split(".", 1)[0].strip()
+    try:
+        return int(major_text)
+    except (TypeError, ValueError):
+        return None
+
+
+def _check_node_version(*, min_major: int = MIN_FRONTEND_NODE_MAJOR, runner=subprocess.run) -> tuple[bool, str]:
+    try:
+        completed = runner(
+            ["node", "--version"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except FileNotFoundError:
+        return False, f"Node.js is not installed. Install Node.js {min_major}+ and run npm install in ./frontend."
+    except Exception as exc:
+        return False, f"Unable to check Node.js version: {exc}"
+
+    version_text = str(getattr(completed, "stdout", "") or getattr(completed, "stderr", "") or "").strip()
+    major = _parse_node_major(version_text)
+    if major is None:
+        return False, f"Unable to parse Node.js version from '{version_text}'. Install Node.js {min_major}+."
+    if major < int(min_major):
+        return (
+            False,
+            f"Node.js {version_text} is too old for the React frontend. Install Node.js {min_major}+ "
+            "and then run npm install in ./frontend.",
+        )
+    return True, ""
 
 
 def emit_startup_summary(statuses, *, printer=print):

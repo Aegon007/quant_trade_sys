@@ -90,6 +90,47 @@ class ApiSnapshotLoaderTests(unittest.TestCase):
         self.assertEqual(payload["jobs"]["api-server"]["state"], "started")
         self.assertEqual(loaded["jobs"]["api-server"]["pid"], 1234)
 
+    def test_load_portfolio_response_includes_holdings_transactions_and_reviews(self):
+        original_load_portfolio_payload = self.loader._load_portfolio_payload
+        original_load_transactions = self.loader.tx.load_transactions
+        original_load_review = self.loader.pcr.load_post_close_review
+        original_load_quality = self.loader.pq.load_plan_quality_snapshot
+        original_safe_read_json = self.loader.safe_read_json
+        self.addCleanup(setattr, self.loader, "_load_portfolio_payload", original_load_portfolio_payload)
+        self.addCleanup(setattr, self.loader.tx, "load_transactions", original_load_transactions)
+        self.addCleanup(setattr, self.loader.pcr, "load_post_close_review", original_load_review)
+        self.addCleanup(setattr, self.loader.pq, "load_plan_quality_snapshot", original_load_quality)
+        self.addCleanup(setattr, self.loader, "safe_read_json", original_safe_read_json)
+        self.loader._load_portfolio_payload = lambda: {
+            "account": {"cash_available": 1000.0},
+            "holdings": [{"symbol": "AAPL", "shares": 1.5, "cost": 100.0, "current_price": 110.0}],
+            "watchlist": [{"symbol": "MSFT", "last_price": 300.0}],
+        }
+        self.loader.tx.load_transactions = lambda: [
+            {
+                "record_type": "TRADE",
+                "event_type": "BUY",
+                "side": "BUY",
+                "date": "2026-06-10 09:30",
+                "symbol": "AAPL",
+                "shares": 1.5,
+                "price": 100.0,
+            }
+        ]
+        self.loader.pcr.load_post_close_review = lambda: {"status": "NO_PLAN", "unplanned_trade_count": 1}
+        self.loader.pq.load_plan_quality_snapshot = lambda: {"status": "DEGRADED", "summary": {"status": "DEGRADED"}}
+        self.loader.safe_read_json = lambda path: ({"generated_at": "2026-06-10T20:00:00", "summary": {"buy_count": 1}}, [])
+
+        response = self.loader.load_portfolio_response(now=datetime.fromisoformat("2026-06-11T12:00:00"))
+
+        self.assertEqual(response["name"], "portfolio")
+        self.assertEqual(response["summary"]["holding_count"], 1)
+        self.assertEqual(response["summary"]["transaction_count"], 1)
+        self.assertEqual(response["summary"]["post_close_review_status"], "NO_PLAN")
+        self.assertEqual(response["summary"]["plan_quality_status"], "DEGRADED")
+        self.assertEqual(response["payload"]["holdings"][0]["symbol"], "AAPL")
+        self.assertEqual(response["payload"]["recent_transactions"][0]["symbol"], "AAPL")
+
 
 if __name__ == "__main__":
     unittest.main()

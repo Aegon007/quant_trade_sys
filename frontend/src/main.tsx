@@ -4,7 +4,7 @@ import { fetchApi, postApi, type ApiEnvelope } from "./api";
 import "./styles.css";
 
 type Dict = Record<string, unknown>;
-type PageKey = "dashboard" | "core" | "satellite" | "risk" | "monitor" | "operations" | "settings";
+type PageKey = "dashboard" | "portfolio" | "core" | "satellite" | "risk" | "monitor" | "operations" | "settings";
 type Column = {
   label: string;
   keys?: string[];
@@ -13,6 +13,7 @@ type Column = {
 
 const pages: Array<{ key: PageKey; label: string; detail: string }> = [
   { key: "dashboard", label: "Dashboard", detail: "Today" },
+  { key: "portfolio", label: "Portfolio", detail: "Activity" },
   { key: "core", label: "Core ETFs", detail: "Rotation" },
   { key: "satellite", label: "Satellite Radar", detail: "Top 3" },
   { key: "risk", label: "Risk & Discipline", detail: "Gate" },
@@ -256,6 +257,126 @@ function DashboardPage() {
   );
 }
 
+function PortfolioPage() {
+  const { data, error, loading, reload } = useSnapshot<Dict>("/api/portfolio");
+  const payload = asDict(data?.payload);
+  const summary = data?.summary ?? {};
+  const account = asDict(payload.account);
+  const holdings = asArray(payload.holdings);
+  const watchlist = asArray(payload.watchlist);
+  const transactions = asArray(payload.recent_transactions);
+  const dailyActivity = asDict(payload.daily_activity);
+  const review = asDict(payload.post_close_review);
+  const reviewItems = asArray(review.items);
+  const unplannedTrades = asArray(review.unplanned_trades);
+  const planQuality = asDict(payload.plan_quality_snapshot);
+  const planQualitySummary = asDict(planQuality.summary);
+  const quantAnalysis = asDict(payload.quant_analysis_snapshot);
+  const quantSummary = asDict(quantAnalysis.summary);
+
+  return (
+    <SnapshotFrame snapshot={data} loading={loading} error={error} onReload={reload}>
+      <section className="metric-grid">
+        <MetricCard label="Total Capital" value={formatCurrency(account.total_capital)} hint={`Cash ${formatCurrency(account.cash_available)}`} />
+        <MetricCard label="Holdings" value={text(summary.holding_count, "0")} hint={`Value ${formatCurrency(account.holdings_value)}`} />
+        <MetricCard label="Recent Activity Day" value={text(summary.latest_transaction_day, "-")} hint={`${text(summary.latest_trade_count, "0")} trades`} />
+        <MetricCard label="Realized P/L" value={formatCurrency(summary.latest_realized_pl)} hint="Latest imported activity day" />
+      </section>
+      <section className="metric-grid">
+        <MetricCard label="Post-Close Review" value={text(summary.post_close_review_status, "PENDING")} hint={`Unplanned ${text(summary.unplanned_trade_count, "0")}`} />
+        <MetricCard label="Plan Quality" value={text(summary.plan_quality_status, "UNKNOWN")} hint={`Execution ${formatPercent(planQualitySummary.execution_rate)}`} />
+        <MetricCard label="Quant Snapshot" value={formatDate(summary.quant_analysis_generated_at)} hint={`Top buy ${text(asArray(quantSummary.top_buy_symbols)[0], "-")}`} />
+        <MetricCard label="Transactions" value={text(summary.transaction_count, "0")} hint={`${text(summary.recent_transaction_count, "0")} shown`} />
+      </section>
+
+      <section className="two-column">
+        <Panel title="Holdings" subtitle="Current reconciled portfolio after Robinhood CSV import.">
+          <DataTable rows={holdings} columns={[
+            { label: "Symbol", keys: ["symbol"] },
+            { label: "Shares", render: (row) => formatNumber(row.shares, 3) },
+            { label: "Avg Cost", render: (row) => formatCurrency(row.cost) },
+            { label: "Current", render: (row) => formatCurrency(row.current_price) },
+            { label: "Value", render: (row) => {
+              const shares = numberValue(row.shares) ?? 0;
+              const price = numberValue(row.current_price) ?? numberValue(row.cost) ?? 0;
+              return formatCurrency(shares * price);
+            } },
+            { label: "Sector", keys: ["sector"] },
+          ]} emptyText="No holdings yet. Import Robinhood CSV or add positions first." />
+        </Panel>
+        <Panel title="Watchlist" subtitle="Symbols not currently held, kept for future review.">
+          <DataTable rows={watchlist} columns={[
+            { label: "Symbol", keys: ["symbol"] },
+            { label: "Last Price", render: (row) => formatCurrency(row.last_price) },
+            { label: "Notes", keys: ["notes", "llm_notes"] },
+          ]} emptyText="Watchlist is empty." />
+        </Panel>
+      </section>
+
+      <Panel title="Recent Transactions" subtitle="Latest imported Robinhood records and manual portfolio actions.">
+        <DataTable rows={transactions} columns={[
+          { label: "Date", render: (row) => formatDate(row.date) },
+          { label: "Type", render: (row) => <StatusPill value={row.record_type ?? row.event_type} /> },
+          { label: "Symbol", keys: ["symbol"] },
+          { label: "Side", keys: ["side", "event_type"] },
+          { label: "Shares", render: (row) => formatNumber(row.shares, 3) },
+          { label: "Price", render: (row) => formatCurrency(row.price) },
+          { label: "P/L", render: (row) => formatCurrency(row.pl) },
+          { label: "Source", keys: ["source", "source_file"] },
+        ]} emptyText="No transaction records yet. Upload Robinhood Account Activity CSV in Operations." />
+      </Panel>
+
+      <section className="two-column">
+        <Panel title="Latest Imported Day Summary" subtitle="Daily activity summary from transaction records.">
+          <dl className="facts">
+            <dt>Day</dt><dd>{text(dailyActivity.day, "-")}</dd>
+            <dt>Buys / Sells</dt><dd>{text(dailyActivity.buy_count, "0")} / {text(dailyActivity.sell_count, "0")}</dd>
+            <dt>Symbols</dt><dd>{text(dailyActivity.symbols, "-")}</dd>
+            <dt>Realized P/L</dt><dd>{formatCurrency(dailyActivity.realized_pl)}</dd>
+          </dl>
+        </Panel>
+        <Panel title="Post-Close Review" subtitle="Compares imported trades with the latest trade plan when available.">
+          <dl className="facts">
+            <dt>Status</dt><dd>{text(review.status, "PENDING")}</dd>
+            <dt>Review Day</dt><dd>{text(review.review_day, "-")}</dd>
+            <dt>Executed / Missed</dt><dd>{text(review.executed_count, "0")} / {text(review.missed_count, "0")}</dd>
+            <dt>Unplanned</dt><dd>{text(review.unplanned_trade_count, "0")}</dd>
+          </dl>
+        </Panel>
+      </section>
+
+      <section className="two-column">
+        <Panel title="Plan Review Items" subtitle="Execution match details for plan items.">
+          <DataTable rows={reviewItems} columns={[
+            { label: "Symbol", keys: ["symbol"] },
+            { label: "Plan", keys: ["plan_action"] },
+            { label: "Status", render: (row) => <StatusPill value={row.status} /> },
+            { label: "Avg Price", render: (row) => formatCurrency(row.avg_execution_price) },
+            { label: "Reachable", keys: ["opportunity_status"] },
+          ]} emptyText="No plan review items. This is normal if there was no prior trade plan." />
+        </Panel>
+        <Panel title="Unplanned Trades" subtitle="Trades imported from Robinhood that did not match the latest plan.">
+          <DataTable rows={unplannedTrades} columns={[
+            { label: "Symbol", keys: ["symbol"] },
+            { label: "Side", keys: ["side"] },
+            { label: "Shares", render: (row) => formatNumber(row.shares, 3) },
+            { label: "Price", render: (row) => formatCurrency(row.price) },
+          ]} emptyText="No unplanned trades for the reviewed day." />
+        </Panel>
+      </section>
+
+      <Panel title="Latest Quant Analysis Snapshot" subtitle="This updates when full quant analysis/nightly pipeline runs. CSV import only updates portfolio and execution review.">
+        <dl className="facts">
+          <dt>Generated</dt><dd>{formatDate(quantAnalysis.generated_at)}</dd>
+          <dt>Analyzed</dt><dd>{text(quantSummary.analyzed_symbols, "0")} / {text(quantSummary.total_symbols, "0")}</dd>
+          <dt>Buy / Sell / Hold</dt><dd>{text(quantSummary.buy_count, "0")} / {text(quantSummary.sell_count, "0")} / {text(quantSummary.hold_count, "0")}</dd>
+          <dt>Top Buys</dt><dd>{text(quantSummary.top_buy_symbols, "-")}</dd>
+        </dl>
+      </Panel>
+    </SnapshotFrame>
+  );
+}
+
 function Panel({ title, subtitle, children }: { title: string; subtitle?: string; children: React.ReactNode }) {
   return (
     <article className="panel">
@@ -464,7 +585,7 @@ function OperationsPage() {
             <button disabled={!!busy} onClick={() => runAction("weekend", "/api/actions/run-weekend-research-once")}>Run Weekend Research</button>
           </div>
         </Panel>
-        <Panel title="Robinhood CSV Import" subtitle="Import Account Activity CSV; duplicate rows are ignored by identity key.">
+        <Panel title="Robinhood CSV Import" subtitle="Import Account Activity CSV; then review holdings, transactions, and execution review on Portfolio.">
           <label className="file-box">
             <input type="file" accept=".csv,text/csv" onChange={(event) => importCsv(event.target.files?.[0] ?? null)} />
             Upload CSV and reconcile portfolio
@@ -499,7 +620,7 @@ function OperationsPage() {
           ]} emptyText="No plan-quality snapshot yet. Run nightly after importing activity CSV." />
         </Panel>
       </section>
-      <Panel title="Latest Action Result" subtitle={busy ? `Running ${busy}...` : "Most recent response from API."}>
+      <Panel title="Latest Action Result" subtitle={busy ? `Running ${busy}...` : "CSV import updates Portfolio immediately; full backtest snapshots update after Run Full Nightly Pipeline."}>
         <pre>{result || "No manual action run yet."}</pre>
       </Panel>
     </>
@@ -617,6 +738,7 @@ function App() {
           <div className="top-note">Read snapshots fast. Run heavy jobs intentionally.</div>
         </header>
         {activePage === "dashboard" ? <DashboardPage /> : null}
+        {activePage === "portfolio" ? <PortfolioPage /> : null}
         {activePage === "core" ? <CoreEtfPage /> : null}
         {activePage === "satellite" ? <SatelliteRadarPage /> : null}
         {activePage === "risk" ? <RiskPage /> : null}
