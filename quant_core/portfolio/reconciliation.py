@@ -184,9 +184,25 @@ def build_robinhood_reconciled_portfolio(records, *, existing_data=None):
     watchlist.sort(key=lambda row: str(row.get("symbol", "")).strip().upper())
 
     cash_mode = "imported_cash_events" if saw_cash_event else "trade_flows_only"
+    reconstructed_cash = round(cash_balance, 4)
+    if saw_cash_event and reconstructed_cash >= 0:
+        cash_available = reconstructed_cash
+    else:
+        # Account Activity exports often omit the starting cash balance and
+        # sometimes omit transfer/sweep events. In that case the trade cash
+        # flow alone is not an account cash balance, and may legitimately be
+        # negative. Preserve the user's current cash input while still using
+        # the CSV as the source of truth for positions.
+        if saw_cash_event and reconstructed_cash < 0:
+            cash_mode = "cash_preserved_incomplete_csv"
+            issues.append(
+                "Imported Robinhood cash events did not reconstruct a non-negative cash balance; "
+                "preserved existing cash_available and rebuilt positions from trades."
+            )
+        cash_available = existing_account.get("cash_available")
     account = {
         "total_capital": None,
-        "cash_available": round(cash_balance, 4),
+        "cash_available": cash_available,
         "min_cash_buffer_pct": existing_account.get("min_cash_buffer_pct", 0.05),
         "max_single_position_pct": existing_account.get("max_single_position_pct", 0.20),
         "max_total_exposure_pct": existing_account.get("max_total_exposure_pct", 1.0),
@@ -194,7 +210,8 @@ def build_robinhood_reconciled_portfolio(records, *, existing_data=None):
 
     return {
         "account": account,
-        "cash_available": round(cash_balance, 4),
+        "cash_available": cash_available,
+        "trade_cash_flow": reconstructed_cash,
         "cash_mode": cash_mode,
         "holdings": holdings,
         "watchlist": watchlist,

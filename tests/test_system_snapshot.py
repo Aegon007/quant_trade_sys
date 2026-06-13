@@ -26,6 +26,10 @@ class SystemSnapshotTests(unittest.TestCase):
         )
 
         self.assertAlmostEqual(snapshot["holdings_market_value"], 2300.0)
+        self.assertAlmostEqual(snapshot["holdings_value"], 2300.0)
+        self.assertAlmostEqual(snapshot["holdings_cost_basis"], 2000.0)
+        self.assertAlmostEqual(snapshot["unrealized_pl"], 300.0)
+        self.assertAlmostEqual(snapshot["unrealized_pl_pct"], 15.0)
         self.assertAlmostEqual(snapshot["total_capital"], 4800.0)
         self.assertAlmostEqual(snapshot["cash_available"], 2500.0)
         self.assertAlmostEqual(snapshot["deployable_cash"], 2020.0)

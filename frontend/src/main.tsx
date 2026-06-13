@@ -273,21 +273,68 @@ function PortfolioPage() {
   const planQualitySummary = asDict(planQuality.summary);
   const quantAnalysis = asDict(payload.quant_analysis_snapshot);
   const quantSummary = asDict(quantAnalysis.summary);
+  const [cashText, setCashText] = useState("");
+  const [brokerTotalText, setBrokerTotalText] = useState("");
+  const [accountSaveResult, setAccountSaveResult] = useState("");
+  const [accountBusy, setAccountBusy] = useState(false);
+
+  useEffect(() => {
+    if (!data) return;
+    setCashText(account.cash_available === undefined || account.cash_available === null ? "" : String(account.cash_available));
+  }, [data?.generated_at]);
+
+  async function saveAccountCalibration() {
+    setAccountBusy(true);
+    setAccountSaveResult("");
+    try {
+      const payloadToSave: Dict = {};
+      if (cashText.trim()) payloadToSave.cash_available = Number(cashText);
+      if (brokerTotalText.trim()) payloadToSave.broker_total_capital = Number(brokerTotalText);
+      const response = await postApi("/api/actions/save-account-calibration", payloadToSave);
+      setAccountSaveResult(JSON.stringify(response, null, 2));
+      setBrokerTotalText("");
+      reload();
+    } catch (exc) {
+      setAccountSaveResult((exc as Error).message);
+    } finally {
+      setAccountBusy(false);
+    }
+  }
 
   return (
     <SnapshotFrame snapshot={data} loading={loading} error={error} onReload={reload}>
       <section className="metric-grid">
         <MetricCard label="Total Capital" value={formatCurrency(account.total_capital)} hint={`Cash ${formatCurrency(account.cash_available)}`} />
-        <MetricCard label="Holdings" value={text(summary.holding_count, "0")} hint={`Value ${formatCurrency(account.holdings_value)}`} />
-        <MetricCard label="Recent Activity Day" value={text(summary.latest_transaction_day, "-")} hint={`${text(summary.latest_trade_count, "0")} trades`} />
-        <MetricCard label="Realized P/L" value={formatCurrency(summary.latest_realized_pl)} hint="Latest imported activity day" />
+        <MetricCard label="Holdings Value" value={formatCurrency(account.holdings_market_value ?? account.holdings_value)} hint={`${text(summary.holding_count, "0")} positions`} />
+        <MetricCard label="Unrealized P/L" value={formatCurrency(account.unrealized_pl)} hint={formatPercent(account.unrealized_pl_pct)} />
+        <MetricCard label="Available Cash" value={formatCurrency(account.cash_available)} hint={`Deployable ${formatCurrency(account.deployable_cash)}`} />
       </section>
       <section className="metric-grid">
+        <MetricCard label="Recent Activity Day" value={text(summary.latest_transaction_day, "-")} hint={`${text(summary.latest_trade_count, "0")} trades`} />
+        <MetricCard label="Realized P/L" value={formatCurrency(summary.latest_realized_pl)} hint="Latest imported activity day" />
         <MetricCard label="Post-Close Review" value={text(summary.post_close_review_status, "PENDING")} hint={`Unplanned ${text(summary.unplanned_trade_count, "0")}`} />
         <MetricCard label="Plan Quality" value={text(summary.plan_quality_status, "UNKNOWN")} hint={`Execution ${formatPercent(planQualitySummary.execution_rate)}`} />
-        <MetricCard label="Quant Snapshot" value={formatDate(summary.quant_analysis_generated_at)} hint={`Top buy ${text(asArray(quantSummary.top_buy_symbols)[0], "-")}`} />
-        <MetricCard label="Transactions" value={text(summary.transaction_count, "0")} hint={`${text(summary.recent_transaction_count, "0")} shown`} />
       </section>
+
+      <Panel title="Account Calibration" subtitle="Robinhood Account Activity CSV is a transaction ledger, not a reliable current account-value snapshot. Calibrate cash here after CSV import.">
+        <div className="form-grid">
+          <label>
+            Robinhood available cash / buying power
+            <input value={cashText} onChange={(event) => setCashText(event.target.value)} placeholder="e.g. 986.30" inputMode="decimal" />
+          </label>
+          <label>
+            Optional broker total account value
+            <input value={brokerTotalText} onChange={(event) => setBrokerTotalText(event.target.value)} placeholder="Infers cash = total - holdings value" inputMode="decimal" />
+          </label>
+        </div>
+        <div className="button-stack">
+          <button type="button" disabled={accountBusy || (!cashText.trim() && !brokerTotalText.trim())} onClick={saveAccountCalibration}>
+            {accountBusy ? "Saving..." : "Save Account Calibration"}
+          </button>
+        </div>
+        <p className="muted-note">Total Capital stays dynamic: available cash plus current marked holdings. Use broker total only as a quick way to infer cash.</p>
+        {accountSaveResult ? <pre>{accountSaveResult}</pre> : null}
+      </Panel>
 
       <section className="two-column">
         <Panel title="Holdings" subtitle="Current reconciled portfolio after Robinhood CSV import.">
@@ -300,6 +347,19 @@ function PortfolioPage() {
               const shares = numberValue(row.shares) ?? 0;
               const price = numberValue(row.current_price) ?? numberValue(row.cost) ?? 0;
               return formatCurrency(shares * price);
+            } },
+            { label: "P/L", render: (row) => {
+              const shares = numberValue(row.shares) ?? 0;
+              const price = numberValue(row.current_price);
+              const cost = numberValue(row.cost);
+              if (price === null || cost === null) return "-";
+              return formatCurrency(shares * (price - cost));
+            } },
+            { label: "P/L %", render: (row) => {
+              const price = numberValue(row.current_price);
+              const cost = numberValue(row.cost);
+              if (price === null || cost === null || cost === 0) return "-";
+              return formatPercent((price - cost) / cost);
             } },
             { label: "Sector", keys: ["sector"] },
           ]} emptyText="No holdings yet. Import Robinhood CSV or add positions first." />

@@ -342,6 +342,39 @@ tr:last-child td {
   gap: 10px;
 }
 
+.form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+  margin-bottom: 12px;
+}
+
+.form-grid label {
+  display: grid;
+  gap: 7px;
+  color: #2b4b43;
+  font-size: 0.88rem;
+  font-weight: 850;
+}
+
+.form-grid input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 12px 13px;
+  border: 1px solid rgba(22, 33, 31, 0.16);
+  border-radius: 14px;
+  color: #17211f;
+  background: #fffdf4;
+  font: inherit;
+}
+
+.muted-note {
+  margin: 10px 0 0;
+  color: #63716d;
+  font-size: 0.9rem;
+  line-height: 1.45;
+}
+
 .file-box {
   display: block;
   padding: 18px;
@@ -456,7 +489,8 @@ pre {
   .snapshot-bar,
   .panel-head,
   .two-column,
-  .ops-grid {
+  .ops-grid,
+  .form-grid {
     display: block;
   }
 

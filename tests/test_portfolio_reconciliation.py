@@ -218,6 +218,96 @@ class PortfolioReconciliationTests(unittest.TestCase):
         self.assertEqual([row["symbol"] for row in result["watchlist"]], ["SQQQ"])
         self.assertEqual(result["issues"], [])
 
+    def test_build_robinhood_reconciled_portfolio_preserves_cash_when_cash_events_are_missing(self):
+        from quant_core.portfolio.reconciliation import build_robinhood_reconciled_portfolio
+
+        result = build_robinhood_reconciled_portfolio(
+            [
+                {
+                    "record_type": "TRADE",
+                    "event_type": "BUY",
+                    "side": "BUY",
+                    "date": "2026-04-07 00:00:00",
+                    "symbol": "SQQQ",
+                    "shares": 0.7,
+                    "price": 79.0,
+                    "source": "ROBINHOOD_ACCOUNT_ACTIVITY_CSV",
+                },
+                {
+                    "record_type": "TRADE",
+                    "event_type": "SELL",
+                    "side": "SELL",
+                    "date": "2026-04-08 00:00:00",
+                    "symbol": "SQQQ",
+                    "shares": 0.7,
+                    "price": 78.0,
+                    "proceeds": 54.6,
+                    "source": "ROBINHOOD_ACCOUNT_ACTIVITY_CSV",
+                },
+                {
+                    "record_type": "TRADE",
+                    "event_type": "BUY",
+                    "side": "BUY",
+                    "date": "2026-04-09 00:00:00",
+                    "symbol": "AAPL",
+                    "shares": 1.0,
+                    "price": 200.0,
+                    "source": "ROBINHOOD_ACCOUNT_ACTIVITY_CSV",
+                },
+            ],
+            existing_data={
+                "account": {"cash_available": 123.45},
+                "holdings": [{"symbol": "SQQQ", "shares": 0.7, "cost": 79.0, "current_price": 78.0, "sector": ""}],
+                "watchlist": [],
+            },
+        )
+
+        self.assertEqual(result["cash_mode"], "trade_flows_only")
+        self.assertEqual(result["cash_available"], 123.45)
+        self.assertLess(result["trade_cash_flow"], 0)
+        self.assertEqual([row["symbol"] for row in result["holdings"]], ["AAPL"])
+        self.assertEqual([row["symbol"] for row in result["watchlist"]], ["SQQQ"])
+
+    def test_build_robinhood_reconciled_portfolio_preserves_cash_when_imported_cash_is_negative(self):
+        from quant_core.portfolio.reconciliation import build_robinhood_reconciled_portfolio
+
+        result = build_robinhood_reconciled_portfolio(
+            [
+                {
+                    "record_type": "CASH_EVENT",
+                    "event_type": "CASH_WITHDRAWAL",
+                    "side": "",
+                    "date": "2026-04-07 00:00:00",
+                    "symbol": "",
+                    "shares": None,
+                    "price": None,
+                    "proceeds": -1000.0,
+                    "source": "ROBINHOOD_ACCOUNT_ACTIVITY_CSV",
+                },
+                {
+                    "record_type": "TRADE",
+                    "event_type": "BUY",
+                    "side": "BUY",
+                    "date": "2026-04-08 00:00:00",
+                    "symbol": "AAPL",
+                    "shares": 1.0,
+                    "price": 200.0,
+                    "source": "ROBINHOOD_ACCOUNT_ACTIVITY_CSV",
+                },
+            ],
+            existing_data={
+                "account": {"cash_available": 321.0},
+                "holdings": [],
+                "watchlist": [],
+            },
+        )
+
+        self.assertEqual(result["cash_mode"], "cash_preserved_incomplete_csv")
+        self.assertEqual(result["cash_available"], 321.0)
+        self.assertLess(result["trade_cash_flow"], 0)
+        self.assertEqual([row["symbol"] for row in result["holdings"]], ["AAPL"])
+        self.assertTrue(any("preserved existing cash_available" in issue for issue in result["issues"]))
+
 
 if __name__ == "__main__":
     unittest.main()

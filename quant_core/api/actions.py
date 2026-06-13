@@ -23,6 +23,7 @@ from quant_core.jobs import job_registry
 from quant_core.ledger import transactions
 from quant_core.notifications import notification_config
 from quant_core.portfolio import actions as portfolio_actions
+from quant_core.snapshots import system_snapshot
 
 
 def _safe_detail(payload) -> str:
@@ -227,4 +228,53 @@ def save_notification_settings(config: Mapping) -> dict:
     return {
         "message": "notification config saved",
         "notification_config": saved,
+    }
+
+
+def _optional_float_from_payload(payload: Mapping, key: str):
+    value = payload.get(key)
+    if value in (None, ""):
+        return None
+    return float(value)
+
+
+def save_account_calibration(payload: Mapping) -> dict:
+    payload = dict(payload or {})
+    data = data_storage.load_data()
+    account = dict(data.get("account", {}) or {})
+    before_snapshot = system_snapshot.build_account_snapshot(data)
+    holdings_value = float(before_snapshot.get("holdings_market_value") or 0.0)
+
+    broker_total = _optional_float_from_payload(payload, "broker_total_capital")
+    cash_available = _optional_float_from_payload(payload, "cash_available")
+    inferred_from_broker_total = False
+    if broker_total is not None:
+        cash_available = round(float(broker_total) - holdings_value, 4)
+        inferred_from_broker_total = True
+        if cash_available < 0:
+            raise ValueError(
+                "broker_total_capital is below current holdings market value; "
+                "enter cash_available directly if the broker account includes margin or stale prices."
+            )
+
+    if cash_available is not None:
+        if cash_available < 0:
+            raise ValueError("cash_available must be >= 0")
+        account["cash_available"] = round(float(cash_available), 4)
+
+    for key in ("min_cash_buffer_pct", "max_single_position_pct", "max_total_exposure_pct"):
+        value = payload.get(key)
+        if value not in (None, ""):
+            account[key] = float(value)
+
+    # Keep total capital dynamic: cash + current holdings market value.
+    account["total_capital"] = None
+    data["account"] = account
+    data_storage.save_data(data)
+    snapshot = system_snapshot.build_account_snapshot(data)
+    return {
+        "message": "account calibration saved",
+        "account": snapshot,
+        "inferred_cash_from_broker_total": inferred_from_broker_total,
+        "holdings_market_value": holdings_value,
     }

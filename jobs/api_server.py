@@ -170,6 +170,14 @@ def create_app():
             run_async=False,
         )
 
+    @app.post("/api/actions/save-account-calibration")
+    def save_account_calibration(payload: dict):
+        return api_actions.run_with_job_status(
+            "portfolio-account-calibration",
+            lambda: api_actions.save_account_calibration(dict(payload or {})),
+            run_async=False,
+        )
+
     return app
 
 

@@ -66,6 +66,7 @@ class ApiActionsTests(unittest.TestCase):
             "/api/reports/latest",
             "/api/actions/refresh-market",
             "/api/actions/import-robinhood-csv",
+            "/api/actions/save-account-calibration",
             "/api/actions/run-nightly-once",
             "/api/actions/run-weekend-research-once",
         ]:
@@ -159,6 +160,33 @@ class ApiActionsTests(unittest.TestCase):
         self.assertEqual(result["mode"], "replace")
         self.assertEqual(result["import"]["mode"], "replace")
         self.assertEqual(calls, [("replace", "csv", "activity.csv", True)])
+
+    def test_save_account_calibration_can_infer_cash_from_broker_total(self):
+        saved = []
+        original_load_data = self.actions.data_storage.load_data
+        original_save_data = self.actions.data_storage.save_data
+        self.addCleanup(setattr, self.actions.data_storage, "load_data", original_load_data)
+        self.addCleanup(setattr, self.actions.data_storage, "save_data", original_save_data)
+        self.actions.data_storage.load_data = lambda: {
+            "account": {
+                "cash_available": 100.0,
+                "min_cash_buffer_pct": 0.05,
+                "max_single_position_pct": 0.2,
+                "max_total_exposure_pct": 1.0,
+            },
+            "holdings": [
+                {"symbol": "AAPL", "shares": 2.0, "cost": 150.0, "current_price": 200.0},
+            ],
+            "watchlist": [],
+        }
+        self.actions.data_storage.save_data = lambda data: saved.append(data)
+
+        result = self.actions.save_account_calibration({"broker_total_capital": 1000.0})
+
+        self.assertTrue(result["inferred_cash_from_broker_total"])
+        self.assertEqual(saved[0]["account"]["cash_available"], 600.0)
+        self.assertIsNone(saved[0]["account"]["total_capital"])
+        self.assertEqual(result["account"]["total_capital"], 1000.0)
 
 
 if __name__ == "__main__":
