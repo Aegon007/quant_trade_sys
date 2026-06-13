@@ -4,6 +4,8 @@ from datetime import datetime
 
 from quant_core.common.share_utils import MIN_SHARE_QUANTITY, normalize_share_quantity
 
+DEFAULT_DUST_POSITION_VALUE = 5.0
+
 
 def _parse_dt(value):
     text = str(value or "").strip()
@@ -36,12 +38,16 @@ def _normalize_source_records(records, *, source="ROBINHOOD_ACCOUNT_ACTIVITY_CSV
 
 def _reconcile_sort_key(row):
     parsed = _parse_dt((row or {}).get("date"))
+    record_type = str((row or {}).get("record_type") or "").strip().upper()
     side = str((row or {}).get("side") or (row or {}).get("event_type") or "").strip().upper()
+    if record_type == "CORPORATE_ACTION":
+        side_rank = {"REMOVE": 0, "SHARE_DECREASE": 0, "ADD": 1, "SHARE_INCREASE": 1}.get(side, 1)
+        return (parsed.date(), side_rank, int((row or {}).get("_source_order", 0) or 0))
     # Robinhood Account Activity exports often provide only the date, not the
     # intraday time. For end-of-day reconciliation, grouping buys before sells
     # on the same date avoids false residual positions when the CSV lists a
     # closing sell before the same-day opening buys.
-    side_rank = {"BUY": 0, "SELL": 1}.get(side, 2)
+    side_rank = {"BUY": 2, "SELL": 3}.get(side, 4)
     return (parsed.date(), side_rank, int((row or {}).get("_source_order", 0) or 0))
 
 
@@ -65,6 +71,7 @@ def build_robinhood_reconciled_portfolio(records, *, existing_data=None):
     saw_cash_event = False
     imported_rows = _normalize_source_records(records)
     imported_trade_symbols = set()
+    net_shares = {}
 
     for row in imported_rows:
         record_type = str(row.get("record_type", "") or "").strip().upper()
@@ -78,6 +85,44 @@ def build_robinhood_reconciled_portfolio(records, *, existing_data=None):
                 saw_cash_event = True
             except (TypeError, ValueError):
                 issues.append(f"Invalid cash event amount for {event_type or 'UNKNOWN'} on {row.get('date')}.")
+            continue
+
+        if record_type == "CORPORATE_ACTION":
+            try:
+                shares = normalize_share_quantity(row.get("shares", 0.0))
+            except (TypeError, ValueError):
+                issues.append(f"Invalid corporate action row for {symbol or 'UNKNOWN'} on {row.get('date')}.")
+                continue
+            if not symbol or shares <= 0:
+                issues.append(f"Incomplete corporate action row for {symbol or 'UNKNOWN'} on {row.get('date')}.")
+                continue
+
+            imported_trade_symbols.add(symbol)
+            state = positions.setdefault(
+                symbol,
+                {
+                    "shares": 0.0,
+                    "cost": 0.0,
+                    "last_trade_price": None,
+                },
+            )
+            current_shares = float(state["shares"] or 0.0)
+            current_cost = float(state["cost"] or 0.0)
+            side = str(row.get("side") or "").strip().upper()
+            event_type = str(row.get("event_type") or "").strip().upper()
+            if side == "REMOVE" or event_type == "SHARE_DECREASE":
+                net_shares[symbol] = net_shares.get(symbol, 0.0) - shares
+                if shares > current_shares + 1e-9:
+                    state["shares"] = 0.0
+                else:
+                    state["shares"] = normalize_share_quantity(current_shares - shares)
+                continue
+
+            net_shares[symbol] = net_shares.get(symbol, 0.0) + shares
+            total_cost_amount = current_shares * current_cost
+            total_shares = normalize_share_quantity(current_shares + shares)
+            state["shares"] = total_shares
+            state["cost"] = total_cost_amount / total_shares if total_shares > 0 else current_cost
             continue
 
         if record_type != "TRADE":
@@ -105,6 +150,7 @@ def build_robinhood_reconciled_portfolio(records, *, existing_data=None):
         state["last_trade_price"] = float(price)
 
         if event_type == "BUY":
+            net_shares[symbol] = net_shares.get(symbol, 0.0) + shares
             current_shares = float(state["shares"] or 0.0)
             current_cost = float(state["cost"] or 0.0)
             total_shares = normalize_share_quantity(current_shares + shares)
@@ -115,6 +161,7 @@ def build_robinhood_reconciled_portfolio(records, *, existing_data=None):
             continue
 
         if event_type == "SELL":
+            net_shares[symbol] = net_shares.get(symbol, 0.0) - shares
             current_shares = float(state["shares"] or 0.0)
             if shares > current_shares + 1e-9:
                 issues.append(
@@ -133,7 +180,8 @@ def build_robinhood_reconciled_portfolio(records, *, existing_data=None):
     held_symbols = []
     for symbol in sorted(positions.keys()):
         state = positions[symbol]
-        shares = float(state.get("shares") or 0.0)
+        shares = max(float(net_shares.get(symbol, state.get("shares") or 0.0) or 0.0), 0.0)
+        shares = normalize_share_quantity(shares) if shares >= float(MIN_SHARE_QUANTITY) else 0.0
         if shares < float(MIN_SHARE_QUANTITY):
             continue
         existing_holding = existing_holdings.get(symbol, {})
@@ -143,6 +191,17 @@ def build_robinhood_reconciled_portfolio(records, *, existing_data=None):
             current_price = existing_watch.get("last_price")
         if current_price is None:
             current_price = state.get("last_trade_price")
+        reference_price = current_price if current_price is not None else state.get("cost")
+        try:
+            position_value = shares * float(reference_price)
+        except (TypeError, ValueError):
+            position_value = None
+        if position_value is not None and 0 <= position_value < DEFAULT_DUST_POSITION_VALUE:
+            issues.append(
+                f"Suppressed dust-level reconstructed position for {symbol}: "
+                f"{shares:.6f} shares worth about ${position_value:.2f}."
+            )
+            continue
         holdings.append(
             {
                 "symbol": symbol,

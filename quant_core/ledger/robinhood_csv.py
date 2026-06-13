@@ -23,6 +23,7 @@ _QUANTITY_FIELDS = ("quantity", "qty", "shares")
 _PRICE_FIELDS = ("price", "average price", "fill price", "trade price")
 _TOTAL_FIELDS = ("total", "amount", "net amount", "proceeds")
 _DESCRIPTION_FIELDS = ("description", "details", "notes")
+_CORPORATE_ACTION_CODES = {"SPL", "SPR", "SXCH"}
 
 
 def _decode_csv_bytes(content):
@@ -76,6 +77,17 @@ def _parse_float(value):
     return -number if negative else number
 
 
+def _parse_quantity_with_marker(value):
+    text = _strip_text(value).replace(",", "")
+    if not text:
+        return None, False
+    surrendered = text.upper().endswith("S")
+    if surrendered:
+        text = text[:-1]
+    quantity = _parse_float(text)
+    return quantity, surrendered
+
+
 def _parse_datetime_text(value):
     text = _strip_text(value)
     if not text:
@@ -108,7 +120,7 @@ def _infer_trade_side(type_text, description_text, quantity, total):
     combined = " ".join(part for part in [type_text, description_text] if part).strip().lower()
     if any(token in combined for token in ("dividend", "transfer", "deposit", "withdraw", "interest", "wire", "fee")):
         return None
-    if any(token in combined for token in ("option", "call", "put", "contract")):
+    if re.search(r"\b(option|call|put|contract)\b", combined):
         return None
     if any(token in combined for token in ("sell", "sold")):
         return "SELL"
@@ -172,6 +184,44 @@ def _build_trade_record(row, *, filename=""):
 
     if not date_value:
         return None, "missing date"
+    if type_text.strip().upper() in _CORPORATE_ACTION_CODES:
+        if not symbol or not _SYMBOL_PATTERN.match(symbol):
+            return None, "unsupported or missing symbol"
+        action_quantity, surrendered = _parse_quantity_with_marker(row.get(quantity_column)) if quantity_column else (None, False)
+        if action_quantity is None or action_quantity == 0:
+            return None, "missing quantity"
+        action_quantity = abs(float(action_quantity))
+        event_type = "SHARE_DECREASE" if surrendered else "SHARE_INCREASE"
+        side = "REMOVE" if surrendered else "ADD"
+        fingerprint_payload = {
+            "source": "ROBINHOOD_ACCOUNT_ACTIVITY_CSV",
+            "date": date_value,
+            "symbol": symbol,
+            "event_type": event_type,
+            "side": side,
+            "shares": _canonical_number_text(action_quantity),
+            "type": type_text.lower(),
+            "description": description_text.lower(),
+        }
+        notes = description_text or f"Imported from Robinhood account activity CSV ({filename or 'upload'})"
+        return {
+            "record_type": "CORPORATE_ACTION",
+            "event_type": event_type,
+            "side": side,
+            "date": date_value,
+            "symbol": symbol,
+            "shares": action_quantity,
+            "price": None,
+            "sell_price": None,
+            "cost_basis": None,
+            "proceeds": None,
+            "pl": None,
+            "pl_pct": None,
+            "notes": notes,
+            "source": "ROBINHOOD_ACCOUNT_ACTIVITY_CSV",
+            "import_key": _build_import_key(fingerprint_payload),
+            "source_file": str(filename or ""),
+        }, None
     side = _infer_trade_side(type_text, description_text, quantity, total)
     if side not in {"BUY", "SELL"}:
         cash_event_type = _infer_cash_event(type_text, description_text, total)

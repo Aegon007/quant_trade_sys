@@ -43,6 +43,38 @@ class RobinhoodImportTests(unittest.TestCase):
         self.assertEqual(result["records"][2]["event_type"], "CASH_DEPOSIT")
         self.assertEqual(result["records"][2]["proceeds"], 1000.0)
 
+    def test_parse_robinhood_activity_csv_extracts_split_rows(self):
+        csv_bytes = (
+            "Activity Date,Instrument,Trans Code,Quantity,Price,Amount,Description\n"
+            "2025-10-29,TSLZ,SPR,300S,,,T-Rex 2X Inverse Tesla Daily Target ETF\n"
+            "2025-10-29,TSLZ,SPR,15,,,T-Rex 2X Inverse Tesla Daily Target ETF\n"
+        ).encode("utf-8")
+
+        result = self.importer.parse_robinhood_activity_csv(csv_bytes, filename="activity.csv")
+
+        self.assertEqual(result["parsed_count"], 2)
+        self.assertEqual(result["skipped_count"], 0)
+        self.assertEqual(result["records"][0]["record_type"], "CORPORATE_ACTION")
+        self.assertEqual(result["records"][0]["event_type"], "SHARE_DECREASE")
+        self.assertEqual(result["records"][0]["side"], "REMOVE")
+        self.assertEqual(result["records"][0]["shares"], 300.0)
+        self.assertEqual(result["records"][1]["event_type"], "SHARE_INCREASE")
+        self.assertEqual(result["records"][1]["side"], "ADD")
+        self.assertEqual(result["records"][1]["shares"], 15.0)
+
+    def test_parse_robinhood_activity_csv_does_not_treat_computer_as_put_option(self):
+        csv_bytes = (
+            "Activity Date,Instrument,Trans Code,Quantity,Price,Amount,Description\n"
+            "2024-06-14,SMCI,Buy,0.059036,$846.93,($50.00),Super Micro Computer\n"
+        ).encode("utf-8")
+
+        result = self.importer.parse_robinhood_activity_csv(csv_bytes, filename="activity.csv")
+
+        self.assertEqual(result["parsed_count"], 1)
+        self.assertEqual(result["skipped_count"], 0)
+        self.assertEqual(result["records"][0]["symbol"], "SMCI")
+        self.assertEqual(result["records"][0]["event_type"], "BUY")
+
     def test_import_robinhood_activity_csv_deduplicates_repeated_imports(self):
         csv_bytes = (
             "Date,Symbol,Type,Quantity,Price,Total,Description\n"
@@ -81,7 +113,7 @@ class RobinhoodImportTests(unittest.TestCase):
         self.assertEqual(len(rows), 3)
         self.assertEqual(rows[-1]["symbol"], "MSFT")
 
-    def test_replace_with_robinhood_activity_csv_backs_up_and_rebuilds_ledger(self):
+    def test_replace_with_robinhood_activity_csv_backs_up_and_rebuilds_ledger_without_deduping_same_file(self):
         self.transactions.save_transactions(
             [
                 {
@@ -107,10 +139,10 @@ class RobinhoodImportTests(unittest.TestCase):
 
         self.assertEqual(result["mode"], "replace")
         self.assertTrue(result["cleared_existing"])
-        self.assertEqual(result["imported_count"], 2)
-        self.assertEqual(result["duplicate_count"], 1)
+        self.assertEqual(result["imported_count"], 3)
+        self.assertEqual(result["duplicate_count"], 0)
         self.assertTrue(Path(result["backup_path"]).exists())
-        self.assertEqual(len(rows), 2)
+        self.assertEqual(len(rows), 3)
         self.assertEqual({row["symbol"] for row in rows}, {"AAPL"})
 
     def test_replace_with_robinhood_activity_csv_does_not_clear_on_empty_parse(self):

@@ -308,6 +308,129 @@ class PortfolioReconciliationTests(unittest.TestCase):
         self.assertEqual([row["symbol"] for row in result["holdings"]], ["AAPL"])
         self.assertTrue(any("preserved existing cash_available" in issue for issue in result["issues"]))
 
+    def test_build_robinhood_reconciled_portfolio_applies_reverse_split_actions(self):
+        from quant_core.portfolio.reconciliation import build_robinhood_reconciled_portfolio
+
+        result = build_robinhood_reconciled_portfolio(
+            [
+                {
+                    "record_type": "TRADE",
+                    "event_type": "BUY",
+                    "side": "BUY",
+                    "date": "2025-10-28 00:00:00",
+                    "symbol": "TSLZ",
+                    "shares": 300.0,
+                    "price": 0.62,
+                    "source": "ROBINHOOD_ACCOUNT_ACTIVITY_CSV",
+                },
+                {
+                    "record_type": "CORPORATE_ACTION",
+                    "event_type": "SHARE_DECREASE",
+                    "side": "REMOVE",
+                    "date": "2025-10-29 00:00:00",
+                    "symbol": "TSLZ",
+                    "shares": 300.0,
+                    "price": None,
+                    "source": "ROBINHOOD_ACCOUNT_ACTIVITY_CSV",
+                },
+                {
+                    "record_type": "CORPORATE_ACTION",
+                    "event_type": "SHARE_INCREASE",
+                    "side": "ADD",
+                    "date": "2025-10-29 00:00:00",
+                    "symbol": "TSLZ",
+                    "shares": 15.0,
+                    "price": None,
+                    "source": "ROBINHOOD_ACCOUNT_ACTIVITY_CSV",
+                },
+                {
+                    "record_type": "TRADE",
+                    "event_type": "SELL",
+                    "side": "SELL",
+                    "date": "2025-11-07 00:00:00",
+                    "symbol": "TSLZ",
+                    "shares": 15.0,
+                    "price": 14.0,
+                    "proceeds": 210.0,
+                    "source": "ROBINHOOD_ACCOUNT_ACTIVITY_CSV",
+                },
+            ],
+            existing_data={"account": {"cash_available": 0.0}, "holdings": [], "watchlist": []},
+        )
+
+        self.assertEqual(result["holdings"], [])
+        self.assertEqual([row["symbol"] for row in result["watchlist"]], ["TSLZ"])
+
+    def test_build_robinhood_reconciled_portfolio_uses_net_shares_to_close_false_residuals(self):
+        from quant_core.portfolio.reconciliation import build_robinhood_reconciled_portfolio
+
+        result = build_robinhood_reconciled_portfolio(
+            [
+                {
+                    "record_type": "TRADE",
+                    "event_type": "SELL",
+                    "side": "SELL",
+                    "date": "2026-01-03 00:00:00",
+                    "symbol": "AMD",
+                    "shares": 0.1,
+                    "price": 100.0,
+                    "proceeds": 10.0,
+                    "source": "ROBINHOOD_ACCOUNT_ACTIVITY_CSV",
+                },
+                {
+                    "record_type": "TRADE",
+                    "event_type": "BUY",
+                    "side": "BUY",
+                    "date": "2026-01-04 00:00:00",
+                    "symbol": "AMD",
+                    "shares": 0.1,
+                    "price": 101.0,
+                    "source": "ROBINHOOD_ACCOUNT_ACTIVITY_CSV",
+                },
+            ],
+            existing_data={
+                "account": {"cash_available": 0.0},
+                "holdings": [{"symbol": "AMD", "shares": 0.1, "cost": 100.0, "current_price": 101.0, "sector": ""}],
+                "watchlist": [],
+            },
+        )
+
+        self.assertEqual(result["holdings"], [])
+        self.assertEqual([row["symbol"] for row in result["watchlist"]], ["AMD"])
+
+    def test_build_robinhood_reconciled_portfolio_suppresses_dust_value_positions(self):
+        from quant_core.portfolio.reconciliation import build_robinhood_reconciled_portfolio
+
+        result = build_robinhood_reconciled_portfolio(
+            [
+                {
+                    "record_type": "TRADE",
+                    "event_type": "BUY",
+                    "side": "BUY",
+                    "date": "2026-01-04 00:00:00",
+                    "symbol": "SPY",
+                    "shares": 0.002,
+                    "price": 600.0,
+                    "source": "ROBINHOOD_ACCOUNT_ACTIVITY_CSV",
+                },
+                {
+                    "record_type": "TRADE",
+                    "event_type": "BUY",
+                    "side": "BUY",
+                    "date": "2026-01-04 00:00:00",
+                    "symbol": "MSFT",
+                    "shares": 0.05,
+                    "price": 400.0,
+                    "source": "ROBINHOOD_ACCOUNT_ACTIVITY_CSV",
+                },
+            ],
+            existing_data={"account": {"cash_available": 0.0}, "holdings": [], "watchlist": []},
+        )
+
+        self.assertEqual([row["symbol"] for row in result["holdings"]], ["MSFT"])
+        self.assertIn("SPY", [row["symbol"] for row in result["watchlist"]])
+        self.assertTrue(any("Suppressed dust-level" in issue for issue in result["issues"]))
+
 
 if __name__ == "__main__":
     unittest.main()

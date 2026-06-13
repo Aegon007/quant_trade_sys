@@ -265,11 +265,12 @@ def replace_with_robinhood_activity_csv(content, *, filename="", backup=True):
         raise ValueError("CSV did not contain supported Robinhood activity records; existing transactions were not cleared.")
 
     backup_path = backup_transactions(label="pre-robinhood-rebuild") if backup else ""
-    save_transactions([])
-    appended = append_imported_trade_records(parsed_records)
+    save_transactions(parsed_records)
     return {
         **parsed,
-        **appended,
+        "imported_count": len(parsed_records),
+        "duplicate_count": 0,
+        "records": parsed_records,
         "mode": "replace",
         "cleared_existing": True,
         "backup_path": backup_path,
