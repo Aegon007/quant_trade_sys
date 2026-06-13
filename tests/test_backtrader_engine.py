@@ -1,4 +1,6 @@
 import unittest
+from contextlib import redirect_stdout
+from io import StringIO
 
 import pandas as pd
 
@@ -45,9 +47,12 @@ class BacktraderEquityCurveTests(unittest.TestCase):
         engine = self.engine_module.BacktraderEngine(initial_cash=100000.0)
         engine.set_data(dataframe)
         engine.set_strategy(BuySellStrategy())
-        result = engine.run()
+        stdout = StringIO()
+        with redirect_stdout(stdout):
+            result = engine.run()
 
         self.assertEqual(result.equity_curve, [100000.0, 101500.0, 99500.0])
+        self.assertEqual(stdout.getvalue(), "")
 
 
 if __name__ == "__main__":

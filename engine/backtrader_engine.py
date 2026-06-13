@@ -192,10 +192,8 @@ class BacktraderEngine(BaseBacktestEngine):
         self.cerebro.addanalyzer(bt.analyzers.TradeAnalyzer, _name='trades')
 
         # 7. 执行回测
-        print(f'初始资金: {self.cerebro.broker.getvalue():.2f}')
         results = self.cerebro.run()
         strategy_instance = results[0]  # 获取策略实例
-        print(f'最终资金: {self.cerebro.broker.getvalue():.2f}')
 
         # 8. 提取分析结果
         analyzers = strategy_instance.analyzers
