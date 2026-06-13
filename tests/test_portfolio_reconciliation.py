@@ -361,7 +361,7 @@ class PortfolioReconciliationTests(unittest.TestCase):
         self.assertEqual(result["holdings"], [])
         self.assertEqual([row["symbol"] for row in result["watchlist"]], ["TSLZ"])
 
-    def test_build_robinhood_reconciled_portfolio_uses_net_shares_to_close_false_residuals(self):
+    def test_build_robinhood_reconciled_portfolio_treats_oversell_as_flat_before_new_buy(self):
         from quant_core.portfolio.reconciliation import build_robinhood_reconciled_portfolio
 
         result = build_robinhood_reconciled_portfolio(
@@ -395,8 +395,71 @@ class PortfolioReconciliationTests(unittest.TestCase):
             },
         )
 
-        self.assertEqual(result["holdings"], [])
-        self.assertEqual([row["symbol"] for row in result["watchlist"]], ["AMD"])
+        self.assertEqual([(row["symbol"], row["shares"]) for row in result["holdings"]], [("AMD", 0.1)])
+        self.assertEqual(result["watchlist"], [])
+
+    def test_build_robinhood_reconciled_portfolio_preserves_fractional_precision_until_final_rounding(self):
+        from quant_core.portfolio.reconciliation import build_robinhood_reconciled_portfolio
+
+        records = []
+        for shares in [0.879024, 0.794991, 0.794044, 0.798801, 0.796099, 0.803939, 0.803132, 1.0, 1.0, 0.395673, 0.80072, 1.0, 0.200521]:
+            records.append(
+                {
+                    "record_type": "TRADE",
+                    "event_type": "BUY",
+                    "side": "BUY",
+                    "date": "2026-01-01 00:00:00",
+                    "symbol": "IAU",
+                    "shares": shares,
+                    "price": 50.0,
+                    "source": "ROBINHOOD_ACCOUNT_ACTIVITY_CSV",
+                }
+            )
+        for shares in [0.879024, 9.18792]:
+            records.append(
+                {
+                    "record_type": "TRADE",
+                    "event_type": "SELL",
+                    "side": "SELL",
+                    "date": "2026-01-02 00:00:00",
+                    "symbol": "IAU",
+                    "shares": shares,
+                    "price": 50.0,
+                    "proceeds": shares * 50.0,
+                    "source": "ROBINHOOD_ACCOUNT_ACTIVITY_CSV",
+                }
+            )
+        records.extend(
+            [
+                {
+                    "record_type": "TRADE",
+                    "event_type": "BUY",
+                    "side": "BUY",
+                    "date": "2026-01-03 00:00:00",
+                    "symbol": "IAU",
+                    "shares": 2.0,
+                    "price": 80.0,
+                    "source": "ROBINHOOD_ACCOUNT_ACTIVITY_CSV",
+                },
+                {
+                    "record_type": "TRADE",
+                    "event_type": "BUY",
+                    "side": "BUY",
+                    "date": "2026-01-04 00:00:00",
+                    "symbol": "IAU",
+                    "shares": 3.0,
+                    "price": 80.0,
+                    "source": "ROBINHOOD_ACCOUNT_ACTIVITY_CSV",
+                },
+            ]
+        )
+
+        result = build_robinhood_reconciled_portfolio(
+            records,
+            existing_data={"account": {"cash_available": 0.0}, "holdings": [], "watchlist": []},
+        )
+
+        self.assertEqual([(row["symbol"], row["shares"]) for row in result["holdings"]], [("IAU", 5.0)])
 
     def test_build_robinhood_reconciled_portfolio_suppresses_dust_value_positions(self):
         from quant_core.portfolio.reconciliation import build_robinhood_reconciled_portfolio

@@ -36,6 +36,13 @@ def _normalize_source_records(records, *, source="ROBINHOOD_ACCOUNT_ACTIVITY_CSV
     return normalized
 
 
+def _coerce_share_quantity(value) -> float:
+    quantity = float(value or 0.0)
+    if quantity < 0:
+        quantity = abs(quantity)
+    return quantity
+
+
 def _reconcile_sort_key(row):
     parsed = _parse_dt((row or {}).get("date"))
     record_type = str((row or {}).get("record_type") or "").strip().upper()
@@ -71,7 +78,6 @@ def build_robinhood_reconciled_portfolio(records, *, existing_data=None):
     saw_cash_event = False
     imported_rows = _normalize_source_records(records)
     imported_trade_symbols = set()
-    net_shares = {}
 
     for row in imported_rows:
         record_type = str(row.get("record_type", "") or "").strip().upper()
@@ -89,7 +95,7 @@ def build_robinhood_reconciled_portfolio(records, *, existing_data=None):
 
         if record_type == "CORPORATE_ACTION":
             try:
-                shares = normalize_share_quantity(row.get("shares", 0.0))
+                shares = _coerce_share_quantity(row.get("shares", 0.0))
             except (TypeError, ValueError):
                 issues.append(f"Invalid corporate action row for {symbol or 'UNKNOWN'} on {row.get('date')}.")
                 continue
@@ -111,16 +117,14 @@ def build_robinhood_reconciled_portfolio(records, *, existing_data=None):
             side = str(row.get("side") or "").strip().upper()
             event_type = str(row.get("event_type") or "").strip().upper()
             if side == "REMOVE" or event_type == "SHARE_DECREASE":
-                net_shares[symbol] = net_shares.get(symbol, 0.0) - shares
                 if shares > current_shares + 1e-9:
                     state["shares"] = 0.0
                 else:
-                    state["shares"] = normalize_share_quantity(current_shares - shares)
+                    state["shares"] = current_shares - shares
                 continue
 
-            net_shares[symbol] = net_shares.get(symbol, 0.0) + shares
             total_cost_amount = current_shares * current_cost
-            total_shares = normalize_share_quantity(current_shares + shares)
+            total_shares = current_shares + shares
             state["shares"] = total_shares
             state["cost"] = total_cost_amount / total_shares if total_shares > 0 else current_cost
             continue
@@ -129,7 +133,7 @@ def build_robinhood_reconciled_portfolio(records, *, existing_data=None):
             continue
 
         try:
-            shares = normalize_share_quantity(row.get("shares", 0.0))
+            shares = _coerce_share_quantity(row.get("shares", 0.0))
             price = float(row.get("price") or row.get("cost_basis") or 0.0)
         except (TypeError, ValueError):
             issues.append(f"Invalid trade row for {symbol or 'UNKNOWN'} on {row.get('date')}.")
@@ -150,10 +154,9 @@ def build_robinhood_reconciled_portfolio(records, *, existing_data=None):
         state["last_trade_price"] = float(price)
 
         if event_type == "BUY":
-            net_shares[symbol] = net_shares.get(symbol, 0.0) + shares
             current_shares = float(state["shares"] or 0.0)
             current_cost = float(state["cost"] or 0.0)
-            total_shares = normalize_share_quantity(current_shares + shares)
+            total_shares = current_shares + shares
             total_cost_amount = current_shares * current_cost + shares * float(price)
             state["shares"] = total_shares
             state["cost"] = total_cost_amount / total_shares if total_shares > 0 else float(price)
@@ -161,7 +164,6 @@ def build_robinhood_reconciled_portfolio(records, *, existing_data=None):
             continue
 
         if event_type == "SELL":
-            net_shares[symbol] = net_shares.get(symbol, 0.0) - shares
             current_shares = float(state["shares"] or 0.0)
             if shares > current_shares + 1e-9:
                 issues.append(
@@ -169,7 +171,7 @@ def build_robinhood_reconciled_portfolio(records, *, existing_data=None):
                 )
                 state["shares"] = 0.0
             else:
-                state["shares"] = normalize_share_quantity(current_shares - shares)
+                state["shares"] = current_shares - shares
             proceeds = row.get("proceeds")
             try:
                 cash_balance += float(proceeds if proceeds is not None else shares * float(price))
@@ -180,7 +182,7 @@ def build_robinhood_reconciled_portfolio(records, *, existing_data=None):
     held_symbols = []
     for symbol in sorted(positions.keys()):
         state = positions[symbol]
-        shares = max(float(net_shares.get(symbol, state.get("shares") or 0.0) or 0.0), 0.0)
+        shares = max(float(state.get("shares") or 0.0), 0.0)
         shares = normalize_share_quantity(shares) if shares >= float(MIN_SHARE_QUANTITY) else 0.0
         if shares < float(MIN_SHARE_QUANTITY):
             continue
