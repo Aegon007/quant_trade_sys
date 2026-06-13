@@ -155,6 +155,69 @@ class PortfolioReconciliationTests(unittest.TestCase):
         self.assertEqual([row["symbol"] for row in result["watchlist"]], ["AAPL"])
         self.assertEqual(result["watchlist"][0]["last_price"], 118.0)
 
+    def test_build_robinhood_reconciled_portfolio_handles_same_day_sell_before_buys(self):
+        from quant_core.portfolio.reconciliation import build_robinhood_reconciled_portfolio
+
+        records = [
+            {
+                "record_type": "TRADE",
+                "event_type": "SELL",
+                "side": "SELL",
+                "date": "2026-04-07 00:00:00",
+                "symbol": "SQQQ",
+                "shares": 0.7,
+                "price": 77.2,
+                "proceeds": 54.04,
+                "source": "ROBINHOOD_ACCOUNT_ACTIVITY_CSV",
+            },
+            {
+                "record_type": "TRADE",
+                "event_type": "BUY",
+                "side": "BUY",
+                "date": "2026-04-07 00:00:00",
+                "symbol": "SQQQ",
+                "shares": 0.2,
+                "price": 79.06,
+                "cost_basis": 79.06,
+                "source": "ROBINHOOD_ACCOUNT_ACTIVITY_CSV",
+            },
+            {
+                "record_type": "TRADE",
+                "event_type": "BUY",
+                "side": "BUY",
+                "date": "2026-04-07 00:00:00",
+                "symbol": "SQQQ",
+                "shares": 0.3,
+                "price": 78.64,
+                "cost_basis": 78.64,
+                "source": "ROBINHOOD_ACCOUNT_ACTIVITY_CSV",
+            },
+            {
+                "record_type": "TRADE",
+                "event_type": "BUY",
+                "side": "BUY",
+                "date": "2026-04-07 00:00:00",
+                "symbol": "SQQQ",
+                "shares": 0.2,
+                "price": 77.23,
+                "cost_basis": 77.23,
+                "source": "ROBINHOOD_ACCOUNT_ACTIVITY_CSV",
+            },
+        ]
+
+        result = build_robinhood_reconciled_portfolio(
+            records,
+            existing_data={
+                "account": {},
+                "holdings": [{"symbol": "SQQQ", "shares": 0.7, "cost": 78.0, "current_price": 77.2, "sector": ""}],
+                "watchlist": [],
+            },
+        )
+
+        self.assertEqual(result["holdings"], [])
+        self.assertEqual([row["symbol"] for row in result["watchlist"]], ["SQQQ"])
+        self.assertEqual(result["issues"], [])
+
 
 if __name__ == "__main__":
     unittest.main()

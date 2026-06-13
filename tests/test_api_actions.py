@@ -130,6 +130,36 @@ class ApiActionsTests(unittest.TestCase):
         self.assertEqual(review_saved[0]["executed_count"], 1)
         self.assertEqual(quality_saved[0]["summary"]["executed_count"], 1)
 
+    def test_import_robinhood_csv_text_can_replace_existing_ledger(self):
+        calls = []
+        original_replace = self.actions.transactions.replace_with_robinhood_activity_csv
+        original_import = self.actions.transactions.import_robinhood_activity_csv
+        original_reconcile = self.actions.portfolio_actions.reconcile_portfolio_from_robinhood_imports
+        original_followup = self.actions.build_robinhood_import_followup
+        self.addCleanup(setattr, self.actions.transactions, "replace_with_robinhood_activity_csv", original_replace)
+        self.addCleanup(setattr, self.actions.transactions, "import_robinhood_activity_csv", original_import)
+        self.addCleanup(setattr, self.actions.portfolio_actions, "reconcile_portfolio_from_robinhood_imports", original_reconcile)
+        self.addCleanup(setattr, self.actions, "build_robinhood_import_followup", original_followup)
+
+        def fake_replace(csv_text, *, filename="", backup=True):
+            calls.append(("replace", csv_text, filename, backup))
+            return {"mode": "replace", "records": [{"date": "2026-06-10", "symbol": "AAPL"}]}
+
+        def fake_import(csv_text, *, filename=""):
+            calls.append(("append", csv_text, filename))
+            return {"mode": "append", "records": []}
+
+        self.actions.transactions.replace_with_robinhood_activity_csv = fake_replace
+        self.actions.transactions.import_robinhood_activity_csv = fake_import
+        self.actions.portfolio_actions.reconcile_portfolio_from_robinhood_imports = lambda **kwargs: {"holdings": []}
+        self.actions.build_robinhood_import_followup = lambda imported: {"message": "updated"}
+
+        result = self.actions.import_robinhood_csv_text("csv", filename="activity.csv", replace_existing=True)
+
+        self.assertEqual(result["mode"], "replace")
+        self.assertEqual(result["import"]["mode"], "replace")
+        self.assertEqual(calls, [("replace", "csv", "activity.csv", True)])
+
 
 if __name__ == "__main__":
     unittest.main()

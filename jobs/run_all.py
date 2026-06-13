@@ -173,7 +173,7 @@ def _service_skip_reason(spec: ServiceSpec) -> str:
         if not (frontend_dir / "package.json").exists():
             return f"Missing frontend/package.json at {frontend_dir}."
         if not (frontend_dir / "node_modules" / ".bin" / "vite").exists():
-            return "Frontend dependencies are not installed. Run npm install in ./frontend."
+            return "Frontend dependencies are not installed. Run npm ci in ./frontend."
         node_ok, node_message = _check_node_version(min_major=MIN_FRONTEND_NODE_MAJOR)
         if not node_ok:
             return node_message
@@ -200,7 +200,7 @@ def _check_node_version(*, min_major: int = MIN_FRONTEND_NODE_MAJOR, runner=subp
             check=False,
         )
     except FileNotFoundError:
-        return False, f"Node.js is not installed. Install Node.js {min_major}+ and run npm install in ./frontend."
+        return False, f"Node.js is not installed. Install Node.js {min_major}+ and run npm ci in ./frontend."
     except Exception as exc:
         return False, f"Unable to check Node.js version: {exc}"
 
@@ -212,7 +212,7 @@ def _check_node_version(*, min_major: int = MIN_FRONTEND_NODE_MAJOR, runner=subp
         return (
             False,
             f"Node.js {version_text} is too old for the React frontend. Install Node.js {min_major}+ "
-            "and then run npm install in ./frontend.",
+            "and then run npm ci in ./frontend.",
         )
     return True, ""
 

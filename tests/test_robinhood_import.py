@@ -81,6 +81,61 @@ class RobinhoodImportTests(unittest.TestCase):
         self.assertEqual(len(rows), 3)
         self.assertEqual(rows[-1]["symbol"], "MSFT")
 
+    def test_replace_with_robinhood_activity_csv_backs_up_and_rebuilds_ledger(self):
+        self.transactions.save_transactions(
+            [
+                {
+                    "record_type": "TRADE",
+                    "event_type": "BUY",
+                    "side": "BUY",
+                    "date": "2026-05-01 09:30",
+                    "symbol": "SQQQ",
+                    "shares": 1.0,
+                    "price": 50.0,
+                }
+            ]
+        )
+        csv_bytes = (
+            "Date,Symbol,Type,Quantity,Price,Total,Description\n"
+            "2026-05-10 09:30,AAPL,Buy,1.500,100.00,150.00,Buy executed\n"
+            "2026-05-10 09:30,AAPL,Buy,1.500,100.00,150.00,Buy executed\n"
+            "2026-05-10 15:45,AAPL,Sell,1.000,110.00,110.00,Sell executed\n"
+        ).encode("utf-8")
+
+        result = self.transactions.replace_with_robinhood_activity_csv(csv_bytes, filename="activity.csv")
+        rows = self.transactions.load_transactions()
+
+        self.assertEqual(result["mode"], "replace")
+        self.assertTrue(result["cleared_existing"])
+        self.assertEqual(result["imported_count"], 2)
+        self.assertEqual(result["duplicate_count"], 1)
+        self.assertTrue(Path(result["backup_path"]).exists())
+        self.assertEqual(len(rows), 2)
+        self.assertEqual({row["symbol"] for row in rows}, {"AAPL"})
+
+    def test_replace_with_robinhood_activity_csv_does_not_clear_on_empty_parse(self):
+        self.transactions.save_transactions(
+            [
+                {
+                    "record_type": "TRADE",
+                    "event_type": "BUY",
+                    "side": "BUY",
+                    "date": "2026-05-01 09:30",
+                    "symbol": "SQQQ",
+                    "shares": 1.0,
+                    "price": 50.0,
+                }
+            ]
+        )
+        csv_bytes = "Date,Symbol,Type,Quantity,Price,Total,Description\n".encode("utf-8")
+
+        with self.assertRaises(ValueError):
+            self.transactions.replace_with_robinhood_activity_csv(csv_bytes, filename="empty.csv")
+
+        rows = self.transactions.load_transactions()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["symbol"], "SQQQ")
+
 
 if __name__ == "__main__":
     unittest.main()

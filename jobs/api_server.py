@@ -143,9 +143,14 @@ def create_app():
         payload = dict(payload or {})
         csv_text = str(payload.get("csv_text") or "")
         filename = str(payload.get("filename") or "")
+        replace_existing = bool(payload.get("replace_existing", False))
         return api_actions.run_with_job_status(
             "manual-robinhood-import",
-            lambda: api_actions.import_robinhood_csv_text(csv_text, filename=filename),
+            lambda: api_actions.import_robinhood_csv_text(
+                csv_text,
+                filename=filename,
+                replace_existing=replace_existing,
+            ),
             run_async=False,
         )
 

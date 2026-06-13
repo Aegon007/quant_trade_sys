@@ -541,6 +541,7 @@ function OperationsPage() {
   const { data: planQuality, reload: reloadPlanQuality } = useSnapshot<Dict>("/api/plan-quality");
   const [result, setResult] = useState<string>("");
   const [busy, setBusy] = useState<string>("");
+  const [replaceRobinhoodLedger, setReplaceRobinhoodLedger] = useState(false);
 
   useEffect(() => {
     const timer = window.setInterval(() => {
@@ -568,7 +569,11 @@ function OperationsPage() {
   async function importCsv(file: File | null) {
     if (!file) return;
     const csvText = await file.text();
-    await runAction("robinhood", "/api/actions/import-robinhood-csv", { filename: file.name, csv_text: csvText });
+    await runAction("robinhood", "/api/actions/import-robinhood-csv", {
+      filename: file.name,
+      csv_text: csvText,
+      replace_existing: replaceRobinhoodLedger,
+    });
   }
 
   const jobRows = Object.values(asDict(asDict(jobs?.payload).jobs));
@@ -585,11 +590,22 @@ function OperationsPage() {
             <button disabled={!!busy} onClick={() => runAction("weekend", "/api/actions/run-weekend-research-once")}>Run Weekend Research</button>
           </div>
         </Panel>
-        <Panel title="Robinhood CSV Import" subtitle="Import Account Activity CSV; then review holdings, transactions, and execution review on Portfolio.">
+        <Panel title="Robinhood CSV Import" subtitle="Default mode appends and deduplicates. Rebuild mode backs up old transactions, clears them, then rebuilds from this CSV.">
+          <label className="check-row">
+            <input
+              type="checkbox"
+              checked={replaceRobinhoodLedger}
+              onChange={(event) => setReplaceRobinhoodLedger(event.target.checked)}
+            />
+            Clear existing transactions and rebuild from this CSV
+          </label>
           <label className="file-box">
             <input type="file" accept=".csv,text/csv" onChange={(event) => importCsv(event.target.files?.[0] ?? null)} />
-            Upload CSV and reconcile portfolio
+            {replaceRobinhoodLedger ? "Upload CSV and rebuild ledger" : "Upload CSV and reconcile portfolio"}
           </label>
+          {replaceRobinhoodLedger ? (
+            <p className="warning-text">Rebuild mode is best when you want Robinhood CSV to become the source of truth. A backup of the old transaction file is saved first.</p>
+          ) : null}
         </Panel>
       </section>
       <Panel title="Job Status" subtitle="Current background and manual job registry.">

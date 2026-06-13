@@ -42,7 +42,7 @@ npm --version
 python -m venv ~/venv
 source ~/venv/bin/activate
 pip install -r requirements.txt
-cd frontend && npm install && cd ..
+cd frontend && npm ci && cd ..
 ```
 
 ### 2. 启动应用

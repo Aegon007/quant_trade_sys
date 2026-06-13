@@ -136,10 +136,13 @@ def run_weekend_research_once() -> dict:
     return result if isinstance(result, dict) else {"message": "weekend research completed", "result": result}
 
 
-def import_robinhood_csv_text(csv_text: str, *, filename: str = "") -> dict:
+def import_robinhood_csv_text(csv_text: str, *, filename: str = "", replace_existing: bool = False) -> dict:
     if not str(csv_text or "").strip():
         raise ValueError("CSV content is empty.")
-    imported = transactions.import_robinhood_activity_csv(csv_text, filename=filename)
+    if replace_existing:
+        imported = transactions.replace_with_robinhood_activity_csv(csv_text, filename=filename, backup=True)
+    else:
+        imported = transactions.import_robinhood_activity_csv(csv_text, filename=filename)
     reconciled: Optional[dict] = None
     reconcile_error = ""
     try:
@@ -149,6 +152,7 @@ def import_robinhood_csv_text(csv_text: str, *, filename: str = "") -> dict:
     followup = build_robinhood_import_followup(imported)
     return {
         "message": "robinhood csv imported",
+        "mode": "replace" if replace_existing else "append",
         "import": imported,
         "reconciliation": reconciled or {},
         "reconciliation_error": reconcile_error,

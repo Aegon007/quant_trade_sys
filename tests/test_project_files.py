@@ -96,6 +96,21 @@ class ProjectFilesTests(unittest.TestCase):
         ]:
             self.assertIn(entry, gitignore)
 
+    def test_frontend_install_flow_uses_ci_without_rewriting_lockfile(self):
+        package_json = ROOT / "frontend" / "package.json"
+        package_lock = ROOT / "frontend" / "package-lock.json"
+        npmrc = ROOT / "frontend" / ".npmrc"
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+
+        self.assertTrue(package_json.exists())
+        self.assertTrue(package_lock.exists())
+        self.assertTrue(npmrc.exists())
+        self.assertIn("cd frontend && npm ci && cd ..", readme)
+        self.assertNotIn("cd frontend && npm install && cd ..", readme)
+        npmrc_text = npmrc.read_text(encoding="utf-8")
+        self.assertIn("save=false", npmrc_text)
+        self.assertIn("package-lock=true", npmrc_text)
+
 
 if __name__ == "__main__":
     unittest.main()

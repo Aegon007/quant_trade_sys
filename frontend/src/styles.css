@@ -358,6 +358,29 @@ tr:last-child td {
   margin-bottom: 10px;
 }
 
+.check-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+  color: #2b4b43;
+  font-weight: 800;
+}
+
+.check-row input {
+  width: 18px;
+  height: 18px;
+  accent-color: #a45a2a;
+}
+
+.warning-text {
+  margin: 12px 0 0;
+  color: #7a3b1d;
+  font-size: 0.9rem;
+  font-weight: 750;
+  line-height: 1.45;
+}
+
 textarea {
   width: 100%;
   min-height: 320px;

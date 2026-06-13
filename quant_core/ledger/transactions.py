@@ -20,6 +20,35 @@ def save_transactions(transactions):
         json.dump(transactions, f, indent=2, ensure_ascii=False)
 
 
+def _safe_backup_label(label):
+    text = str(label or "manual-reset").strip().lower()
+    cleaned = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "-" for ch in text)
+    return cleaned.strip("-") or "manual-reset"
+
+
+def backup_transactions(*, label="manual-reset"):
+    rows = list(load_transactions() or [])
+    if not rows:
+        return ""
+    parent = os.path.dirname(TRANS_FILE) or "."
+    os.makedirs(parent, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    backup_path = os.path.join(parent, f"transactions_backup_{_safe_backup_label(label)}_{timestamp}.json")
+    with open(backup_path, "w", encoding="utf-8") as f:
+        json.dump(rows, f, indent=2, ensure_ascii=False)
+    return backup_path
+
+
+def clear_transactions(*, backup=True, label="manual-reset"):
+    old_count = len(load_transactions() or [])
+    backup_path = backup_transactions(label=label) if backup else ""
+    save_transactions([])
+    return {
+        "cleared_count": old_count,
+        "backup_path": backup_path,
+    }
+
+
 def normalize_transaction_record(record):
     record = dict(record or {})
     symbol = str(record.get("symbol", "")).strip().upper()
@@ -224,6 +253,26 @@ def import_robinhood_activity_csv(content, *, filename=""):
     return {
         **parsed,
         **appended,
+    }
+
+
+def replace_with_robinhood_activity_csv(content, *, filename="", backup=True):
+    from quant_core.ledger import robinhood_csv as rhcsv
+
+    parsed = rhcsv.parse_robinhood_activity_csv(content, filename=filename)
+    parsed_records = list(parsed.get("records", []) or [])
+    if not parsed_records:
+        raise ValueError("CSV did not contain supported Robinhood activity records; existing transactions were not cleared.")
+
+    backup_path = backup_transactions(label="pre-robinhood-rebuild") if backup else ""
+    save_transactions([])
+    appended = append_imported_trade_records(parsed_records)
+    return {
+        **parsed,
+        **appended,
+        "mode": "replace",
+        "cleared_existing": True,
+        "backup_path": backup_path,
     }
 
 

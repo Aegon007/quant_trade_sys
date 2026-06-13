@@ -24,12 +24,25 @@ def _parse_dt(value):
 
 def _normalize_source_records(records, *, source="ROBINHOOD_ACCOUNT_ACTIVITY_CSV"):
     normalized = []
-    for row in list(records or []):
+    for index, row in enumerate(list(records or [])):
         if str((row or {}).get("source", "") or "").strip().upper() != str(source).strip().upper():
             continue
-        normalized.append(dict(row or {}))
-    normalized.sort(key=lambda row: _parse_dt(row.get("date")))
+        normalized_row = dict(row or {})
+        normalized_row["_source_order"] = index
+        normalized.append(normalized_row)
+    normalized.sort(key=_reconcile_sort_key)
     return normalized
+
+
+def _reconcile_sort_key(row):
+    parsed = _parse_dt((row or {}).get("date"))
+    side = str((row or {}).get("side") or (row or {}).get("event_type") or "").strip().upper()
+    # Robinhood Account Activity exports often provide only the date, not the
+    # intraday time. For end-of-day reconciliation, grouping buys before sells
+    # on the same date avoids false residual positions when the CSV lists a
+    # closing sell before the same-day opening buys.
+    side_rank = {"BUY": 0, "SELL": 1}.get(side, 2)
+    return (parsed.date(), side_rank, int((row or {}).get("_source_order", 0) or 0))
 
 
 def build_robinhood_reconciled_portfolio(records, *, existing_data=None):
