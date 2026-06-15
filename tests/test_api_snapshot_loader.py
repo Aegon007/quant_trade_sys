@@ -73,6 +73,20 @@ class ApiSnapshotLoaderTests(unittest.TestCase):
         self.assertEqual(schedule["trading_hours"]["data_health_interval_seconds"], 300)
         self.assertEqual(schedule["nightly"]["poll_seconds"], 300)
 
+    def test_sanitize_notification_config_fills_default_alert_settings(self):
+        sanitized = self.loader._sanitize_notification_config(
+            {
+                "slack": {"enabled": True, "webhook_url": ""},
+                "alert_settings": {"send_hourly_market_summary": True},
+            }
+        )
+
+        self.assertTrue(sanitized["alert_settings"]["send_hourly_market_summary"])
+        self.assertTrue(sanitized["alert_settings"]["send_premarket_brief"])
+        self.assertTrue(sanitized["alert_settings"]["enable_weekend_research"])
+        self.assertEqual(sanitized["alert_settings"]["weekend_research_day_local"], "saturday")
+        self.assertEqual(sanitized["alert_settings"]["weekend_research_hour_local"], 10)
+
     def test_job_registry_updates_status_file(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "job_status.json"

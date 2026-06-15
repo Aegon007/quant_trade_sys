@@ -800,17 +800,22 @@ def run_nightly_alerts(
         except Exception as exc:
             report_results = [{"channel": "router", "ok": False, "message": f"nightly report failed: {exc}"}]
 
-        try:
-            premarket_results = message_router(
-                "premarket_brief",
-                subject=f"Premarket Brief {trade_plan.get('plan_date') if isinstance(trade_plan, dict) else now.strftime('%Y-%m-%d')}",
-                body=premarket_brief_text,
-                config=config,
-                slack_sender=slack_sender,
-                email_sender=email_sender,
-            )
-        except Exception as exc:
-            premarket_results = [{"channel": "router", "ok": False, "message": f"premarket brief failed: {exc}"}]
+        if not bool(alert_settings.get("send_premarket_brief", True)):
+            premarket_results = [{"channel": "summary", "ok": False, "message": "premarket brief skipped: disabled"}]
+        elif not nr.is_us_market_nightly_cycle_trading_day(now):
+            premarket_results = [{"channel": "summary", "ok": False, "message": "premarket brief skipped: non-trading day"}]
+        else:
+            try:
+                premarket_results = message_router(
+                    "premarket_brief",
+                    subject=f"Premarket Brief {trade_plan.get('plan_date') if isinstance(trade_plan, dict) else now.strftime('%Y-%m-%d')}",
+                    body=premarket_brief_text,
+                    config=config,
+                    slack_sender=slack_sender,
+                    email_sender=email_sender,
+                )
+            except Exception as exc:
+                premarket_results = [{"channel": "router", "ok": False, "message": f"premarket brief failed: {exc}"}]
     else:
         report_results = [{"channel": "summary", "ok": False, "message": "nightly report skipped: daily summaries are disabled"}]
         premarket_results = [{"channel": "summary", "ok": False, "message": "premarket brief skipped: daily summaries are disabled"}]

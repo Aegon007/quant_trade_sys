@@ -4,11 +4,26 @@ from datetime import datetime
 
 class ReportingTests(unittest.TestCase):
     def test_is_us_market_session_detects_regular_hours(self):
-        from quant_core.notifications.reporting import is_us_market_session
+        from quant_core.notifications.reporting import is_us_market_session, is_us_market_trading_day
 
         self.assertTrue(is_us_market_session(datetime.fromisoformat("2026-05-11T10:30:00-04:00")))
         self.assertFalse(is_us_market_session(datetime.fromisoformat("2026-05-11T08:45:00-04:00")))
         self.assertFalse(is_us_market_session(datetime.fromisoformat("2026-05-09T11:00:00-04:00")))
+        self.assertTrue(is_us_market_trading_day(datetime.fromisoformat("2026-05-11T10:30:00-04:00")))
+        self.assertFalse(is_us_market_trading_day(datetime.fromisoformat("2026-07-03T10:30:00-04:00")))
+        self.assertFalse(is_us_market_session(datetime.fromisoformat("2026-07-03T10:30:00-04:00")))
+        self.assertFalse(is_us_market_trading_day(datetime.fromisoformat("2021-12-31T10:30:00-05:00")))
+
+    def test_nightly_cycle_trading_day_uses_the_completed_local_session(self):
+        from quant_core.notifications.reporting import (
+            is_us_market_nightly_cycle_trading_day,
+            nightly_cycle_trading_day,
+        )
+
+        self.assertEqual(str(nightly_cycle_trading_day(datetime.fromisoformat("2026-05-08T23:30:00"))), "2026-05-08")
+        self.assertTrue(is_us_market_nightly_cycle_trading_day(datetime.fromisoformat("2026-05-08T23:30:00")))
+        self.assertEqual(str(nightly_cycle_trading_day(datetime.fromisoformat("2026-05-10T23:30:00"))), "2026-05-10")
+        self.assertFalse(is_us_market_nightly_cycle_trading_day(datetime.fromisoformat("2026-05-10T23:30:00")))
 
     def test_build_market_refresh_report_includes_movers_and_regime(self):
         from quant_core.notifications.reporting import build_market_refresh_report

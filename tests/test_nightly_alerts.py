@@ -30,8 +30,8 @@ class NightlyAlertsTests(unittest.TestCase):
             "alert_settings": {"send_daily_summary": True},
         }
         self.module.tx.load_transactions = lambda: [
-            {"record_type": "TRADE", "event_type": "BUY", "side": "BUY", "date": "2026-05-10 09:30", "symbol": "AAPL", "shares": 1.0, "price": 100.0},
-            {"record_type": "TRADE", "event_type": "SELL", "side": "SELL", "date": "2026-05-10 15:30", "symbol": "AAPL", "shares": 1.0, "price": 108.0, "pl": 8.0},
+            {"record_type": "TRADE", "event_type": "BUY", "side": "BUY", "date": "2026-05-08 09:30", "symbol": "AAPL", "shares": 1.0, "price": 100.0},
+            {"record_type": "TRADE", "event_type": "SELL", "side": "SELL", "date": "2026-05-08 15:30", "symbol": "AAPL", "shares": 1.0, "price": 108.0, "pl": 8.0},
         ]
         self.module.tx.normalize_transactions = lambda rows: rows
         sent_reports = []
@@ -42,14 +42,14 @@ class NightlyAlertsTests(unittest.TestCase):
             manifest_path = Path(temp_dir) / "nightly_run_manifest.json"
             change_feed_path = Path(temp_dir) / "change_feed_latest.json"
             result = self.module.run_nightly_alerts(
-                now=datetime(2026, 5, 10, 23, 30, 0),
+                now=datetime(2026, 5, 8, 23, 30, 0),
                 dry_run=False,
                 snapshot_journal_path=str(journal_path),
                 report_output_dir=str(report_dir),
                 manifest_path=str(manifest_path),
                 change_feed_path=str(change_feed_path),
                 quant_analysis_snapshot_builder=lambda **kwargs: {
-                    "generated_at": "2026-05-10T23:30:00",
+                    "generated_at": "2026-05-08T23:30:00",
                     "strategy": {"id": "deep_tcn", "name": "TCN"},
                     "engine": {"name": "backtrader"},
                     "history_period": "2y",
@@ -118,7 +118,7 @@ class NightlyAlertsTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temp_dir:
             result = self.module.run_nightly_alerts(
-                now=datetime(2026, 5, 10, 23, 30, 0),
+                now=datetime(2026, 5, 8, 23, 30, 0),
                 dry_run=False,
                 report_output_dir=temp_dir,
                 environ={"SLACK_WEBHOOK_URL": "https://hooks.slack.com/services/from-env"},
@@ -155,7 +155,7 @@ class NightlyAlertsTests(unittest.TestCase):
 
         sent_messages = []
         changed_snapshot = {
-            "generated_at": "2026-05-10T23:30:00",
+            "generated_at": "2026-05-08T23:30:00",
             "strategy": {"id": "deep_tcn", "name": "TCN"},
             "engine": {"name": "backtrader"},
             "history_period": "2y",
@@ -163,7 +163,7 @@ class NightlyAlertsTests(unittest.TestCase):
             "symbols": [{"symbol": "AAPL", "signal": "BUY", "position_advice": {"action": "ADD"}}],
         }
         previous_snapshot = {
-            "generated_at": "2026-05-09T23:30:00",
+            "generated_at": "2026-05-07T23:30:00",
             "summary": {"top_buy_symbols": []},
             "symbols": [{"symbol": "AAPL", "signal": "HOLD", "position_advice": {"action": "HOLD"}}],
         }
@@ -174,7 +174,7 @@ class NightlyAlertsTests(unittest.TestCase):
             change_feed_path = Path(temp_dir) / "change_feed_latest.json"
             snapshot_path.write_text(json.dumps(previous_snapshot), encoding="utf-8")
             result = self.module.run_nightly_alerts(
-                now=datetime(2026, 5, 10, 23, 30, 0),
+                now=datetime(2026, 5, 8, 23, 30, 0),
                 dry_run=False,
                 report_output_dir=temp_dir,
                 quant_analysis_snapshot_path=str(snapshot_path),

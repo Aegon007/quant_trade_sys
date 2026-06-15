@@ -235,6 +235,9 @@ def maybe_run_nightly_alerts(
 ) -> bool:
     logger = logger or logging.getLogger(__name__)
     now = now or datetime.now()
+    if isinstance(now, datetime) and not nr.is_us_market_nightly_cycle_trading_day(now):
+        logger.info("Nightly trading alerts skipped because the nightly cycle day is not a US market trading day.")
+        return False
     if not should_run(now=now):
         return False
     logger.info("Nightly alerts are due; running scheduled job.")
@@ -248,19 +251,55 @@ def maybe_run_weekend_research(
     config_loader: Callable[[], dict] = ncfg.load_notification_config,
     runner=None,
     logger: Optional[logging.Logger] = None,
+    job_status_path: str = job_registry.DEFAULT_JOB_STATUS_FILE,
 ) -> bool:
     logger = logger or logging.getLogger(__name__)
     now = now or datetime.now()
     if runner is None:
         from jobs.weekend_research import run_weekend_research as runner
+    job_registry.update_job_status(
+        "weekend-research",
+        state="running",
+        detail="checking weekend research schedule",
+        path=job_status_path,
+        now=now,
+    )
     try:
         result = runner(now=now, force=False)
     except Exception:
         logger.exception("Weekend research run failed.")
+        job_registry.update_job_status(
+            "weekend-research",
+            state="failed",
+            detail="weekend research run failed; check terminal logs",
+            path=job_status_path,
+            now=now,
+        )
         return False
     ran = bool(dict(result or {}).get("ran"))
     if ran:
         logger.info("Weekend research ran for cycle %s.", dict(result.get("snapshot", {}) or {}).get("generated_at") or now.isoformat())
+        job_registry.update_job_status(
+            "weekend-research",
+            state="completed",
+            detail="weekend research completed",
+            path=job_status_path,
+            now=now,
+        )
+    else:
+        reason = str(dict(result or {}).get("reason") or "not_due").strip() or "not_due"
+        schedule = dict(dict(result or {}).get("schedule", {}) or {})
+        scheduled_at = (
+            f"{schedule.get('day', 'weekend')} "
+            f"{int(schedule.get('hour', 11) or 11):02d}:{int(schedule.get('minute', 0) or 0):02d}"
+        )
+        job_registry.update_job_status(
+            "weekend-research",
+            state="idle",
+            detail=f"{reason}; scheduled {scheduled_at}",
+            path=job_status_path,
+            now=now,
+        )
     return ran
 
 
@@ -478,6 +517,11 @@ def maybe_run_market_refresh(
 ) -> bool:
     logger = logger or logging.getLogger(__name__)
     now = now or datetime.now()
+    is_trading_day = nr.is_us_market_trading_day(now) if isinstance(now, datetime) else True
+    is_market_session = nr.is_us_market_session(now) if isinstance(now, datetime) else False
+    if not is_trading_day:
+        logger.info("Market cache refresh skipped on a non-trading day; weekend research scheduler remains active.")
+        return False
     data = loader()
     before_data = copy.deepcopy(data)
     refreshed_data, refreshed = refresher(
@@ -509,7 +553,7 @@ def maybe_run_market_refresh(
         journal_entries=latest_snapshot_journal
     )
     latest_discipline_snapshot = qdisc.load_discipline_snapshot() or {}
-    intraday_alerts_enabled = bool(alert_settings.get("send_intraday_alerts", True))
+    intraday_alerts_enabled = bool(alert_settings.get("send_intraday_alerts", True)) and is_market_session
     pending_intraday_discipline_alert = (
         _build_pending_intraday_discipline_alert(
             change_feed=latest_change_feed,
@@ -681,7 +725,9 @@ def maybe_run_market_refresh(
 
     if notifications_enabled and bool(alert_settings.get("send_hourly_market_summary", True)):
         market_hours_only = bool(alert_settings.get("send_hourly_market_summary_market_hours_only", True))
-        if market_hours_only and not nr.is_us_market_session(now):
+        if not is_trading_day:
+            logger.info("Skipping hourly market summary on a non-trading day.")
+        elif market_hours_only and not is_market_session:
             logger.info("Skipping hourly market summary outside regular US market hours.")
         else:
             try:
@@ -777,7 +823,7 @@ def maybe_run_market_refresh(
                         )
             except Exception:
                 logger.exception("Hourly market refresh summary failed.")
-    elif notifications_enabled and nr.is_us_market_session(now) and (pending_intraday_discipline_alert or pending_intraday_classifier_alert):
+    elif notifications_enabled and is_market_session and (pending_intraday_discipline_alert or pending_intraday_classifier_alert):
         bodies = []
         if pending_intraday_discipline_alert and pending_intraday_discipline_alert.get("message"):
             bodies.append(f"Discipline alert: {pending_intraday_discipline_alert['message']}")
@@ -917,6 +963,9 @@ def maybe_run_intraday_tactical_tick(
 ) -> bool:
     logger = logger or logging.getLogger(__name__)
     now = now or datetime.now()
+    if isinstance(now, datetime) and not nr.is_us_market_session(now):
+        logger.info("Intraday tactical tick skipped outside regular US market hours.")
+        return False
     data = loader()
     trade_plan_signature = _load_latest_trade_plan_signature()
     snapshot, tactical_events = _build_intraday_tactical_runtime(

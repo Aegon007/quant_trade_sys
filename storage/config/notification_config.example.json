@@ -50,8 +50,8 @@
     "auto_quant_analysis_min_interval_seconds": 7200,
     "auto_quant_analysis_price_jump_pct": 0.03,
     "enable_weekend_research": true,
-    "weekend_research_day_local": "sunday",
-    "weekend_research_hour_local": 11,
+    "weekend_research_day_local": "saturday",
+    "weekend_research_hour_local": 10,
     "weekend_research_minute_local": 0,
     "weekend_research_history_period": "5y"
   }

@@ -87,7 +87,7 @@ PYTHONPYCACHEPREFIX=/tmp/pycache ~/venv/bin/python -m unittest discover -s tests
 默认行为：
 
 - 默认在 `Settings -> 通知 / 模型 -> 系统节奏 / 自动分析` 中启用。
-- 默认调度为 `Sunday 11:00` 本地时间。
+- 默认调度为 `Saturday 10:00` 本地时间。
 - 默认历史窗口为 `5y`。
 - 默认会生成：
   - 核心 ETF 轮动研究
@@ -119,6 +119,81 @@ PYTHONPYCACHEPREFIX=/tmp/pycache ~/venv/bin/python -m unittest discover -s tests
 ```
 
 那么 `run_all` 会在周末按配置自动检查并执行周末研究任务。
+
+## 开机自动运行
+
+推荐仍然用统一入口：
+
+```bash
+~/venv/bin/python -m jobs.run_all
+```
+
+项目提供了两个自启模板：
+
+- macOS: `deploy/launchd/com.quant-trade-system.plist.example`
+- Linux / Jetson: `deploy/systemd/quant-trade-system.service.example`
+
+### macOS: launchd
+
+1. 复制模板：
+
+```bash
+mkdir -p ~/Library/LaunchAgents
+cp deploy/launchd/com.quant-trade-system.plist.example ~/Library/LaunchAgents/com.quant-trade-system.plist
+```
+
+2. 编辑 `~/Library/LaunchAgents/com.quant-trade-system.plist`，把 `YOUR_USER` 和项目路径改成你自己的路径。
+
+3. 确保日志目录存在：
+
+```bash
+mkdir -p storage/logs
+```
+
+4. 加载并启动：
+
+```bash
+launchctl unload ~/Library/LaunchAgents/com.quant-trade-system.plist 2>/dev/null || true
+launchctl load ~/Library/LaunchAgents/com.quant-trade-system.plist
+launchctl start com.quant-trade-system
+```
+
+5. 查看日志：
+
+```bash
+tail -f storage/logs/launchd.out.log storage/logs/launchd.err.log
+```
+
+### Linux / Jetson: systemd user service
+
+1. 复制模板：
+
+```bash
+mkdir -p ~/.config/systemd/user
+cp deploy/systemd/quant-trade-system.service.example ~/.config/systemd/user/quant-trade-system.service
+```
+
+2. 编辑 `~/.config/systemd/user/quant-trade-system.service`，把 `YOUR_USER` 和项目路径改成你自己的路径。
+
+3. 启用并启动：
+
+```bash
+systemctl --user daemon-reload
+systemctl --user enable --now quant-trade-system.service
+```
+
+4. 如果希望用户未登录时也能启动：
+
+```bash
+sudo loginctl enable-linger "$USER"
+```
+
+5. 查看状态和日志：
+
+```bash
+systemctl --user status quant-trade-system.service
+journalctl --user -u quant-trade-system.service -f
+```
 
 ## 手工维护持仓与观察列表
 
@@ -334,6 +409,37 @@ pip install "transformers>=4.40.0"
 - 在 LM Studio 里换模型
 - 在 `Settings` 中调整 `Local Model`
 - 如果端口或地址不同，再改 `Local Base URL`
+
+### 本地 SLM 不可用时的远程 LLM fallback
+
+系统的默认路由规则是：
+
+- 结构化原因转述：优先 `local_slm`，失败后自动尝试远程 `llm`。
+- 复杂解释 / 调研 / 综合分析：优先远程 `llm`，必要时才尝试 `local_slm`。
+
+这意味着如果 LM Studio 没有启动、端口不对或模型未加载，只要远程 LLM 已在 `Settings` 或环境变量中配置好，系统会自动兜底调用远程 OpenAI-compatible API。
+
+常用环境变量：
+
+```bash
+export LLM_ENABLED=true
+export LLM_PROVIDER=openai
+export LLM_API_BASE_URL=https://api.openai.com/v1
+export LLM_API_KEY=你的_api_key
+export LLM_MODEL=gpt-5-mini
+```
+
+如果使用 OpenRouter：
+
+```bash
+export LLM_ENABLED=true
+export LLM_PROVIDER=openrouter
+export LLM_API_BASE_URL=https://openrouter.ai/api/v1
+export LLM_API_KEY=你的_openrouter_key
+export LLM_MODEL=openai/gpt-4.1-mini
+```
+
+LLM / SLM 只负责转述、解释和整理结构化证据，不会直接生成交易动作。
 
 ## 组合级建议
 

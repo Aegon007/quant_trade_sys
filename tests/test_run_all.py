@@ -118,6 +118,19 @@ class RunAllTests(unittest.TestCase):
         self.assertFalse(result)
         self.assertEqual(calls, [])
 
+    def test_maybe_run_nightly_alerts_skips_weekend_cycle(self):
+        calls = []
+        sunday_night = datetime.fromisoformat("2026-05-10T23:30:00")
+
+        result = self.module.maybe_run_nightly_alerts(
+            now=sunday_night,
+            should_run=lambda **kwargs: True,
+            runner=lambda **kwargs: calls.append(kwargs),
+        )
+
+        self.assertFalse(result)
+        self.assertEqual(calls, [])
+
     def test_maybe_run_market_refresh_updates_when_stale(self):
         calls = []
         sentinel_now = object()
@@ -245,6 +258,33 @@ class RunAllTests(unittest.TestCase):
 
         self.assertTrue(result)
         self.assertEqual(sent, [("hourly summary", "https://hooks.slack.com/services/test")])
+
+    def test_maybe_run_market_refresh_skips_weekend_summary_even_when_after_hours_allowed(self):
+        weekend = datetime.fromisoformat("2026-05-09T11:30:00-04:00")
+        sent = []
+
+        saved = []
+        result = self.module.maybe_run_market_refresh(
+            now=weekend,
+            loader=lambda: {"holdings": [{"symbol": "AAPL", "current_price": 100.0}], "watchlist": []},
+            refresher=lambda payload, **kwargs: ({**payload, "prices_last_updated": "2026-05-09T11:30:00"}, True),
+            saver=lambda payload: saved.append(payload),
+            refresh_interval_seconds=3600,
+            config_loader=lambda: {
+                "slack": {"enabled": True, "webhook_url": "https://hooks.slack.com/services/test"},
+                "alert_settings": {
+                    "send_hourly_market_summary": True,
+                    "send_hourly_market_summary_market_hours_only": False,
+                },
+            },
+            summary_builder=lambda **kwargs: "hourly summary",
+            slack_sender=lambda text, url: (sent.append((text, url)) or True, "ok"),
+            enable_auto_quant_analysis=False,
+        )
+
+        self.assertFalse(result)
+        self.assertEqual(sent, [])
+        self.assertEqual(saved, [])
 
     def test_maybe_run_market_refresh_applies_env_webhook_overrides(self):
         market_hours = datetime.fromisoformat("2026-05-11T10:30:00-04:00")
@@ -826,20 +866,45 @@ class RunAllTests(unittest.TestCase):
     def test_maybe_run_weekend_research_runs_when_due(self):
         now = datetime.fromisoformat("2026-06-07T11:30:00")
         calls = []
-        result = self.module.maybe_run_weekend_research(
-            now=now,
-            config_loader=lambda: {
-                "alert_settings": {
-                    "enable_weekend_research": True,
-                    "weekend_research_day_local": "sunday",
-                    "weekend_research_hour_local": 11,
-                    "weekend_research_minute_local": 0,
-                }
-            },
-            runner=lambda **kwargs: calls.append(kwargs) or {"ran": True, "snapshot": {"generated_at": now.isoformat()}},
-        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            status_path = Path(temp_dir) / "job_status.json"
+            result = self.module.maybe_run_weekend_research(
+                now=now,
+                config_loader=lambda: {
+                    "alert_settings": {
+                        "enable_weekend_research": True,
+                        "weekend_research_day_local": "sunday",
+                        "weekend_research_hour_local": 11,
+                        "weekend_research_minute_local": 0,
+                    }
+                },
+                runner=lambda **kwargs: calls.append(kwargs) or {"ran": True, "snapshot": {"generated_at": now.isoformat()}},
+                job_status_path=str(status_path),
+            )
+            status_payload = json.loads(status_path.read_text(encoding="utf-8"))
+
         self.assertTrue(result)
         self.assertEqual(calls, [{"now": now, "force": False}])
+        self.assertEqual(status_payload["jobs"]["weekend-research"]["state"], "completed")
+
+    def test_maybe_run_weekend_research_records_idle_when_not_due(self):
+        now = datetime.fromisoformat("2026-06-06T09:30:00")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            status_path = Path(temp_dir) / "job_status.json"
+            result = self.module.maybe_run_weekend_research(
+                now=now,
+                runner=lambda **kwargs: {
+                    "ran": False,
+                    "reason": "not_due",
+                    "schedule": {"day": "sunday", "hour": 11, "minute": 0},
+                },
+                job_status_path=str(status_path),
+            )
+            status_payload = json.loads(status_path.read_text(encoding="utf-8"))
+
+        self.assertFalse(result)
+        self.assertEqual(status_payload["jobs"]["weekend-research"]["state"], "idle")
+        self.assertIn("scheduled sunday 11:00", status_payload["jobs"]["weekend-research"]["detail"])
 
 
 if __name__ == "__main__":

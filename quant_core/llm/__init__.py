@@ -13,6 +13,7 @@ from .explainer import (
     narrate_change_feed,
     narrate_discipline_review,
     narrate_news_summary,
+    list_llm_routes,
     select_llm_route,
     summarize_explanation_cache,
 )
@@ -42,6 +43,7 @@ __all__ = [
     "narrate_change_feed",
     "narrate_discipline_review",
     "narrate_news_summary",
+    "list_llm_routes",
     "select_llm_route",
     "summarize_explanation_cache",
     "test_local_narration",

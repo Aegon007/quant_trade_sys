@@ -18,6 +18,7 @@ from quant_core.execution import plan_quality as pq
 from quant_core.execution import post_close_review as pcr
 from quant_core.jobs import job_registry
 from quant_core.ledger import transactions as tx
+from quant_core.notifications import notification_config as ncfg
 from quant_core.snapshots import system_snapshot as ss
 
 
@@ -408,7 +409,7 @@ def save_runtime_schedule(schedule: Mapping, *, path: str = qpaths.RUNTIME_SCHED
 
 
 def _sanitize_notification_config(payload) -> dict:
-    payload = dict(payload or {})
+    payload = ncfg.normalize_notification_config(dict(payload or {}))
     slack = dict(payload.get("slack", {}) or {})
     email = dict(payload.get("email", {}) or {})
     llm = dict(payload.get("llm", {}) or {})

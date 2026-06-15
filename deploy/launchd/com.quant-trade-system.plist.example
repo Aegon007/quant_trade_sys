@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.quant-trade-system</string>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/YOUR_USER/work_dir/quant_trade_sys</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/YOUR_USER/venv/bin/python</string>
+    <string>-m</string>
+    <string>jobs.run_all</string>
+    <string>--api-host</string>
+    <string>127.0.0.1</string>
+    <string>--frontend-host</string>
+    <string>127.0.0.1</string>
+  </array>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/Users/YOUR_USER/venv/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <key>PYTHONUNBUFFERED</key>
+    <string>1</string>
+  </dict>
+
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+
+  <key>StandardOutPath</key>
+  <string>/Users/YOUR_USER/work_dir/quant_trade_sys/storage/logs/launchd.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/YOUR_USER/work_dir/quant_trade_sys/storage/logs/launchd.err.log</string>
+</dict>
+</plist>

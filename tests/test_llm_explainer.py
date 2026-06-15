@@ -48,6 +48,17 @@ class LLMExplainerTests(unittest.TestCase):
         self.assertEqual(route_name, "llm")
         self.assertEqual(config["model"], "gpt-5-mini")
 
+    def test_list_llm_routes_uses_remote_as_narration_fallback(self):
+        routes = self.module.list_llm_routes(
+            {
+                "local_slm": {"enabled": True, "base_url": "http://127.0.0.1:8000/v1", "model": "Qwen/Qwen3-0.6B"},
+                "llm": {"enabled": True, "base_url": "https://api.openai.com/v1", "model": "gpt-5-mini"},
+            },
+            complexity="narration",
+        )
+
+        self.assertEqual([name for name, _config in routes], ["local_slm", "llm"])
+
     def test_explain_core_etf_decision_uses_cache_after_first_call(self):
         calls = {"count": 0}
 
@@ -143,6 +154,54 @@ class LLMExplainerTests(unittest.TestCase):
         self.assertFalse(meta1["cached"])
         self.assertTrue(meta2["cached"])
         self.assertEqual(calls["count"], 1)
+
+    def test_narrate_change_feed_falls_back_to_remote_when_local_slm_fails(self):
+        called_urls = []
+
+        def fake_urlopen(request, timeout=0):
+            called_urls.append(request.full_url)
+            if "127.0.0.1" in request.full_url:
+                raise OSError("connection refused")
+            payload = {"choices": [{"message": {"content": "远程兜底转述完成"}}]}
+            return _FakeResponse(json.dumps(payload).encode("utf-8"))
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache_path = str(Path(temp_dir) / "llm_summary_cache.json")
+            config = {
+                "local_slm": {
+                    "enabled": True,
+                    "provider": "openai",
+                    "base_url": "http://127.0.0.1:8000/v1",
+                    "api_key": "EMPTY",
+                    "model": "Qwen/Qwen3-0.6B",
+                },
+                "llm": {
+                    "enabled": True,
+                    "provider": "openai",
+                    "base_url": "https://api.openai.com/v1",
+                    "api_key": "sk-test",
+                    "model": "gpt-5-mini",
+                },
+            }
+            ok, text, meta = self.module.narrate_change_feed(
+                change_feed={
+                    "generated_at": "2026-05-14T06:00:00",
+                    "summary": {"high_count": 1, "medium_count": 0},
+                    "high_items": [{"title": "纪律层状态切换", "message": "从 NORMAL 到 LIGHT"}],
+                    "medium_items": [],
+                },
+                monthly_discipline_review={"status": "CAUTION", "summary": "IGNORE 天数上升。"},
+                notification_config=config,
+                cache_path=cache_path,
+                urlopen=fake_urlopen,
+            )
+
+        self.assertTrue(ok)
+        self.assertEqual(text, "远程兜底转述完成")
+        self.assertEqual(meta["route_name"], "llm")
+        self.assertEqual(len(meta["fallback_attempts"]), 1)
+        self.assertEqual(meta["fallback_attempts"][0]["route_name"], "local_slm")
+        self.assertEqual(len(called_urls), 2)
 
     def test_explain_discipline_review_prefers_remote_llm(self):
         calls = {"count": 0}

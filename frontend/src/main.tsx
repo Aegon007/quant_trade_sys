@@ -708,6 +708,7 @@ function SettingsPage() {
   const payload = asDict(data?.payload);
   const runtimeSchedule = asDict(payload.runtime_schedule);
   const notification = asDict(payload.notification_config);
+  const alertSettings = asDict(notification.alert_settings);
   const modelRegistry = asDict(payload.model_registry);
   const [scheduleText, setScheduleText] = useState("");
   const [saveResult, setSaveResult] = useState("");
@@ -740,6 +741,14 @@ function SettingsPage() {
           <ConnectionFacts notification={notification} />
         </Panel>
       </section>
+      <Panel title="Notification Cadence" subtitle="Trading-day alerts stay quiet on weekends and market holidays; weekend research has its own schedule.">
+        <dl className="facts">
+          <dt>Premarket Brief</dt><dd>{text(alertSettings.send_premarket_brief)} · trading cycle days only</dd>
+          <dt>Intraday Alerts</dt><dd>{text(alertSettings.send_intraday_alerts)} · regular US market session only</dd>
+          <dt>Hourly Summary</dt><dd>{text(alertSettings.send_hourly_market_summary)} · market-hours-only {text(alertSettings.send_hourly_market_summary_market_hours_only)}</dd>
+          <dt>Weekend Research</dt><dd>{text(alertSettings.enable_weekend_research)} · {text(alertSettings.weekend_research_day_local)} {text(alertSettings.weekend_research_hour_local)}:{String(alertSettings.weekend_research_minute_local ?? 0).padStart(2, "0")} · {text(alertSettings.weekend_research_history_period)}</dd>
+        </dl>
+      </Panel>
       <Panel title="Model Registry" subtitle="Unified model interface; default changes are not automatic.">
         <DataTable rows={asArray(modelRegistry.models)} columns={[
           { label: "Model", keys: ["display_name", "model_id"] },

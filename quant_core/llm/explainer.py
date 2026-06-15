@@ -57,20 +57,37 @@ def summarize_explanation_cache(*, path: str = DEFAULT_EXPLANATION_CACHE_FILE):
 
 
 def select_llm_route(config: Mapping, *, complexity: str = "narration"):
+    routes = list_llm_routes(config, complexity=complexity)
+    if routes:
+        return routes[0]
+    return "", {}
+
+
+def list_llm_routes(config: Mapping, *, complexity: str = "narration"):
     normalized = ncfg.normalize_notification_config(dict(config or {}))
     local_slm = dict(normalized.get("local_slm", {}) or {})
     remote_llm = dict(normalized.get("llm", {}) or {})
     complexity = str(complexity or "narration").strip().lower()
+    routes = []
 
-    if complexity in {"narration", "rewrite", "verbalize"} and local_slm.get("enabled") and str(local_slm.get("base_url") or "").strip():
-        return "local_slm", local_slm
-    if complexity in {"explanation", "research", "analysis", "complex"} and remote_llm.get("enabled") and str(remote_llm.get("base_url") or "").strip():
-        return "llm", remote_llm
-    if remote_llm.get("enabled") and str(remote_llm.get("base_url") or "").strip():
-        return "llm", remote_llm
-    if local_slm.get("enabled") and str(local_slm.get("base_url") or "").strip():
-        return "local_slm", local_slm
-    return "", {}
+    def add_route(route_name: str, route_config: Mapping):
+        route_config = dict(route_config or {})
+        if not route_config.get("enabled") or not str(route_config.get("base_url") or "").strip():
+            return
+        if any(existing_name == route_name for existing_name, _ in routes):
+            return
+        routes.append((route_name, route_config))
+
+    if complexity in {"narration", "rewrite", "verbalize"}:
+        add_route("local_slm", local_slm)
+        add_route("llm", remote_llm)
+    elif complexity in {"explanation", "research", "analysis", "complex"}:
+        add_route("llm", remote_llm)
+        add_route("local_slm", local_slm)
+    else:
+        add_route("llm", remote_llm)
+        add_route("local_slm", local_slm)
+    return routes
 
 
 def build_core_etf_explanation_messages(
@@ -369,6 +386,89 @@ def _generic_cache_key(*, kind: str, payload: Mapping, route_name: str, model_na
     return f"{kind}::{digest}"
 
 
+def _call_openai_chat(messages, route_config: Mapping, *, urlopen=None):
+    if urlopen is None:
+        return oai.call_openai_compatible_chat(messages, route_config)
+    return oai.call_openai_compatible_chat(messages, route_config, urlopen=urlopen)
+
+
+def _run_route_candidates_with_cache(
+    *,
+    cache_kind: str,
+    cache_payload: Mapping,
+    messages,
+    notification_config: Mapping,
+    complexity: str,
+    cache_path: str = DEFAULT_EXPLANATION_CACHE_FILE,
+    urlopen=None,
+    cache_key_fn=None,
+    cache_extra: Optional[Mapping] = None,
+):
+    routes = list_llm_routes(notification_config, complexity=complexity)
+    if not routes:
+        return False, "尚未配置可用的远程 LLM 或本地 SLM。", {"route_name": "", "model": ""}
+
+    cache = load_explanation_cache(path=cache_path)
+    fallback_attempts = []
+    last_error = ""
+    for route_name, route_config in routes:
+        route_config = dict(route_config or {})
+        model_name = str(route_config.get("model") or "").strip()
+        if cache_key_fn is not None:
+            cache_key = cache_key_fn(route_name, route_config)
+        else:
+            cache_key = _generic_cache_key(
+                kind=cache_kind,
+                payload=cache_payload,
+                route_name=route_name,
+                model_name=model_name,
+                mode=complexity,
+            )
+        cached = dict(cache.get(cache_key, {}) or {})
+        if str(cached.get("text") or "").strip():
+            return True, str(cached.get("text") or "").strip(), {
+                "route_name": route_name,
+                "model": model_name,
+                "cached": True,
+                "fallback_attempts": fallback_attempts,
+            }
+
+        ok, text = _call_openai_chat(messages, route_config, urlopen=urlopen)
+        if ok:
+            cache[cache_key] = {
+                "kind": cache_kind,
+                "route_name": route_name,
+                "model": model_name,
+                "created_at": datetime.now().isoformat(),
+                "text": text,
+                "fallback_attempts": fallback_attempts,
+                **dict(cache_extra or {}),
+            }
+            save_explanation_cache(cache, path=cache_path)
+            return True, text, {
+                "route_name": route_name,
+                "model": model_name,
+                "cached": False,
+                "fallback_attempts": fallback_attempts,
+            }
+        last_error = str(text or "").strip()
+        fallback_attempts.append(
+            {
+                "route_name": route_name,
+                "model": model_name,
+                "error": last_error,
+            }
+        )
+
+    last_route_name, last_route_config = routes[-1]
+    return False, last_error or "LLM 调用失败", {
+        "route_name": last_route_name,
+        "model": str(dict(last_route_config or {}).get("model") or "").strip(),
+        "cached": False,
+        "fallback_attempts": fallback_attempts,
+    }
+
+
 def explain_core_etf_decision(
     *,
     symbol_row: Mapping,
@@ -379,53 +479,28 @@ def explain_core_etf_decision(
     cache_path: str = DEFAULT_EXPLANATION_CACHE_FILE,
     urlopen=None,
 ):
-    route_name, route_config = select_llm_route(notification_config, complexity=complexity)
-    if not route_name or not route_config:
-        return False, "尚未配置可用的远程 LLM 或本地 SLM。", {"route_name": "", "model": ""}
-
-    route_config = dict(route_config or {})
-    cache = load_explanation_cache(path=cache_path)
-    cache_key = _core_etf_cache_key(
-        symbol_row=symbol_row,
-        discipline_snapshot=discipline_snapshot,
-        change_feed=change_feed,
-        route_name=route_name,
-        model_name=str(route_config.get("model") or "").strip(),
-    )
-    cached = dict(cache.get(cache_key, {}) or {})
-    if str(cached.get("text") or "").strip():
-        return True, str(cached.get("text") or "").strip(), {
-            "route_name": route_name,
-            "model": str(route_config.get("model") or "").strip(),
-            "cached": True,
-        }
-
     messages = build_core_etf_explanation_messages(
         symbol_row=symbol_row,
         discipline_snapshot=discipline_snapshot,
         change_feed=change_feed,
     )
-    if urlopen is None:
-        ok, text = oai.call_openai_compatible_chat(messages, route_config)
-    else:
-        ok, text = oai.call_openai_compatible_chat(messages, route_config, urlopen=urlopen)
-    if not ok:
-        return False, text, {"route_name": route_name, "model": str(route_config.get("model") or "").strip(), "cached": False}
-
-    cache[cache_key] = {
-        "kind": "core_etf_explanation",
-        "symbol": str(dict(symbol_row or {}).get("symbol") or "").strip().upper(),
-        "route_name": route_name,
-        "model": str(route_config.get("model") or "").strip(),
-        "created_at": datetime.now().isoformat(),
-        "text": text,
-    }
-    save_explanation_cache(cache, path=cache_path)
-    return True, text, {
-        "route_name": route_name,
-        "model": str(route_config.get("model") or "").strip(),
-        "cached": False,
-    }
+    return _run_route_candidates_with_cache(
+        cache_kind="core_etf_explanation",
+        cache_payload={},
+        messages=messages,
+        notification_config=notification_config,
+        complexity=complexity,
+        cache_path=cache_path,
+        urlopen=urlopen,
+        cache_key_fn=lambda route_name, route_config: _core_etf_cache_key(
+            symbol_row=symbol_row,
+            discipline_snapshot=discipline_snapshot,
+            change_feed=change_feed,
+            route_name=route_name,
+            model_name=str(dict(route_config or {}).get("model") or "").strip(),
+        ),
+        cache_extra={"symbol": str(dict(symbol_row or {}).get("symbol") or "").strip().upper()},
+    )
 
 
 def explain_satellite_candidate(
@@ -438,15 +513,14 @@ def explain_satellite_candidate(
     cache_path: str = DEFAULT_EXPLANATION_CACHE_FILE,
     urlopen=None,
 ):
-    route_name, route_config = select_llm_route(notification_config, complexity=complexity)
-    if not route_name or not route_config:
-        return False, "尚未配置可用的远程 LLM 或本地 SLM。", {"route_name": "", "model": ""}
-
-    route_config = dict(route_config or {})
-    cache = load_explanation_cache(path=cache_path)
-    cache_key = _generic_cache_key(
-        kind="satellite_candidate_explanation",
-        payload={
+    messages = build_satellite_explanation_messages(
+        candidate_row=candidate_row,
+        discipline_snapshot=discipline_snapshot,
+        change_feed=change_feed,
+    )
+    return _run_messages_with_cache(
+        cache_kind="satellite_candidate_explanation",
+        cache_payload={
             "symbol": dict(candidate_row or {}).get("symbol"),
             "recommendation_status": dict(candidate_row or {}).get("recommendation_status"),
             "candidate_state": dict(candidate_row or {}).get("candidate_state"),
@@ -459,44 +533,13 @@ def explain_satellite_candidate(
             "discipline_regime": dict(discipline_snapshot or {}).get("regime"),
             "change_generated_at": dict(change_feed or {}).get("generated_at"),
         },
-        route_name=route_name,
-        model_name=str(route_config.get("model") or "").strip(),
-        mode=complexity,
+        messages=messages,
+        notification_config=notification_config,
+        complexity=complexity,
+        cache_path=cache_path,
+        urlopen=urlopen,
+        cache_extra={"symbol": str(dict(candidate_row or {}).get("symbol") or "").strip().upper()},
     )
-    cached = dict(cache.get(cache_key, {}) or {})
-    if str(cached.get("text") or "").strip():
-        return True, str(cached.get("text") or "").strip(), {
-            "route_name": route_name,
-            "model": str(route_config.get("model") or "").strip(),
-            "cached": True,
-        }
-
-    messages = build_satellite_explanation_messages(
-        candidate_row=candidate_row,
-        discipline_snapshot=discipline_snapshot,
-        change_feed=change_feed,
-    )
-    if urlopen is None:
-        ok, text = oai.call_openai_compatible_chat(messages, route_config)
-    else:
-        ok, text = oai.call_openai_compatible_chat(messages, route_config, urlopen=urlopen)
-    if not ok:
-        return False, text, {"route_name": route_name, "model": str(route_config.get("model") or "").strip(), "cached": False}
-
-    cache[cache_key] = {
-        "kind": "satellite_candidate_explanation",
-        "symbol": str(dict(candidate_row or {}).get("symbol") or "").strip().upper(),
-        "route_name": route_name,
-        "model": str(route_config.get("model") or "").strip(),
-        "created_at": datetime.now().isoformat(),
-        "text": text,
-    }
-    save_explanation_cache(cache, path=cache_path)
-    return True, text, {
-        "route_name": route_name,
-        "model": str(route_config.get("model") or "").strip(),
-        "cached": False,
-    }
 
 
 def _run_messages_with_cache(
@@ -508,48 +551,18 @@ def _run_messages_with_cache(
     complexity: str,
     cache_path: str = DEFAULT_EXPLANATION_CACHE_FILE,
     urlopen=None,
+    cache_extra: Optional[Mapping] = None,
 ):
-    route_name, route_config = select_llm_route(notification_config, complexity=complexity)
-    if not route_name or not route_config:
-        return False, "尚未配置可用的远程 LLM 或本地 SLM。", {"route_name": "", "model": ""}
-
-    route_config = dict(route_config or {})
-    cache = load_explanation_cache(path=cache_path)
-    cache_key = _generic_cache_key(
-        kind=cache_kind,
-        payload=cache_payload,
-        route_name=route_name,
-        model_name=str(route_config.get("model") or "").strip(),
-        mode=complexity,
+    return _run_route_candidates_with_cache(
+        cache_kind=cache_kind,
+        cache_payload=cache_payload,
+        messages=messages,
+        notification_config=notification_config,
+        complexity=complexity,
+        cache_path=cache_path,
+        urlopen=urlopen,
+        cache_extra=cache_extra,
     )
-    cached = dict(cache.get(cache_key, {}) or {})
-    if str(cached.get("text") or "").strip():
-        return True, str(cached.get("text") or "").strip(), {
-            "route_name": route_name,
-            "model": str(route_config.get("model") or "").strip(),
-            "cached": True,
-        }
-
-    if urlopen is None:
-        ok, text = oai.call_openai_compatible_chat(messages, route_config)
-    else:
-        ok, text = oai.call_openai_compatible_chat(messages, route_config, urlopen=urlopen)
-    if not ok:
-        return False, text, {"route_name": route_name, "model": str(route_config.get("model") or "").strip(), "cached": False}
-
-    cache[cache_key] = {
-        "kind": cache_kind,
-        "route_name": route_name,
-        "model": str(route_config.get("model") or "").strip(),
-        "created_at": datetime.now().isoformat(),
-        "text": text,
-    }
-    save_explanation_cache(cache, path=cache_path)
-    return True, text, {
-        "route_name": route_name,
-        "model": str(route_config.get("model") or "").strip(),
-        "cached": False,
-    }
 
 
 def narrate_change_feed(

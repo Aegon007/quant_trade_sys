@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import math
 import os
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from time import time as unix_time
 from typing import Mapping, Optional
@@ -18,6 +18,64 @@ _MPL_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
 
 US_MARKET_TZ = ZoneInfo("America/New_York")
 DEFAULT_REPORTS_DIR = str(qpaths.PROJECT_ROOT / "reports")
+
+
+def _nth_weekday(year: int, month: int, weekday: int, n: int) -> date:
+    current = date(year, month, 1)
+    offset = (weekday - current.weekday()) % 7
+    return current + timedelta(days=offset + 7 * (n - 1))
+
+
+def _last_weekday(year: int, month: int, weekday: int) -> date:
+    if month == 12:
+        current = date(year + 1, 1, 1) - timedelta(days=1)
+    else:
+        current = date(year, month + 1, 1) - timedelta(days=1)
+    offset = (current.weekday() - weekday) % 7
+    return current - timedelta(days=offset)
+
+
+def _observed_fixed_holiday(year: int, month: int, day: int) -> date:
+    holiday = date(year, month, day)
+    if holiday.weekday() == 5:
+        return holiday - timedelta(days=1)
+    if holiday.weekday() == 6:
+        return holiday + timedelta(days=1)
+    return holiday
+
+
+def _easter_date(year: int) -> date:
+    # Gregorian computus. Good Friday is an NYSE holiday.
+    a = year % 19
+    b = year // 100
+    c = year % 100
+    d = b // 4
+    e = b % 4
+    f = (b + 8) // 25
+    g = (b - f + 1) // 3
+    h = (19 * a + b - d - g + 15) % 30
+    i = c // 4
+    k = c % 4
+    l = (32 + 2 * e + 2 * i - h - k) % 7
+    m = (a + 11 * h + 22 * l) // 451
+    month = (h + l - 7 * m + 114) // 31
+    day = ((h + l - 7 * m + 114) % 31) + 1
+    return date(year, month, day)
+
+
+def us_market_holidays(year: int) -> set[date]:
+    return {
+        _observed_fixed_holiday(year, 1, 1),
+        _nth_weekday(year, 1, 0, 3),  # Martin Luther King Jr. Day
+        _nth_weekday(year, 2, 0, 3),  # Washington's Birthday
+        _easter_date(year) - timedelta(days=2),  # Good Friday
+        _last_weekday(year, 5, 0),  # Memorial Day
+        _observed_fixed_holiday(year, 6, 19),  # Juneteenth
+        _observed_fixed_holiday(year, 7, 4),  # Independence Day
+        _nth_weekday(year, 9, 0, 1),  # Labor Day
+        _nth_weekday(year, 11, 3, 4),  # Thanksgiving
+        _observed_fixed_holiday(year, 12, 25),  # Christmas
+    }
 
 
 def _load_matplotlib():
@@ -112,12 +170,44 @@ def is_us_market_session(now: Optional[datetime] = None) -> bool:
     if not isinstance(now, datetime):
         return False
     market_now = _with_local_timezone(now).astimezone(US_MARKET_TZ)
-    if market_now.weekday() >= 5:
+    if not is_us_market_trading_day(market_now):
         return False
     start_minutes = 9 * 60 + 30
     current_minutes = market_now.hour * 60 + market_now.minute
     end_minutes = 16 * 60
     return start_minutes <= current_minutes < end_minutes
+
+
+def is_us_market_trading_day(now: Optional[datetime] = None) -> bool:
+    now = now or datetime.now().astimezone()
+    if isinstance(now, datetime):
+        market_day = _with_local_timezone(now).astimezone(US_MARKET_TZ).date()
+    elif isinstance(now, date):
+        market_day = now
+    else:
+        return False
+    if market_day.weekday() >= 5:
+        return False
+    holiday_dates = (
+        us_market_holidays(market_day.year - 1)
+        | us_market_holidays(market_day.year)
+        | us_market_holidays(market_day.year + 1)
+    )
+    return market_day not in holiday_dates
+
+
+def nightly_cycle_trading_day(now: Optional[datetime] = None) -> date:
+    now = now or datetime.now()
+    if isinstance(now, datetime):
+        local_now = _with_local_timezone(now)
+        return (local_now.date() if local_now.hour == 23 else (local_now - timedelta(days=1)).date())
+    if isinstance(now, date):
+        return now
+    return datetime.now().date()
+
+
+def is_us_market_nightly_cycle_trading_day(now: Optional[datetime] = None) -> bool:
+    return is_us_market_trading_day(nightly_cycle_trading_day(now))
 
 
 def _extract_price_map(data):
