@@ -142,7 +142,7 @@ def _signal_bucket(signal: str) -> str:
 
 
 def _expected_return_hint(record: Mapping) -> Optional[float]:
-    for branch in ("tcn_profile", "monte_carlo", "guidance", "scoreboard"):
+    for branch in ("monte_carlo", "guidance", "scoreboard"):
         payload = record.get(branch) or {}
         for key in ("expected_return_pct", "expected_return", "expectancy_return_pct"):
             value = _safe_float(payload.get(key))
@@ -425,7 +425,6 @@ def build_portfolio_quant_analysis_snapshot(
     scoreboard_builder: Callable[..., object] = build_signal_scoreboard,
     guidance_builder: Callable[..., object] = summarize_backtest_guidance,
     monte_carlo_fn: Callable[..., object] = simulate_return_distribution,
-    tcn_profile_fn: Optional[Callable[..., object]] = None,
     recommend_position_action_fn: Callable[..., object] = recommend_position_action,
     risk_gate=None,
     allocation_regime=None,
@@ -450,10 +449,6 @@ def build_portfolio_quant_analysis_snapshot(
         from strategies.registry import create_strategy
 
         create_strategy_fn = create_strategy
-    if tcn_profile_fn is None:
-        from strategies import deep_learning_utils as dl_utils
-
-        tcn_profile_fn = dl_utils.get_deep_tcn_signal_profile
     if engine_factory_fn is None:
         from engine import BacktraderEngine
 
@@ -494,7 +489,6 @@ def build_portfolio_quant_analysis_snapshot(
             "scoreboard": {},
             "guidance": None,
             "monte_carlo": None,
-            "tcn_profile": None,
             "position_advice": None,
         }
 
@@ -541,9 +535,6 @@ def build_portfolio_quant_analysis_snapshot(
             record["scoreboard"] = _scoreboard_to_dict(scoreboard)
             record["guidance"] = _to_dict(guidance)
             record["monte_carlo"] = _to_dict(mc_dist)
-
-            if runtime_strategy.get("id") == "deep_tcn":
-                record["tcn_profile"] = _to_dict(tcn_profile_fn(symbol, **runtime_strategy.get("params", {})))
 
             if list_type == "holding" and holdings_summary.total_value > 0:
                 holding_payload = dict(item)

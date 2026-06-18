@@ -41,6 +41,10 @@ class NightlyAlertsTests(unittest.TestCase):
             report_dir = Path(temp_dir) / "reports"
             manifest_path = Path(temp_dir) / "nightly_run_manifest.json"
             change_feed_path = Path(temp_dir) / "change_feed_latest.json"
+            model_snapshot_path = Path(temp_dir) / "multi_horizon_snapshot.json"
+            model_journal_path = Path(temp_dir) / "multi_horizon_predictions.jsonl"
+            model_governance_path = Path(temp_dir) / "multi_horizon_governance.json"
+            model_validation_path = Path(temp_dir) / "multi_horizon_validation.json"
             result = self.module.run_nightly_alerts(
                 now=datetime(2026, 5, 8, 23, 30, 0),
                 dry_run=False,
@@ -48,12 +52,15 @@ class NightlyAlertsTests(unittest.TestCase):
                 report_output_dir=str(report_dir),
                 manifest_path=str(manifest_path),
                 change_feed_path=str(change_feed_path),
-                quant_analysis_snapshot_builder=lambda **kwargs: {
+                multi_horizon_snapshot_path=str(model_snapshot_path),
+                model_prediction_journal_path=str(model_journal_path),
+                model_governance_path=str(model_governance_path),
+                model_validation_path=str(model_validation_path),
+                multi_horizon_runner=lambda **kwargs: {
+                    "status": "READY",
                     "generated_at": "2026-05-08T23:30:00",
-                    "strategy": {"id": "deep_tcn", "name": "TCN"},
-                    "engine": {"name": "backtrader"},
-                    "history_period": "2y",
-                    "summary": {"total_symbols": 0, "analyzed_symbols": 0, "buy_count": 0, "sell_count": 0, "hold_count": 0, "error_count": 0, "top_buy_symbols": []},
+                    "model": {"model_id": "finance_multi_asset_transformer", "status": "SHADOW"},
+                    "summary": {"symbol_count": 0, "action_counts": {}, "conflict_count": 0},
                     "symbols": [],
                 },
                 slack_sender=lambda text, url: (sent_reports.append((text, url)) or True, "ok"),
@@ -74,7 +81,7 @@ class NightlyAlertsTests(unittest.TestCase):
             self.assertIn("trade_plan", payload)
             self.assertIn("execution_review", payload)
             self.assertIn("monthly_discipline_review", payload)
-            self.assertIn("quant_analysis_summary", payload["performance"])
+            self.assertIn("multi_horizon_snapshot", payload)
             self.assertIn("change_feed", payload)
             self.assertIn("nightly_manifest", payload)
             self.assertEqual(payload["data_sources"]["history"]["last_source"], "stooq")
@@ -88,7 +95,7 @@ class NightlyAlertsTests(unittest.TestCase):
             self.assertTrue(change_feed_path.exists())
             self.assertTrue(Path(result["report_files"]["markdown_path"]).exists())
             self.assertTrue(Path(result["report_files"]["json_path"]).exists())
-            self.assertTrue(Path(result["quant_analysis_report_files"]["pdf_path"]).exists())
+            self.assertEqual(result["multi_horizon_snapshot"]["status"], "READY")
             self.assertIn("execution_review", payload["nightly_manifest"]["steps"])
             self.assertIn("change_feed", payload["nightly_manifest"]["steps"])
             self.assertIn("snapshot_journal", payload["nightly_manifest"]["steps"])
@@ -121,6 +128,17 @@ class NightlyAlertsTests(unittest.TestCase):
                 now=datetime(2026, 5, 8, 23, 30, 0),
                 dry_run=False,
                 report_output_dir=temp_dir,
+                multi_horizon_snapshot_path=str(Path(temp_dir) / "multi_horizon_snapshot.json"),
+                model_prediction_journal_path=str(Path(temp_dir) / "multi_horizon_predictions.jsonl"),
+                model_governance_path=str(Path(temp_dir) / "multi_horizon_governance.json"),
+                model_validation_path=str(Path(temp_dir) / "multi_horizon_validation.json"),
+                multi_horizon_runner=lambda **kwargs: {
+                    "status": "MODEL_NOT_READY",
+                    "generated_at": "2026-05-08T23:30:00",
+                    "model": {"model_id": "finance_multi_asset_transformer", "status": "RESEARCH"},
+                    "summary": {"symbol_count": 0, "action_counts": {}, "conflict_count": 0},
+                    "symbols": [],
+                },
                 environ={"SLACK_WEBHOOK_URL": "https://hooks.slack.com/services/from-env"},
                 slack_sender=lambda text, url: (sent_reports.append((text, url)) or True, "ok"),
             )
@@ -133,7 +151,7 @@ class NightlyAlertsTests(unittest.TestCase):
             self.assertIn("盘前简报", sent_reports[1][0])
             self.assertEqual(sent_reports[1][1], "https://hooks.slack.com/services/from-env")
 
-    def test_run_nightly_alerts_sends_quant_change_summary_only_when_snapshot_changes(self):
+    def test_run_nightly_alerts_uses_multi_horizon_snapshot_for_trade_plan(self):
         self.module.du.load_data = lambda: {"account": {}, "holdings": [], "watchlist": []}
         self.module.md.get_market_data_status_snapshot = lambda: {"history": {"last_source": "stooq"}, "prices": {}}
         self.module.ac.should_run_nightly_consensus_update = lambda now=None: False
@@ -152,43 +170,54 @@ class NightlyAlertsTests(unittest.TestCase):
         }
         self.module.tx.load_transactions = lambda: []
         self.module.tx.normalize_transactions = lambda rows: rows
+        self.module.discipline.build_discipline_snapshot = lambda **kwargs: {
+            "regime": "NORMAL",
+            "can_open_new_core_positions": True,
+            "can_open_new_satellite_positions": True,
+        }
 
         sent_messages = []
         changed_snapshot = {
+            "status": "READY",
             "generated_at": "2026-05-08T23:30:00",
-            "strategy": {"id": "deep_tcn", "name": "TCN"},
-            "engine": {"name": "backtrader"},
-            "history_period": "2y",
-            "summary": {"total_symbols": 1, "analyzed_symbols": 1, "buy_count": 1, "sell_count": 0, "hold_count": 0, "error_count": 0, "top_buy_symbols": ["AAPL"]},
-            "symbols": [{"symbol": "AAPL", "signal": "BUY", "position_advice": {"action": "ADD"}}],
-        }
-        previous_snapshot = {
-            "generated_at": "2026-05-07T23:30:00",
-            "summary": {"top_buy_symbols": []},
-            "symbols": [{"symbol": "AAPL", "signal": "HOLD", "position_advice": {"action": "HOLD"}}],
+            "model": {"model_id": "finance_multi_asset_transformer", "status": "SHADOW"},
+            "summary": {"symbol_count": 1, "action_counts": {"ACCUMULATE": 1}, "conflict_count": 0},
+            "symbols": [{
+                "symbol": "AAPL",
+                "list_type": "holding",
+                "latest_price": 100.0,
+                "current_weight_pct": 2.0,
+                "long_horizon": {"state": "ATTRACTIVE"},
+                "timing": {"state": "CONFIRMED"},
+                "decision": {
+                    "action": "ACCUMULATE",
+                    "target_weight_range_pct": [4.0, 7.0],
+                    "reason_codes": ["LONG_TERM_ATTRACTIVE", "TIMING_CONFIRMED"],
+                },
+            }],
         }
 
         with tempfile.TemporaryDirectory() as temp_dir:
-            snapshot_path = Path(temp_dir) / "quant_analysis_snapshot.json"
             manifest_path = Path(temp_dir) / "nightly_run_manifest.json"
             change_feed_path = Path(temp_dir) / "change_feed_latest.json"
-            snapshot_path.write_text(json.dumps(previous_snapshot), encoding="utf-8")
             result = self.module.run_nightly_alerts(
                 now=datetime(2026, 5, 8, 23, 30, 0),
                 dry_run=False,
                 report_output_dir=temp_dir,
-                quant_analysis_snapshot_path=str(snapshot_path),
                 manifest_path=str(manifest_path),
                 change_feed_path=str(change_feed_path),
-                quant_analysis_snapshot_builder=lambda **kwargs: changed_snapshot,
+                multi_horizon_snapshot_path=str(Path(temp_dir) / "multi_horizon_snapshot.json"),
+                model_prediction_journal_path=str(Path(temp_dir) / "multi_horizon_predictions.jsonl"),
+                model_governance_path=str(Path(temp_dir) / "multi_horizon_governance.json"),
+                model_validation_path=str(Path(temp_dir) / "multi_horizon_validation.json"),
+                multi_horizon_runner=lambda **kwargs: changed_snapshot,
                 slack_sender=lambda text, url: (sent_messages.append((text, url)) or True, "ok"),
             )
 
             self.assertFalse(result["dry_run"])
-            self.assertGreaterEqual(len(result["quant_analysis_change_results"]), 1)
-            self.assertTrue(any(row["ok"] for row in result["quant_analysis_change_results"]))
-            self.assertEqual(sent_messages[-1][1], "https://hooks.slack.com/services/test")
-            self.assertIn("AAPL", sent_messages[-1][0])
+            self.assertEqual(result["trade_plan"]["items"][0]["symbol"], "AAPL")
+            self.assertEqual(result["trade_plan"]["items"][0]["plan_action"], "ACCUMULATE")
+            self.assertIn("AAPL", result["premarket_brief_text"])
 
 
 if __name__ == "__main__":

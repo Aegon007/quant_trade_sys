@@ -97,7 +97,7 @@ class Step3FoundationsTests(unittest.TestCase):
 
         snapshot = strategy_governance.build_strategy_governance_snapshot(
             strategies=[
-                {"id": "deep_tcn", "name": "TCN", "enabled": True, "is_default": True},
+                {"id": "production_model", "name": "Production", "enabled": True, "is_default": True},
                 {"id": "candidate_a", "name": "Candidate A", "enabled": True},
             ],
             validation_snapshot=validation,
@@ -106,15 +106,16 @@ class Step3FoundationsTests(unittest.TestCase):
 
         self.assertEqual(snapshot["status"], "REVIEW")
         states = {row["strategy_id"]: row["lifecycle_state"] for row in snapshot["strategies"]}
-        self.assertEqual(states["deep_tcn"], "REVIEW")
+        self.assertEqual(states["production_model"], "REVIEW")
         self.assertEqual(states["candidate_a"], "PROMOTION_WATCH")
         self.assertTrue(any(row["type"] == "DEFAULT_REVIEW" for row in snapshot["recommendations"]))
 
-    def test_model_registry_defaults_to_deep_tcn(self):
+    def test_model_registry_defaults_to_multi_horizon_transformer(self):
         with self.subTest("default config"):
             config = model_registry.default_model_registry()
-            self.assertEqual(config["models"][0]["model_id"], "deep_tcn")
+            self.assertEqual(config["models"][0]["model_id"], "finance_multi_asset_transformer")
             self.assertTrue(config["models"][0]["is_default"])
+            self.assertEqual(len(config["models"]), 1)
 
     def test_evidence_layer_collects_structured_sources(self):
         snapshot = evidence_collector.build_evidence_layer(

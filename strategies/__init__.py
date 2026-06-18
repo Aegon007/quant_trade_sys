@@ -4,9 +4,6 @@ _EXPORTS = {
     "BollingerStrategy": ("strategies.classic_strategies", "BollingerStrategy"),
     "MACDStrategy": ("strategies.classic_strategies", "MACDStrategy"),
     "RSIStrategy": ("strategies.classic_strategies", "RSIStrategy"),
-    "LightGBMStrategy": ("strategies.ml_strategy", "LightGBMStrategy"),
-    "EnsembleVotingStrategy": ("strategies.ensemble_strategy", "EnsembleVotingStrategy"),
-    "DeepTCNStrategy": ("strategies.deep_learning_strategy", "DeepTCNStrategy"),
 }
 
 __all__ = list(_EXPORTS)

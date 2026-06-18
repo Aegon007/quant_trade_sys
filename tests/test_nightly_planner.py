@@ -179,6 +179,47 @@ class NightlyPlannerTests(unittest.TestCase):
         self.assertEqual(plan["blocked_items"][0]["blocked_reason"], "discipline_stop")
         self.assertIn("STOP", plan["summary_reason"])
 
+    def test_multi_horizon_decision_is_the_plan_authority(self):
+        plan = self.module.build_next_day_trade_plan(
+            {
+                "generated_at": "2026-06-18T23:00:00",
+                "symbols": [
+                    {
+                        "symbol": "MSFT",
+                        "list_type": "holding",
+                        "latest_price": 480.0,
+                        "current_weight_pct": 3.0,
+                        "long_horizon": {"state": "ATTRACTIVE", "blended_rank": 0.86},
+                        "timing": {"state": "CONFIRMED"},
+                        "decision": {
+                            "action": "ACCUMULATE",
+                            "target_weight_range_pct": [5.0, 8.0],
+                            "reason_codes": ["LONG_TERM_ATTRACTIVE", "TIMING_CONFIRMED"],
+                        },
+                    },
+                    {
+                        "symbol": "GOOGL",
+                        "list_type": "holding",
+                        "latest_price": 200.0,
+                        "current_weight_pct": 4.0,
+                        "long_horizon": {"state": "ATTRACTIVE"},
+                        "timing": {"state": "DETERIORATING"},
+                        "decision": {
+                            "action": "HOLD",
+                            "target_weight_range_pct": [4.0, 7.0],
+                            "reason_codes": ["LONG_TERM_ATTRACTIVE", "WAIT_TO_ADD"],
+                        },
+                    },
+                ],
+            },
+            now=datetime(2026, 6, 18, 23, 0, 0),
+        )
+
+        self.assertEqual([row["symbol"] for row in plan["items"]], ["MSFT"])
+        self.assertEqual(plan["items"][0]["plan_action"], "ACCUMULATE")
+        self.assertAlmostEqual(plan["items"][0]["plan_weight_delta_pct"], 5.0)
+        self.assertIn("LONG_TERM_ATTRACTIVE", plan["items"][0]["reason"])
+
 
 if __name__ == "__main__":
     unittest.main()

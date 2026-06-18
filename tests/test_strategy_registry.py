@@ -19,11 +19,6 @@ class StrategyRegistryTests(unittest.TestCase):
             "quant_analysis",
             "strategies",
             "strategies.classic_strategies",
-            "strategies.ml_utils",
-            "strategies.ml_strategy",
-            "strategies.ensemble_strategy",
-            "strategies.deep_learning_utils",
-            "strategies.deep_learning_strategy",
             "strategies.registry",
         )
         self.strategy_registry = reload_module("strategies.registry")
@@ -52,20 +47,6 @@ class StrategyRegistryTests(unittest.TestCase):
 
         self.assertEqual(type(strategy).__name__, "ConfigOnlyStrategy")
         self.assertEqual(strategy.strength, 7)
-
-    def test_create_strategy_builds_deep_tcn_strategy_without_torch_import_failure(self):
-        strategy = self.strategy_registry.create_strategy(
-            {
-                "id": "deep_tcn",
-                "strategy_class": "strategies.deep_learning_strategy.DeepTCNStrategy",
-                "params_mode": "dict",
-                "params": {"sequence_length": 30, "device": "auto"},
-            }
-        )
-
-        self.assertEqual(type(strategy).__name__, "DeepTCNStrategy")
-        self.assertEqual(strategy.params["sequence_length"], 30)
-        self.assertEqual(strategy.params["device"], "auto")
 
     def test_get_signal_uses_configured_signal_function_without_code_edit(self):
         clear_modules("strategies.ui")

@@ -14,7 +14,7 @@ class ModelPrediction:
 
 
 class QuantModel(Protocol):
-    """Minimal model contract for future TCN/LLM/SLM adapters."""
+    """Minimal model contract for quant model adapters."""
 
     model_id: str
 
@@ -31,4 +31,3 @@ class ModelRegistryEntry:
     enabled: bool = True
     is_default: bool = False
     params: Mapping = field(default_factory=dict)
-

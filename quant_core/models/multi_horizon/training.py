@@ -1,0 +1,401 @@
+from __future__ import annotations
+
+from dataclasses import asdict, dataclass
+from datetime import datetime
+from pathlib import Path
+from typing import Mapping, Sequence
+
+import numpy as np
+import pandas as pd
+import torch
+from torch import nn
+from torch.nn import functional as F
+from torch.utils.data import DataLoader, TensorDataset
+
+from .dataset import (
+    DEFAULT_HORIZONS,
+    FEATURE_COLUMNS,
+    build_feature_frame,
+    build_forward_labels,
+)
+from .network import FinanceMultiAssetTransformer, MultiAssetTransformerConfig
+
+
+DEFAULT_CHECKPOINT_FILE = "trained_models/finance_multi_asset_transformer.pt"
+
+
+@dataclass(frozen=True)
+class MultiAssetTensorBundle:
+    sequences: np.ndarray
+    market_context: np.ndarray
+    asset_mask: np.ndarray
+    excess_returns: np.ndarray
+    favorable_excursion: np.ndarray
+    adverse_excursion: np.ndarray
+    timing_targets: np.ndarray
+    observation_dates: tuple[str, ...]
+    symbols: tuple[str, ...]
+    horizons: tuple[int, ...]
+    feature_columns: tuple[str, ...]
+
+
+def _observation_dates(index: pd.Index, frequency: str) -> pd.DatetimeIndex:
+    marker = pd.Series(np.arange(len(index)), index=pd.DatetimeIndex(index))
+    positions = marker.resample(frequency).last().dropna().astype(int)
+    return pd.DatetimeIndex(index[positions.to_numpy()])
+
+
+def _market_context(benchmark_history: pd.DataFrame, observation_date: pd.Timestamp) -> np.ndarray:
+    close = pd.to_numeric(benchmark_history["Close"], errors="coerce").loc[:observation_date].dropna()
+    if close.empty:
+        return np.zeros(5, dtype=np.float32)
+    returns = close.pct_change()
+    return np.asarray(
+        [
+            close.pct_change(21).iloc[-1] if len(close) > 21 else 0.0,
+            close.pct_change(63).iloc[-1] if len(close) > 63 else 0.0,
+            returns.tail(21).std() * np.sqrt(252) if len(returns.dropna()) >= 5 else 0.0,
+            close.iloc[-1] / close.tail(252).max() - 1.0,
+            returns.tail(21).gt(0).mean() if len(returns.dropna()) else 0.5,
+        ],
+        dtype=np.float32,
+    )
+
+
+def _timing_target(feature_row: pd.Series, forward_return: float) -> int:
+    recent_return = float(feature_row.get("return_21d") or 0.0)
+    high_proximity = float(feature_row.get("high_proximity_252d") or 0.0)
+    if forward_return <= -0.05:
+        return 4  # FAILED
+    if recent_return < 0 and forward_return > 0.02:
+        return 0  # EARLY
+    if recent_return > 0.12 and high_proximity > 0.98:
+        return 2  # EXTENDED
+    if recent_return < -0.03:
+        return 3  # DETERIORATING
+    return 1  # CONFIRMED
+
+
+def build_multi_asset_tensor_bundle(
+    histories: Mapping[str, pd.DataFrame],
+    *,
+    symbols: Sequence[str],
+    benchmark_map: Mapping[str, str],
+    horizons: Sequence[int] = DEFAULT_HORIZONS,
+    lookback: int = 252,
+    observation_frequency: str = "W-FRI",
+) -> MultiAssetTensorBundle:
+    normalized = {
+        str(symbol).strip().upper(): frame.sort_index().copy()
+        for symbol, frame in dict(histories or {}).items()
+        if isinstance(frame, pd.DataFrame) and not frame.empty and str(symbol).strip()
+    }
+    normalized_symbols = tuple(
+        str(symbol).strip().upper()
+        for symbol in symbols
+        if str(symbol).strip().upper() in normalized
+    )
+    normalized_horizons = tuple(max(int(horizon), 1) for horizon in horizons)
+    if not normalized_symbols:
+        raise ValueError("No asset histories are available for tensor construction.")
+
+    feature_frames = {}
+    label_frames = {}
+    for symbol in normalized_symbols:
+        benchmark_symbol = str(benchmark_map.get(symbol) or "SPY").strip().upper()
+        if benchmark_symbol not in normalized:
+            raise ValueError(f"Missing benchmark history for {symbol}: {benchmark_symbol}")
+        feature_frames[symbol] = build_feature_frame(normalized[symbol], normalized[benchmark_symbol])
+        label_frames[symbol] = build_forward_labels(
+            normalized[symbol],
+            normalized[benchmark_symbol],
+            horizons=normalized_horizons,
+        )
+
+    reference_symbol = normalized_symbols[0]
+    reference_index = feature_frames[reference_symbol].index
+    observation_dates = _observation_dates(reference_index, observation_frequency)
+    sequences = []
+    contexts = []
+    masks = []
+    excess_returns = []
+    favorable = []
+    adverse = []
+    timing_targets = []
+    accepted_dates = []
+
+    for observation_date in observation_dates:
+        sample_sequences = []
+        sample_mask = []
+        sample_returns = []
+        sample_favorable = []
+        sample_adverse = []
+        sample_timing = []
+        for symbol in normalized_symbols:
+            feature_frame = feature_frames[symbol].loc[:observation_date]
+            if len(feature_frame) < lookback or observation_date not in label_frames[symbol].index:
+                sample_sequences.append(np.zeros((lookback, len(FEATURE_COLUMNS)), dtype=np.float32))
+                sample_mask.append(False)
+                sample_returns.append(np.full(len(normalized_horizons), np.nan, dtype=np.float32))
+                sample_favorable.append(np.full(len(normalized_horizons), np.nan, dtype=np.float32))
+                sample_adverse.append(np.full(len(normalized_horizons), np.nan, dtype=np.float32))
+                sample_timing.append(4)
+                continue
+            labels = label_frames[symbol].loc[observation_date]
+            returns = np.asarray(
+                [labels.get(f"excess_return_{horizon}d") for horizon in normalized_horizons],
+                dtype=np.float32,
+            )
+            if not np.isfinite(returns).all():
+                sample_sequences.append(np.zeros((lookback, len(FEATURE_COLUMNS)), dtype=np.float32))
+                sample_mask.append(False)
+                sample_returns.append(returns)
+                sample_favorable.append(np.full(len(normalized_horizons), np.nan, dtype=np.float32))
+                sample_adverse.append(np.full(len(normalized_horizons), np.nan, dtype=np.float32))
+                sample_timing.append(4)
+                continue
+            sequence = (
+                feature_frame[list(FEATURE_COLUMNS)]
+                .tail(lookback)
+                .replace([np.inf, -np.inf], np.nan)
+                .ffill()
+                .fillna(0.0)
+                .to_numpy(dtype=np.float32)
+            )
+            favorable_values = np.asarray(
+                [labels.get(f"max_favorable_{horizon}d") for horizon in normalized_horizons],
+                dtype=np.float32,
+            )
+            adverse_values = np.asarray(
+                [labels.get(f"max_adverse_{horizon}d") for horizon in normalized_horizons],
+                dtype=np.float32,
+            )
+            sample_sequences.append(sequence)
+            sample_mask.append(True)
+            sample_returns.append(returns)
+            sample_favorable.append(favorable_values)
+            sample_adverse.append(adverse_values)
+            sample_timing.append(_timing_target(feature_frame.iloc[-1], float(returns[0])))
+        mask_array = np.asarray(sample_mask, dtype=bool)
+        if int(mask_array.sum()) < 2:
+            continue
+        benchmark_symbol = str(benchmark_map.get(reference_symbol) or "SPY").strip().upper()
+        sequences.append(np.asarray(sample_sequences, dtype=np.float32))
+        contexts.append(_market_context(normalized[benchmark_symbol], observation_date))
+        masks.append(mask_array)
+        excess_returns.append(np.asarray(sample_returns, dtype=np.float32))
+        favorable.append(np.asarray(sample_favorable, dtype=np.float32))
+        adverse.append(np.asarray(sample_adverse, dtype=np.float32))
+        timing_targets.append(np.asarray(sample_timing, dtype=np.int64))
+        accepted_dates.append(pd.Timestamp(observation_date).isoformat())
+
+    if not sequences:
+        raise ValueError("No valid multi-asset training samples were produced.")
+    return MultiAssetTensorBundle(
+        sequences=np.asarray(sequences, dtype=np.float32),
+        market_context=np.asarray(contexts, dtype=np.float32),
+        asset_mask=np.asarray(masks, dtype=bool),
+        excess_returns=np.asarray(excess_returns, dtype=np.float32),
+        favorable_excursion=np.asarray(favorable, dtype=np.float32),
+        adverse_excursion=np.asarray(adverse, dtype=np.float32),
+        timing_targets=np.asarray(timing_targets, dtype=np.int64),
+        observation_dates=tuple(accepted_dates),
+        symbols=normalized_symbols,
+        horizons=normalized_horizons,
+        feature_columns=tuple(FEATURE_COLUMNS),
+    )
+
+
+def _resolve_device(preferred: str):
+    preferred = str(preferred or "auto").strip().lower()
+    if preferred == "cuda" and torch.cuda.is_available():
+        return torch.device("cuda")
+    if preferred in {"auto", "mps"} and hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        return torch.device("mps")
+    if preferred == "auto" and torch.cuda.is_available():
+        return torch.device("cuda")
+    return torch.device("cpu")
+
+
+def _masked_mean(values, mask):
+    mask = mask.to(values.dtype)
+    while mask.ndim < values.ndim:
+        mask = mask.unsqueeze(-1)
+    return (values * mask).sum() / mask.sum().clamp_min(1.0)
+
+
+def _pairwise_rank_loss(scores, targets, asset_mask):
+    total = scores.new_tensor(0.0)
+    count = 0
+    for batch_index in range(scores.shape[0]):
+        valid = asset_mask[batch_index].bool()
+        for horizon_index in range(scores.shape[-1]):
+            score = scores[batch_index, valid, horizon_index]
+            target = targets[batch_index, valid, horizon_index]
+            finite = torch.isfinite(target)
+            score, target = score[finite], target[finite]
+            if len(score) < 2:
+                continue
+            score_diff = score[:, None] - score[None, :]
+            target_diff = target[:, None] - target[None, :]
+            pair_mask = target_diff.abs() > 1e-8
+            if not pair_mask.any():
+                continue
+            total = total + F.softplus(-torch.sign(target_diff[pair_mask]) * score_diff[pair_mask]).mean()
+            count += 1
+    return total / max(count, 1)
+
+
+def _quantile_loss(predictions, target, mask):
+    quantiles = predictions.new_tensor([0.1, 0.5, 0.9])
+    errors = target.unsqueeze(-1) - predictions
+    losses = torch.maximum((quantiles - 1.0) * errors, quantiles * errors)
+    finite_mask = mask.unsqueeze(-1) & torch.isfinite(target).unsqueeze(-1)
+    return _masked_mean(torch.where(finite_mask, losses, torch.zeros_like(losses)), finite_mask)
+
+
+def _training_loss(outputs, returns, favorable, adverse, timing_targets, asset_mask):
+    finite_returns = torch.isfinite(returns)
+    horizon_mask = asset_mask.unsqueeze(-1) & finite_returns
+    rank_loss = _pairwise_rank_loss(outputs["rank_scores"], returns, asset_mask)
+    bce = F.binary_cross_entropy_with_logits(
+        outputs["outperformance_logits"],
+        torch.nan_to_num((returns > 0).to(outputs["outperformance_logits"].dtype)),
+        reduction="none",
+    )
+    bce_loss = _masked_mean(bce, horizon_mask)
+    quantile_loss = _quantile_loss(outputs["return_quantiles"], returns, horizon_mask)
+    favorable_loss = _masked_mean(
+        (outputs["favorable_excursion"] - torch.nan_to_num(favorable)) ** 2,
+        horizon_mask & torch.isfinite(favorable),
+    )
+    adverse_loss = _masked_mean(
+        (outputs["adverse_excursion"] - torch.nan_to_num(adverse)) ** 2,
+        horizon_mask & torch.isfinite(adverse),
+    )
+    timing_loss = F.cross_entropy(
+        outputs["timing_logits"].reshape(-1, outputs["timing_logits"].shape[-1]),
+        timing_targets.reshape(-1),
+        reduction="none",
+    )
+    timing_loss = _masked_mean(timing_loss.reshape_as(asset_mask), asset_mask)
+    expert_usage = outputs["expert_weights"].mean(dim=(0, 1))
+    balance_loss = torch.mean((expert_usage - expert_usage.mean()) ** 2)
+    total = (
+        rank_loss
+        + 0.7 * quantile_loss
+        + 0.4 * bce_loss
+        + 0.2 * favorable_loss
+        + 0.2 * adverse_loss
+        + 0.25 * timing_loss
+        + 0.05 * balance_loss
+    )
+    return total, {
+        "rank_loss": rank_loss,
+        "quantile_loss": quantile_loss,
+        "outperformance_loss": bce_loss,
+        "timing_loss": timing_loss,
+        "expert_balance_loss": balance_loss,
+    }
+
+
+def train_multi_asset_model(
+    bundle: MultiAssetTensorBundle,
+    *,
+    config: MultiAssetTransformerConfig,
+    epochs: int = 20,
+    batch_size: int = 8,
+    learning_rate: float = 3e-4,
+    weight_decay: float = 1e-4,
+    device: str = "auto",
+    checkpoint_path: str = DEFAULT_CHECKPOINT_FILE,
+    pretrained_checkpoint_path: str | None = None,
+) -> dict:
+    resolved_device = _resolve_device(device)
+    sequences = np.asarray(bundle.sequences, dtype=np.float32)
+    valid_sequences = sequences[np.asarray(bundle.asset_mask, dtype=bool)]
+    mean = valid_sequences.reshape(-1, sequences.shape[-1]).mean(axis=0)
+    std = valid_sequences.reshape(-1, sequences.shape[-1]).std(axis=0)
+    std = np.where(std < 1e-6, 1.0, std)
+    scaled_sequences = (sequences - mean.reshape(1, 1, 1, -1)) / std.reshape(1, 1, 1, -1)
+
+    dataset = TensorDataset(
+        torch.tensor(scaled_sequences, dtype=torch.float32),
+        torch.tensor(bundle.market_context, dtype=torch.float32),
+        torch.tensor(bundle.asset_mask, dtype=torch.bool),
+        torch.tensor(bundle.excess_returns, dtype=torch.float32),
+        torch.tensor(bundle.favorable_excursion, dtype=torch.float32),
+        torch.tensor(bundle.adverse_excursion, dtype=torch.float32),
+        torch.tensor(bundle.timing_targets, dtype=torch.long),
+    )
+    loader = DataLoader(dataset, batch_size=max(int(batch_size), 1), shuffle=True)
+    model = FinanceMultiAssetTransformer(config).to(resolved_device)
+    pretraining_loaded = False
+    pretraining_metadata = {}
+    if pretrained_checkpoint_path:
+        pretraining_payload = torch.load(pretrained_checkpoint_path, map_location=resolved_device)
+        temporal_state = dict(pretraining_payload.get("temporal_state_dict", {}) or {})
+        if temporal_state:
+            model.temporal.load_state_dict(temporal_state)
+            pretraining_loaded = True
+            pretraining_metadata = dict(pretraining_payload.get("metadata", {}) or {})
+    optimizer = torch.optim.AdamW(model.parameters(), lr=float(learning_rate), weight_decay=float(weight_decay))
+    epoch_metrics = {}
+    model.train()
+    for _ in range(max(int(epochs), 1)):
+        totals = {}
+        batch_count = 0
+        for batch in loader:
+            sequence, context, mask, returns, favorable, adverse, timing = [
+                tensor.to(resolved_device) for tensor in batch
+            ]
+            optimizer.zero_grad()
+            outputs = model(sequence, market_context=context, asset_mask=mask)
+            loss, components = _training_loss(outputs, returns, favorable, adverse, timing, mask)
+            loss.backward()
+            nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            optimizer.step()
+            totals["loss"] = totals.get("loss", 0.0) + float(loss.detach().cpu())
+            for name, value in components.items():
+                totals[name] = totals.get(name, 0.0) + float(value.detach().cpu())
+            batch_count += 1
+        epoch_metrics = {name: value / max(batch_count, 1) for name, value in totals.items()}
+
+    target = Path(checkpoint_path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    metadata = {
+        "model_id": "finance_multi_asset_transformer",
+        "trained_at": datetime.now().isoformat(),
+        "config": asdict(config),
+        "symbols": list(bundle.symbols),
+        "horizons": list(bundle.horizons),
+        "feature_columns": list(bundle.feature_columns),
+        "lookback": int(bundle.sequences.shape[2]),
+        "feature_mean": mean.tolist(),
+        "feature_std": std.tolist(),
+        "metrics": epoch_metrics,
+        "pretraining": {
+            "loaded": pretraining_loaded,
+            "checkpoint_path": pretrained_checkpoint_path,
+            "metadata": pretraining_metadata,
+        },
+    }
+    torch.save({"state_dict": model.state_dict(), "metadata": metadata}, target)
+    return {
+        "checkpoint_path": str(target),
+        "device": str(resolved_device),
+        "sample_count": int(len(bundle.sequences)),
+        "pretraining_loaded": pretraining_loaded,
+        **epoch_metrics,
+    }
+
+
+def load_model_checkpoint(path: str = DEFAULT_CHECKPOINT_FILE, *, device: str = "auto"):
+    resolved_device = _resolve_device(device)
+    payload = torch.load(path, map_location=resolved_device)
+    metadata = dict(payload.get("metadata", {}) or {})
+    config = MultiAssetTransformerConfig(**dict(metadata.get("config", {}) or {}))
+    model = FinanceMultiAssetTransformer(config).to(resolved_device)
+    model.load_state_dict(payload["state_dict"])
+    model.eval()
+    return model, metadata

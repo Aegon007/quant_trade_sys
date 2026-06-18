@@ -222,6 +222,7 @@ class PackageImportTests(unittest.TestCase):
             "strategy_registry",
             "ml_strategy",
             "deep_learning_strategy",
+            "deep_learning_utils",
             "share_utils",
             "signal_approval",
             "signal_scoreboard",

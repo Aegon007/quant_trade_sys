@@ -233,6 +233,21 @@ def build_weekend_research_report(snapshot: Mapping) -> str:
         summary.get("message") or "",
         "",
     ]
+    model_snapshot = dict(snapshot.get("multi_horizon_snapshot", {}) or {})
+    if model_snapshot:
+        model_summary = dict(model_snapshot.get("summary", {}) or {})
+        lines.extend(
+            [
+                "## Multi-Horizon Neural Model",
+                "",
+                f"- Status: {model_snapshot.get('status') or 'UNKNOWN'}",
+                f"- Symbols: {int(_safe_float(model_summary.get('symbol_count'), 0) or 0)}",
+                f"- Top satellite candidates: {', '.join(model_summary.get('top_satellite_symbols', []) or []) or '—'}",
+                f"- Validation: {dict(model_snapshot.get('training', {}) or {}).get('validation_status') or 'existing checkpoint / not retrained'}",
+                "- Promotion: manual only",
+                "",
+            ]
+        )
     recommendations = [str(item).strip() for item in list(snapshot.get("recommendations", []) or []) if str(item).strip()]
     if recommendations:
         lines.append("## Recommendations")

@@ -50,6 +50,9 @@ def _normalized_signal(row: Mapping) -> str:
 
 def _infer_plan_action(row: Mapping) -> Optional[str]:
     row = dict(row or {})
+    model_action = str(dict(row.get("decision", {}) or {}).get("action") or "").strip().upper()
+    if model_action in _SELL_ACTIONS | _BUY_ACTIONS:
+        return model_action
     existing_action = str(row.get("plan_action") or "").strip().upper()
     if existing_action in _SELL_ACTIONS | _BUY_ACTIONS:
         return existing_action
@@ -90,6 +93,15 @@ def _execution_priority(action: str) -> int:
 
 
 def _plan_delta_pct(row: Mapping, action: str) -> float:
+    decision = dict((row or {}).get("decision") or {})
+    target_range = list(decision.get("target_weight_range_pct", []) or [])
+    current_weight = _safe_float((row or {}).get("current_weight_pct"), 0.0) or 0.0
+    if len(target_range) >= 2:
+        low = _safe_float(target_range[0], current_weight) or 0.0
+        high = _safe_float(target_range[1], current_weight) or 0.0
+        if action in _SELL_ACTIONS:
+            return max(current_weight - low, 0.0)
+        return max(high - current_weight, 0.0)
     advice = dict((row or {}).get("position_advice") or {})
     current_weight = _safe_float(advice.get("current_weight_pct"), 0.0) or 0.0
     target_weight = _safe_float(advice.get("target_weight_pct"), current_weight) or current_weight
@@ -143,6 +155,10 @@ def _build_plan_item(row: Mapping, *, plan_valid_until: datetime) -> Optional[di
     advice = dict(row.get("position_advice") or {})
     signal_reason = str(row.get("signal_reason") or "").strip()
     recommendation_reason = str(row.get("recommendation_reason") or "").strip()
+    decision = dict(row.get("decision", {}) or {})
+    reason_codes = list(decision.get("reason_codes", []) or [])
+    long_horizon = dict(row.get("long_horizon", {}) or {})
+    timing = dict(row.get("timing", {}) or {})
     suggested_exit_price = _safe_float(guidance.get("suggested_exit_price"))
     delta_pct = _plan_delta_pct(row, action)
 
@@ -174,7 +190,15 @@ def _build_plan_item(row: Mapping, *, plan_valid_until: datetime) -> Optional[di
 
     reason_parts = [
         part
-        for part in [reason_prefix, advice.get("reason"), recommendation_reason, signal_reason]
+        for part in [
+            reason_prefix,
+            f"Long horizon={long_horizon.get('state')}" if long_horizon else "",
+            f"Timing={timing.get('state')}" if timing else "",
+            ", ".join(str(code) for code in reason_codes),
+            advice.get("reason"),
+            recommendation_reason,
+            signal_reason,
+        ]
         if str(part or "").strip()
     ]
     return {
@@ -196,6 +220,10 @@ def _build_plan_item(row: Mapping, *, plan_valid_until: datetime) -> Optional[di
         "plan_valid_until": plan_valid_until.isoformat(),
         "execution_priority": _execution_priority(action),
         "reason": " ".join(str(part).strip() for part in reason_parts if str(part).strip()),
+        "model_id": str(dict(row.get("model", {}) or {}).get("model_id") or row.get("model_id") or "").strip() or None,
+        "long_horizon_state": long_horizon.get("state"),
+        "timing_state": timing.get("state"),
+        "reason_codes": reason_codes,
     }
 
 

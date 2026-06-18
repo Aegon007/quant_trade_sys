@@ -8,6 +8,7 @@ reports/
 frontend/node_modules/
 frontend/dist/
 storage/state/
+storage/journals/
 storage/state/price_cache.json
 storage/state/analyst_consensus_cache.json
 storage/state/alert_state.json

@@ -11,7 +11,6 @@ DEFAULT_SIGNAL_FUNCTIONS = {
     "bollinger": "quant_core.analytics.quant_analysis.get_signal_bollinger",
     "macd": "quant_core.analytics.quant_analysis.get_signal_macd",
     "rsi": "quant_core.analytics.quant_analysis.get_signal_rsi",
-    "deep_tcn": "strategies.deep_learning_utils.get_deep_tcn_signal",
 }
 
 

@@ -495,7 +495,7 @@ class RunAllTests(unittest.TestCase):
             risk_multiplier=1.0,
             to_dict=lambda: {"regime": "NORMAL"},
         )
-        self.module.qpa.load_default_runtime_strategy = lambda history_period="2y": {"id": "deep_tcn", "name": "TCN", "params": {"period": history_period}}
+        self.module.qpa.load_default_runtime_strategy = lambda history_period="2y": {"id": "ma_crossover", "name": "MA", "params": {"period": history_period}}
         self.module.qpa.build_portfolio_quant_analysis_snapshot = lambda *args, **kwargs: {
             "generated_at": "2026-05-11T10:30:00",
             "summary": {"top_buy_symbols": ["AAPL"]},
@@ -606,7 +606,7 @@ class RunAllTests(unittest.TestCase):
             risk_multiplier=0.8,
             to_dict=lambda: {"regime": "LIGHT"},
         )
-        self.module.qpa.load_default_runtime_strategy = lambda history_period="2y": {"id": "deep_tcn", "name": "TCN", "params": {"period": history_period}}
+        self.module.qpa.load_default_runtime_strategy = lambda history_period="2y": {"id": "ma_crossover", "name": "MA", "params": {"period": history_period}}
         self.module.qpa.build_portfolio_quant_analysis_snapshot = lambda *args, **kwargs: {
             "generated_at": "2026-05-11T10:30:00",
             "summary": {"top_buy_symbols": []},
@@ -712,7 +712,7 @@ class RunAllTests(unittest.TestCase):
             risk_multiplier=1.0,
             to_dict=lambda: {"regime": "NORMAL"},
         )
-        self.module.qpa.load_default_runtime_strategy = lambda history_period="2y": {"id": "deep_tcn", "name": "TCN", "params": {"period": history_period}}
+        self.module.qpa.load_default_runtime_strategy = lambda history_period="2y": {"id": "ma_crossover", "name": "MA", "params": {"period": history_period}}
         self.module.qpa.build_portfolio_quant_analysis_snapshot = lambda *args, **kwargs: {
             "generated_at": "2026-05-11T10:30:00",
             "summary": {"top_buy_symbols": []},

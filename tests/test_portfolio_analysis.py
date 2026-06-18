@@ -76,7 +76,7 @@ class PortfolioAnalysisTests(unittest.TestCase):
                 "holdings": [{"symbol": "AAPL", "shares": 10.0, "current_price": 109.0, "cost": 95.0, "sector": "Tech"}],
                 "watchlist": [{"symbol": "MSFT", "last_price": 206.0, "notes": "watch"}],
             },
-            strategy={"id": "deep_tcn", "name": "TCN", "params": {"period": "2y"}},
+            strategy={"id": "ma_crossover", "name": "MA", "params": {"period": "2y"}},
             history_period="2y",
             load_historical_data_fn=lambda symbol, period="2y": histories[symbol].copy(),
             get_signal_fn=lambda strategy, symbol: ("BUY", "trend healthy") if symbol == "AAPL" else ("HOLD", "waiting"),
@@ -91,18 +91,6 @@ class PortfolioAnalysisTests(unittest.TestCase):
                 p05_price=float(hist["Close"].iloc[-1]) * 0.95,
                 p95_price=float(hist["Close"].iloc[-1]) * 1.08,
             ),
-            tcn_profile_fn=lambda symbol, **kwargs: SimpleNamespace(
-                signal="BUY" if symbol == "AAPL" else "HOLD",
-                reason="profile",
-                probability=0.66 if symbol == "AAPL" else 0.52,
-                expected_return_pct=0.08 if symbol == "AAPL" else 0.01,
-                confidence=0.74 if symbol == "AAPL" else 0.51,
-                take_profit_price=117.0 if symbol == "AAPL" else 208.0,
-                stop_loss_price=101.0 if symbol == "AAPL" else 198.0,
-                recommended_max_weight_pct=15.0,
-                device="cpu",
-                trained_at="2026-05-10T23:00:00",
-            ),
             now=datetime(2026, 5, 11, 23, 0, 0),
         )
 
@@ -110,7 +98,7 @@ class PortfolioAnalysisTests(unittest.TestCase):
         self.assertEqual(snapshot["summary"]["analyzed_symbols"], 2)
         self.assertEqual(snapshot["summary"]["buy_count"], 1)
         self.assertEqual(snapshot["summary"]["hold_count"], 1)
-        self.assertEqual(snapshot["strategy"]["id"], "deep_tcn")
+        self.assertEqual(snapshot["strategy"]["id"], "ma_crossover")
         self.assertEqual(snapshot["symbols"][0]["symbol"], "AAPL")
         self.assertEqual(snapshot["symbols"][0]["list_type"], "holding")
         self.assertEqual(snapshot["symbols"][0]["backtest"]["total_return"], 0.15)
@@ -124,7 +112,7 @@ class PortfolioAnalysisTests(unittest.TestCase):
 
         snapshot = {
             "generated_at": "2026-05-11T23:30:00",
-            "strategy": {"id": "deep_tcn", "name": "TCN"},
+            "strategy": {"id": "ma_crossover", "name": "MA"},
             "engine": {"name": "backtrader"},
             "history_period": "2y",
             "summary": {

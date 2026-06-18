@@ -66,11 +66,19 @@ def create_app():
 
     @app.get("/api/core-etfs")
     def core_etfs():
-        return loader.load_snapshot_response("core-etfs", loader.SNAPSHOT_PATHS["core-etfs"])
+        return loader.load_model_enriched_snapshot_response(
+            "core-etfs",
+            loader.SNAPSHOT_PATHS["core-etfs"],
+            row_keys=("symbols",),
+        )
 
     @app.get("/api/satellite-radar")
     def satellite_radar():
-        return loader.load_snapshot_response("satellite-radar", loader.SNAPSHOT_PATHS["satellite-radar"])
+        return loader.load_model_enriched_snapshot_response(
+            "satellite-radar",
+            loader.SNAPSHOT_PATHS["satellite-radar"],
+            row_keys=("top_recommendations", "symbols", "candidate_pool"),
+        )
 
     @app.get("/api/risk")
     def risk():
@@ -95,6 +103,14 @@ def create_app():
     @app.get("/api/strategy-validation")
     def strategy_validation():
         return loader.load_snapshot_response("strategy-validation", loader.SNAPSHOT_PATHS["strategy-validation"])
+
+    @app.get("/api/multi-horizon")
+    def multi_horizon():
+        return loader.load_snapshot_response("multi-horizon", loader.SNAPSHOT_PATHS["multi-horizon"])
+
+    @app.get("/api/research-models")
+    def research_models():
+        return loader.load_research_models_response()
 
     @app.get("/api/reports/latest")
     def latest_report():
@@ -138,6 +154,14 @@ def create_app():
             run_async=True,
         )
 
+    @app.post("/api/actions/train-multi-horizon")
+    def train_multi_horizon():
+        return api_actions.run_with_job_status(
+            "manual-multi-horizon-training",
+            api_actions.train_multi_horizon_model,
+            run_async=True,
+        )
+
     @app.post("/api/actions/import-robinhood-csv")
     def import_robinhood_csv(payload: dict):
         payload = dict(payload or {})
@@ -167,6 +191,14 @@ def create_app():
         return api_actions.run_with_job_status(
             "settings-notification-config",
             lambda: api_actions.save_notification_settings(dict(payload or {})),
+            run_async=False,
+        )
+
+    @app.post("/api/actions/save-multi-horizon-config")
+    def save_multi_horizon_config(payload: dict):
+        return api_actions.run_with_job_status(
+            "settings-multi-horizon-config",
+            lambda: api_actions.save_multi_horizon_settings(dict(payload or {})),
             run_async=False,
         )
 

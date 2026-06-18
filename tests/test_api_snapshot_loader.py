@@ -145,6 +145,34 @@ class ApiSnapshotLoaderTests(unittest.TestCase):
         self.assertEqual(response["payload"]["holdings"][0]["symbol"], "AAPL")
         self.assertEqual(response["payload"]["recent_transactions"][0]["symbol"], "AAPL")
 
+    def test_multi_horizon_snapshot_enriches_portfolio_rows(self):
+        snapshot = {
+            "generated_at": "2026-06-18T20:00:00",
+            "status": "READY",
+            "symbols": [
+                {
+                    "symbol": "MSFT",
+                    "long_horizon": {"state": "ATTRACTIVE", "blended_rank": 0.84},
+                    "timing": {"state": "DETERIORATING"},
+                    "decision": {
+                        "action": "HOLD",
+                        "target_weight_range_pct": [4.0, 7.0],
+                        "reason_codes": ["LONG_TERM_ATTRACTIVE", "WAIT_TO_ADD"],
+                    },
+                }
+            ],
+        }
+
+        rows = self.loader.enrich_rows_with_multi_horizon(
+            [{"symbol": "MSFT", "shares": 0.05}],
+            snapshot,
+        )
+
+        self.assertEqual(rows[0]["model_decision"]["action"], "HOLD")
+        self.assertEqual(rows[0]["long_horizon_state"], "ATTRACTIVE")
+        self.assertEqual(rows[0]["timing_state"], "DETERIORATING")
+        self.assertEqual(rows[0]["model_generated_at"], "2026-06-18T20:00:00")
+
 
 if __name__ == "__main__":
     unittest.main()

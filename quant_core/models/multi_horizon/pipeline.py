@@ -1,0 +1,450 @@
+from __future__ import annotations
+
+import json
+from datetime import datetime, timedelta
+from pathlib import Path
+from typing import Callable, Mapping, Sequence
+
+import pandas as pd
+
+from quant_core.analytics import quant_analysis as qa
+from quant_core.data import storage as data_storage
+
+from .config import load_multi_horizon_config, normalize_multi_horizon_config
+from .dataset import build_panel_frame
+from .network import MultiAssetTransformerConfig
+from .pretraining import pretrain_temporal_encoder
+from .runtime import run_multi_horizon_inference
+from .snapshot import save_multi_horizon_snapshot
+from .training import build_multi_asset_tensor_bundle, train_multi_asset_model
+from .validation import walk_forward_validate_bundle
+
+
+def _unique_symbols(values) -> list[str]:
+    result = []
+    seen = set()
+    for value in values:
+        symbol = str(value or "").strip().upper()
+        if not symbol or symbol in seen:
+            continue
+        seen.add(symbol)
+        result.append(symbol)
+    return result
+
+
+def _artifact_path(value: str) -> str:
+    path = Path(str(value))
+    if not path.is_absolute():
+        path = Path(__file__).resolve().parents[3] / path
+    return str(path)
+
+
+def build_model_universe(
+    data: Mapping,
+    *,
+    core_universe: Mapping,
+    satellite_universe: Mapping,
+    maximum_symbols: int = 100,
+) -> list[str]:
+    priority_symbols = [
+        row.get("symbol")
+        for row in list(dict(data or {}).get("holdings", []) or [])
+    ]
+    priority_symbols.extend(
+        row.get("symbol")
+        for row in list(dict(data or {}).get("watchlist", []) or [])
+    )
+    priority_symbols.extend(
+        row.get("symbol")
+        for row in list(dict(core_universe or {}).get("etfs", []) or [])
+        if bool(dict(row or {}).get("enabled", True))
+    )
+    priority_symbols.extend(list(dict(satellite_universe or {}).get("manual_include", []) or []))
+    excluded = {
+        str(symbol or "").strip().upper()
+        for symbol in list(dict(satellite_universe or {}).get("manual_exclude", []) or [])
+    }
+    return [
+        symbol
+        for symbol in _unique_symbols(priority_symbols)
+        if symbol not in excluded
+    ][: max(int(maximum_symbols), 2)]
+
+
+def build_benchmark_map(symbols: Sequence[str]) -> dict[str, str]:
+    # Sector benchmarks can replace SPY as point-in-time sector data becomes
+    # reliable. The fallback is explicit rather than silently inferred.
+    return {str(symbol).strip().upper(): "SPY" for symbol in symbols}
+
+
+def load_histories(
+    symbols: Sequence[str],
+    *,
+    history_period: str,
+    load_history_fn: Callable = qa.get_historical_data,
+) -> tuple[dict[str, pd.DataFrame], list[dict]]:
+    histories = {}
+    failures = []
+    for symbol in _unique_symbols([*symbols, "SPY"]):
+        try:
+            frame = load_history_fn(symbol, period=history_period)
+        except Exception as exc:
+            failures.append({"symbol": symbol, "error": f"{type(exc).__name__}: {exc}"})
+            continue
+        if isinstance(frame, pd.DataFrame) and not frame.empty and "Close" in frame.columns:
+            histories[symbol] = frame.sort_index()
+        else:
+            failures.append({"symbol": symbol, "error": "history unavailable"})
+    return histories, failures
+
+
+def _load_default_universes():
+    from quant_core.analytics import candidate_pool as candidate_pool
+    from quant_core.analytics import core_etf_rotation
+
+    return core_etf_rotation.load_core_etf_universe(), candidate_pool.load_satellite_universe()
+
+
+def model_training_due(*, config: Mapping | None = None, now: datetime | None = None) -> bool:
+    normalized = normalize_multi_horizon_config(config) if config is not None else load_multi_horizon_config()
+    checkpoint = Path(_artifact_path(str(dict(normalized.get("artifacts", {}) or {})["checkpoint_path"])))
+    if not checkpoint.exists():
+        return True
+    interval_days = int(dict(normalized.get("training", {}) or {}).get("retrain_interval_days", 30))
+    modified_at = datetime.fromtimestamp(checkpoint.stat().st_mtime)
+    return (now or datetime.now()) - modified_at >= timedelta(days=max(interval_days, 1))
+
+
+def build_satellite_snapshot_from_model(model_snapshot: Mapping | None) -> dict:
+    model_snapshot = dict(model_snapshot or {})
+    top = [dict(row or {}) for row in list(model_snapshot.get("satellite_top3", []) or [])]
+    pool = [dict(row or {}) for row in list(model_snapshot.get("satellite_ranked_pool", []) or [])]
+    status_counts = {}
+    for row in pool:
+        action = str(dict(row.get("decision", {}) or {}).get("action") or "WATCH").upper()
+        status_counts[action] = status_counts.get(action, 0) + 1
+    return {
+        "schema_version": 2,
+        "generated_at": model_snapshot.get("generated_at"),
+        "source": "finance_multi_asset_transformer",
+        "model": dict(model_snapshot.get("model", {}) or {}),
+        "summary": {
+            "scanned_symbols": int(dict(model_snapshot.get("summary", {}) or {}).get("symbol_count", 0) or 0),
+            "candidate_count": len(pool),
+            "deep_analysis_count": len(pool),
+            "top_symbols": [str(row.get("symbol") or "").strip().upper() for row in top],
+            "confirmed_count": status_counts.get("ACCUMULATE", 0),
+            "probe_count": status_counts.get("PROBE", 0),
+            "watch_count": status_counts.get("WATCH", 0) + status_counts.get("HOLD", 0),
+            "overheated_count": sum(
+                1 for row in pool if str(dict(row.get("timing", {}) or {}).get("state") or "").upper() == "EXTENDED"
+            ),
+        },
+        "top_recommendations": top,
+        "candidate_pool": pool,
+        "symbols": pool,
+    }
+
+
+def _current_weights_pct(data: Mapping) -> dict[str, float]:
+    holdings = list(dict(data or {}).get("holdings", []) or [])
+    values = {}
+    for row in holdings:
+        item = dict(row or {})
+        symbol = str(item.get("symbol") or "").strip().upper()
+        try:
+            shares = float(item.get("shares") or 0.0)
+            price = float(item.get("current_price") or item.get("cost") or 0.0)
+        except (TypeError, ValueError):
+            continue
+        values[symbol] = max(shares * price, 0.0)
+    cash = dict(dict(data or {}).get("account", {}) or {}).get("cash_available")
+    try:
+        total = sum(values.values()) + max(float(cash or 0.0), 0.0)
+    except (TypeError, ValueError):
+        total = sum(values.values())
+    if total <= 0:
+        return {symbol: 0.0 for symbol in values}
+    return {symbol: value / total * 100.0 for symbol, value in values.items()}
+
+
+def _not_ready_snapshot(*, symbols, checkpoint_path: str, generated_at: datetime, reason: str) -> dict:
+    return {
+        "schema_version": 1,
+        "generated_at": generated_at.isoformat(),
+        "status": "MODEL_NOT_READY",
+        "model": {
+            "model_id": "finance_multi_asset_transformer",
+            "status": "RESEARCH",
+            "checkpoint_path": checkpoint_path,
+        },
+        "summary": {
+            "symbol_count": len(symbols),
+            "action_counts": {},
+            "message": reason,
+        },
+        "symbols": [],
+        "errors": [reason],
+    }
+
+
+def _save_panel(panel: pd.DataFrame, path: str) -> str:
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    panel.to_parquet(target, index=False)
+    return str(target)
+
+
+def _save_json(payload: Mapping, path: str) -> str:
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps(dict(payload), ensure_ascii=False, indent=2, default=str) + "\n", encoding="utf-8")
+    return str(target)
+
+
+def _model_config(config: Mapping) -> MultiAssetTransformerConfig:
+    architecture = dict(config.get("architecture", {}) or {})
+    return MultiAssetTransformerConfig(
+        feature_count=15,
+        horizon_count=len(config["horizons"]),
+        d_model=int(architecture.get("d_model", 64)),
+        temporal_layers=int(architecture.get("temporal_layers", 2)),
+        cross_asset_layers=int(architecture.get("cross_asset_layers", 2)),
+        attention_heads=int(architecture.get("attention_heads", 4)),
+        feedforward_multiplier=int(architecture.get("feedforward_multiplier", 4)),
+        dropout=float(architecture.get("dropout", 0.1)),
+        patch_size=int(architecture.get("patch_size", 10)),
+        patch_stride=int(architecture.get("patch_stride", 5)),
+        expert_count=int(architecture.get("expert_count", 4)),
+        top_k_experts=int(architecture.get("top_k_experts", 2)),
+    )
+
+
+def run_multi_horizon_job(
+    *,
+    config: Mapping | None = None,
+    data: Mapping | None = None,
+    core_universe: Mapping | None = None,
+    satellite_universe: Mapping | None = None,
+    train: bool = False,
+    load_history_fn: Callable = qa.get_historical_data,
+    risk_regime: str = "NORMAL",
+    now: datetime | None = None,
+) -> dict:
+    now = now or datetime.now()
+    normalized = normalize_multi_horizon_config(config) if config is not None else load_multi_horizon_config()
+    artifacts = dict(normalized.get("artifacts", {}) or {})
+    checkpoint_path = _artifact_path(str(artifacts["checkpoint_path"]))
+    snapshot_path = _artifact_path(str(artifacts["snapshot_path"]))
+    if not bool(normalized.get("enabled", True)):
+        snapshot = _not_ready_snapshot(
+            symbols=[],
+            checkpoint_path=checkpoint_path,
+            generated_at=now,
+            reason="Multi-horizon model is disabled.",
+        )
+        save_multi_horizon_snapshot(snapshot, path=snapshot_path)
+        return snapshot
+
+    data = dict(data or data_storage.load_data())
+    if core_universe is None or satellite_universe is None:
+        default_core, default_satellite = _load_default_universes()
+        core_universe = default_core if core_universe is None else core_universe
+        satellite_universe = default_satellite if satellite_universe is None else satellite_universe
+    symbols = build_model_universe(
+        data,
+        core_universe=dict(core_universe or {}),
+        satellite_universe=dict(satellite_universe or {}),
+        maximum_symbols=int(normalized["maximum_training_symbols"]),
+    )
+    if not train and not Path(checkpoint_path).exists():
+        snapshot = _not_ready_snapshot(
+            symbols=symbols,
+            checkpoint_path=checkpoint_path,
+            generated_at=now,
+            reason="No trained multi-horizon checkpoint. Run model training from Research & Models.",
+        )
+        save_multi_horizon_snapshot(snapshot, path=snapshot_path)
+        return snapshot
+
+    histories, failures = load_histories(
+        symbols,
+        history_period=str(normalized["history_period"]),
+        load_history_fn=load_history_fn,
+    )
+    usable_symbols = [symbol for symbol in symbols if symbol in histories]
+    benchmark_map = build_benchmark_map(usable_symbols)
+    if len(usable_symbols) < 2 or "SPY" not in histories:
+        snapshot = _not_ready_snapshot(
+            symbols=symbols,
+            checkpoint_path=checkpoint_path,
+            generated_at=now,
+            reason="At least two usable asset histories plus SPY are required.",
+        )
+        snapshot["data_failures"] = failures
+        save_multi_horizon_snapshot(snapshot, path=snapshot_path)
+        return snapshot
+
+    training_result = None
+    if train:
+        panel = build_panel_frame(
+            histories,
+            benchmark_map=benchmark_map,
+            symbols=usable_symbols,
+            horizons=normalized["horizons"],
+            observation_frequency=str(normalized["observation_frequency"]),
+        )
+        panel_path = _save_panel(panel, _artifact_path(str(artifacts["panel_path"])))
+        bundle = build_multi_asset_tensor_bundle(
+            histories,
+            symbols=usable_symbols,
+            benchmark_map=benchmark_map,
+            horizons=normalized["horizons"],
+            lookback=int(normalized["lookback"]),
+            observation_frequency=str(normalized["observation_frequency"]),
+        )
+        network_config = _model_config(normalized)
+        training = dict(normalized.get("training", {}) or {})
+        sample_count = len(bundle.observation_dates)
+        test_periods = max(min(26, sample_count // 6), 4)
+        embargo_periods = max(int(max(normalized["horizons"]) / 5), 1)
+        train_periods = max(sample_count - embargo_periods - test_periods * 3, test_periods * 2)
+        validation_result = walk_forward_validate_bundle(
+            bundle,
+            config=network_config,
+            train_periods=train_periods,
+            test_periods=test_periods,
+            embargo_periods=embargo_periods,
+            epochs=int(training["walk_forward_epochs"]),
+            batch_size=int(training["batch_size"]),
+            learning_rate=float(training["learning_rate"]),
+            weight_decay=float(training["weight_decay"]),
+            device=str(training["device"]),
+            top_k=3,
+            max_folds=3,
+            compare_pretraining=True,
+        )
+        validation_result["generated_at"] = now.isoformat()
+        validation_result["model_id"] = normalized["model_id"]
+        validation_path = _save_json(validation_result, _artifact_path(str(artifacts["validation_path"])))
+        pretraining_path = _artifact_path(str(artifacts["pretraining_checkpoint_path"]))
+        pretraining_result = pretrain_temporal_encoder(
+            bundle,
+            config=network_config,
+            epochs=int(training["pretraining_epochs"]),
+            batch_size=int(training["batch_size"]),
+            learning_rate=float(training["learning_rate"]),
+            device=str(training["device"]),
+            checkpoint_path=pretraining_path,
+        )
+        training_result = train_multi_asset_model(
+            bundle,
+            config=network_config,
+            epochs=int(training["epochs"]),
+            batch_size=int(training["batch_size"]),
+            learning_rate=float(training["learning_rate"]),
+            weight_decay=float(training["weight_decay"]),
+            device=str(training["device"]),
+            checkpoint_path=checkpoint_path,
+            pretrained_checkpoint_path=pretraining_path,
+        )
+        training_result["pretraining"] = pretraining_result
+        training_result["panel_path"] = panel_path
+        training_result["validation_path"] = validation_path
+        training_result["validation_status"] = validation_result["status"]
+
+    snapshot = run_multi_horizon_inference(
+        histories,
+        symbols=usable_symbols,
+        benchmark_map=benchmark_map,
+        current_weights_pct=_current_weights_pct(data),
+        risk_regime=risk_regime,
+        checkpoint_path=checkpoint_path,
+        device=str(dict(normalized.get("training", {}) or {}).get("device", "auto")),
+    )
+    holding_symbols = {
+        str(row.get("symbol") or "").strip().upper()
+        for row in list(data.get("holdings", []) or [])
+    }
+    watchlist_symbols = {
+        str(row.get("symbol") or "").strip().upper()
+        for row in list(data.get("watchlist", []) or [])
+    }
+    core_symbols = {
+        str(row.get("symbol") or "").strip().upper()
+        for row in list(dict(core_universe or {}).get("etfs", []) or [])
+        if bool(dict(row or {}).get("enabled", True))
+    }
+    weight_map = _current_weights_pct(data)
+    for row in list(snapshot.get("symbols", []) or []):
+        symbol = str(row.get("symbol") or "").strip().upper()
+        history = histories.get(symbol)
+        row["latest_price"] = (
+            float(history["Close"].dropna().iloc[-1])
+            if isinstance(history, pd.DataFrame) and not history.empty
+            else None
+        )
+        row["current_weight_pct"] = float(weight_map.get(symbol, 0.0))
+        row["list_type"] = (
+            "holding"
+            if symbol in holding_symbols
+            else "watchlist"
+            if symbol in watchlist_symbols
+            else "candidate_pool"
+        )
+        row["model_id"] = dict(snapshot.get("model", {}) or {}).get("model_id")
+    satellite_candidates = [
+        row
+        for row in list(snapshot.get("symbols", []) or [])
+        if str(row.get("symbol") or "").strip().upper() not in core_symbols
+        and str(row.get("symbol") or "").strip().upper() not in holding_symbols
+    ]
+    satellite_candidates.sort(
+        key=lambda row: float(dict(row.get("long_horizon", {}) or {}).get("blended_rank") or 0.0),
+        reverse=True,
+    )
+    satellite_top3 = satellite_candidates[:3]
+    top3_symbols = {str(row.get("symbol") or "").strip().upper() for row in satellite_top3}
+    for row in satellite_candidates:
+        symbol = str(row.get("symbol") or "").strip().upper()
+        if symbol in top3_symbols:
+            row["satellite_rank"] = 1 + next(
+                index
+                for index, candidate in enumerate(satellite_top3)
+                if str(candidate.get("symbol") or "").strip().upper() == symbol
+            )
+            continue
+        decision = dict(row.get("decision", {}) or {})
+        if str(decision.get("action") or "").upper() in {"ACCUMULATE", "PROBE"}:
+            decision["action"] = "WATCH"
+            decision["target_weight_range_pct"] = [0.0, 0.0]
+            decision["reason_codes"] = [
+                *list(decision.get("reason_codes", []) or []),
+                "OUTSIDE_SATELLITE_TOP3",
+            ]
+            row["decision"] = decision
+    snapshot["core_etfs"] = [
+        row
+        for row in list(snapshot.get("symbols", []) or [])
+        if str(row.get("symbol") or "").strip().upper() in core_symbols
+    ]
+    snapshot["satellite_top3"] = satellite_top3
+    snapshot["satellite_ranked_pool"] = satellite_candidates
+    snapshot["summary"]["top_satellite_symbols"] = [
+        str(row.get("symbol") or "").strip().upper() for row in satellite_top3
+    ]
+    snapshot["summary"]["action_counts"] = {}
+    for row in list(snapshot.get("symbols", []) or []):
+        action = str(dict(row.get("decision", {}) or {}).get("action") or "UNKNOWN")
+        snapshot["summary"]["action_counts"][action] = snapshot["summary"]["action_counts"].get(action, 0) + 1
+    snapshot["status"] = "READY"
+    snapshot["data_quality"] = {
+        "requested_symbol_count": len(symbols),
+        "usable_symbol_count": len(usable_symbols),
+        "failed_symbol_count": len(failures),
+        "failures": failures,
+    }
+    if training_result:
+        snapshot["training"] = training_result
+    save_multi_horizon_snapshot(snapshot, path=snapshot_path)
+    return snapshot

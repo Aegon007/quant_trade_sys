@@ -6,7 +6,6 @@ DEFAULT_STRATEGY_CLASSES = {
     "bollinger": "strategies.classic_strategies.BollingerStrategy",
     "macd": "strategies.classic_strategies.MACDStrategy",
     "rsi": "strategies.classic_strategies.RSIStrategy",
-    "deep_tcn": "strategies.deep_learning_strategy.DeepTCNStrategy",
 }
 
 

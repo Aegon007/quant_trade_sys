@@ -22,7 +22,7 @@ class SatelliteCandidatePoolTests(unittest.TestCase):
                 "holdings": [{"symbol": "AAPL"}],
                 "watchlist": [{"symbol": "MSFT"}],
             },
-            strategy={"id": "deep_tcn", "params": {"period": "2y"}},
+            strategy={"id": "ma_crossover", "params": {"period": "2y"}},
             history_period="2y",
             load_historical_data_fn=lambda symbol, period="2y": history,
             universe={

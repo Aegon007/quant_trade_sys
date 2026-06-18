@@ -18,15 +18,10 @@ class ProjectFilesTests(unittest.TestCase):
         self.assertIn("fastapi", requirements)
         self.assertIn("uvicorn", requirements)
         self.assertIn("backtrader", requirements)
-        self.assertIn("scikit-learn", requirements)
-        self.assertIn("joblib", requirements)
-        self.assertIn("lightgbm", requirements)
-
-        if "ensemble_voting" in strategy_ids:
-            self.assertIn("catboost", requirements)
-            self.assertIn("xgboost", requirements)
-        if "deep_tcn" in strategy_ids:
-            self.assertIn("torch", requirements)
+        self.assertIn("pyarrow", requirements)
+        for excluded in ["lightgbm", "catboost", "xgboost"]:
+            self.assertNotIn(excluded, requirements)
+        self.assertIn("torch", requirements)
         self.assertIn("transformers", requirements)
 
     def test_event_source_config_exists_and_has_sources(self):
@@ -110,6 +105,40 @@ class ProjectFilesTests(unittest.TestCase):
         npmrc_text = npmrc.read_text(encoding="utf-8")
         self.assertIn("save=false", npmrc_text)
         self.assertIn("package-lock=true", npmrc_text)
+
+    def test_retired_tcn_is_absent_from_runtime_code_and_configuration(self):
+        retired_files = [
+            ROOT / "strategies" / "deep_learning_strategy.py",
+            ROOT / "strategies" / "deep_learning_utils.py",
+            ROOT / "tests" / "test_deep_learning_strategy.py",
+        ]
+        for path in retired_files:
+            self.assertFalse(path.exists(), f"retired TCN file still exists: {path}")
+
+        model_registry = json.loads(
+            (ROOT / "storage" / "config" / "model_registry.json").read_text(encoding="utf-8")
+        )
+        strategy_config = json.loads(
+            (ROOT / "config" / "strategies.json").read_text(encoding="utf-8")
+        )
+        self.assertNotIn("deep_tcn", {row.get("model_id") for row in model_registry.get("models", [])})
+        self.assertNotIn("deep_tcn", {row.get("id") for row in strategy_config.get("strategies", [])})
+
+        runtime_paths = [
+            ROOT / "quant_core",
+            ROOT / "jobs",
+            ROOT / "strategies",
+            ROOT / "frontend" / "src",
+        ]
+        offenders = []
+        for root in runtime_paths:
+            for path in root.rglob("*"):
+                if path.suffix not in {".py", ".ts", ".tsx", ".json"}:
+                    continue
+                text = path.read_text(encoding="utf-8").lower()
+                if "deep_tcn" in text or "temporal cnn" in text or "tcn_profile" in text:
+                    offenders.append(str(path.relative_to(ROOT)))
+        self.assertEqual(offenders, [])
 
 
 if __name__ == "__main__":

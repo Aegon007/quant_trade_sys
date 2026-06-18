@@ -63,12 +63,16 @@ class ApiActionsTests(unittest.TestCase):
             "/api/data-health",
             "/api/plan-quality",
             "/api/strategy-governance",
+            "/api/research-models",
+            "/api/multi-horizon",
             "/api/reports/latest",
             "/api/actions/refresh-market",
             "/api/actions/import-robinhood-csv",
             "/api/actions/save-account-calibration",
             "/api/actions/run-nightly-once",
             "/api/actions/run-weekend-research-once",
+            "/api/actions/train-multi-horizon",
+            "/api/actions/save-multi-horizon-config",
         ]:
             self.assertIn(path, route_paths)
 

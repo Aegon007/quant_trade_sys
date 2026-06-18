@@ -549,7 +549,7 @@ V3 要让模型可替换，而不是让每个模型都把自己的输入、输�
 模型类型：
 
 - rule_based
-- tcn
+- finance_multi_asset_transformer
 - llm_remote_explainer
 - slm_local_narrator
 - future_candidate_model

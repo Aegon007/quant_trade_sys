@@ -198,7 +198,7 @@ class ReportingTests(unittest.TestCase):
         text = build_quant_analysis_report(
             {
                 "generated_at": "2026-05-11T23:15:00",
-                "strategy": {"id": "deep_tcn", "name": "TCN"},
+                "strategy": {"id": "ma_crossover", "name": "MA"},
                 "engine": {"name": "backtrader"},
                 "history_period": "2y",
                 "summary": {

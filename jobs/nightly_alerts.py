@@ -1,6 +1,7 @@
 import argparse
 from datetime import datetime
 
+from quant_core import paths as qpaths
 from quant_core.data import storage as du
 from quant_core.data import market_data as md
 from quant_core.data import data_health as dhealth
@@ -33,6 +34,9 @@ from quant_core.snapshots import system_snapshot as ss
 from quant_core.ledger import transactions as tx
 from quant_core.analytics.signal_scoreboard import build_signal_scoreboard
 from quant_core.risk.risk_gate import build_market_risk_snapshot_from_histories, evaluate_market_risk_gate
+from quant_core.models.multi_horizon import pipeline as mh_pipeline
+from quant_core.models.multi_horizon import snapshot as mh_snapshot
+from quant_core.models.multi_horizon import governance as mh_governance
 from strategies.registry import create_strategy
 from strategies import ui as su
 from engine import BacktraderEngine
@@ -159,6 +163,11 @@ def run_nightly_alerts(
     post_close_review_path=pcr.DEFAULT_POST_CLOSE_REVIEW_FILE,
     manifest_path=nman.DEFAULT_NIGHTLY_MANIFEST_FILE,
     change_feed_path=cf.DEFAULT_CHANGE_FEED_FILE,
+    multi_horizon_runner=None,
+    multi_horizon_snapshot_path=mh_snapshot.DEFAULT_MULTI_HORIZON_SNAPSHOT_FILE,
+    model_prediction_journal_path=mh_governance.DEFAULT_PREDICTION_JOURNAL_FILE,
+    model_governance_path=mh_governance.DEFAULT_GOVERNANCE_FILE,
+    model_validation_path=qpaths.MULTI_HORIZON_VALIDATION_FILE,
     environ=None,
 ):
     now = now or datetime.now()
@@ -287,6 +296,86 @@ def run_nightly_alerts(
         risk_gate=risk_decision,
         account_snapshot=account_snapshot,
     )
+    multi_horizon_runner = multi_horizon_runner or mh_pipeline.run_multi_horizon_job
+    multi_horizon_snapshot = None
+    try:
+        if nman.can_resume_step(
+            manifest,
+            step_name="multi_horizon_inference",
+            output_file=multi_horizon_snapshot_path,
+            now=now,
+        ):
+            multi_horizon_snapshot = mh_snapshot.load_multi_horizon_snapshot(path=multi_horizon_snapshot_path)
+            manifest = nman.mark_step_completed(
+                manifest,
+                step_name="multi_horizon_inference",
+                output_file=multi_horizon_snapshot_path,
+                input_version=manifest_input_version,
+                reused=True,
+                path=manifest_path,
+                now=now,
+            )
+        else:
+            manifest = nman.mark_step_started(
+                manifest,
+                step_name="multi_horizon_inference",
+                input_version=manifest_input_version,
+                path=manifest_path,
+                now=now,
+            )
+            risk_regime = (
+                getattr(risk_decision, "regime", None)
+                if risk_decision is not None
+                else "NORMAL"
+            )
+            multi_horizon_snapshot = multi_horizon_runner(
+                data=data,
+                train=False,
+                risk_regime=str(risk_regime or "NORMAL"),
+                now=now,
+            )
+            manifest = nman.mark_step_completed(
+                manifest,
+                step_name="multi_horizon_inference",
+                output_file=multi_horizon_snapshot_path,
+                input_version=manifest_input_version,
+                metadata={
+                    "status": dict(multi_horizon_snapshot or {}).get("status"),
+                    "symbol_count": int(dict(dict(multi_horizon_snapshot or {}).get("summary", {}) or {}).get("symbol_count", 0) or 0),
+                },
+                path=manifest_path,
+                now=now,
+            )
+    except Exception as exc:
+        multi_horizon_snapshot = {
+            "status": "MODEL_ERROR",
+            "generated_at": now.isoformat(),
+            "summary": {"symbol_count": 0, "message": str(exc)},
+            "symbols": [],
+            "errors": [f"{type(exc).__name__}: {exc}"],
+        }
+        mh_snapshot.save_multi_horizon_snapshot(multi_horizon_snapshot, path=multi_horizon_snapshot_path)
+        manifest = nman.mark_step_failed(
+            manifest,
+            step_name="multi_horizon_inference",
+            error_message=str(exc),
+            path=manifest_path,
+            now=now,
+        )
+    multi_horizon_snapshot = dict(multi_horizon_snapshot or {})
+    model_governance_snapshot = {}
+    if dict(multi_horizon_snapshot or {}).get("status") == "READY":
+        mh_governance.append_prediction_journal(multi_horizon_snapshot, path=model_prediction_journal_path)
+    model_governance_snapshot = mh_governance.refresh_model_governance(
+        multi_horizon_snapshot or {},
+        score_outcomes=False,
+        validation_path=model_validation_path,
+        journal_path=model_prediction_journal_path,
+        governance_path=model_governance_path,
+        now=now,
+    )
+    multi_horizon_snapshot["governance"] = model_governance_snapshot
+    mh_snapshot.save_multi_horizon_snapshot(multi_horizon_snapshot, path=multi_horizon_snapshot_path)
     strategy_comparison_rows = []
     quant_analysis_snapshot = None
     quant_analysis_report_files = {}
@@ -395,6 +484,8 @@ def run_nightly_alerts(
         for row in list(core_etf_universe.get("etfs", []) or [])
         if bool(row.get("enabled", True))
     }
+    satellite_candidate_snapshot = mh_pipeline.build_satellite_snapshot_from_model(multi_horizon_snapshot)
+    cpool.save_satellite_candidate_pool_snapshot(satellite_candidate_snapshot)
     if with_strategy_comparison and symbols:
         symbol_for_compare = symbols[0]
         strategies = su.load_strategies()
@@ -528,9 +619,13 @@ def run_nightly_alerts(
                     path=manifest_path,
                     now=now,
                 )
+                model_plan_source = {
+                    **dict(multi_horizon_snapshot or {}),
+                    "allocation_regime": allocation_regime.to_dict() if hasattr(allocation_regime, "to_dict") else allocation_regime,
+                }
                 trade_plan = plan_builder(
-                    quant_analysis_snapshot,
-                    satellite_candidate_snapshot=satellite_candidate_snapshot,
+                    model_plan_source,
+                    satellite_candidate_snapshot=None,
                     discipline_snapshot=discipline_snapshot,
                     now=now,
                 )
@@ -551,8 +646,12 @@ def run_nightly_alerts(
     else:
         previous_quant_snapshot = None
         quant_analysis_change_summary = {"has_changes": False, "message": ""}
+        model_plan_source = {
+            **dict(multi_horizon_snapshot or {}),
+            "allocation_regime": allocation_regime.to_dict() if hasattr(allocation_regime, "to_dict") else allocation_regime,
+        }
         trade_plan = plan_builder(
-            {"symbols": [], "allocation_regime": allocation_regime.to_dict() if hasattr(allocation_regime, "to_dict") else allocation_regime},
+            model_plan_source,
             satellite_candidate_snapshot=None,
             discipline_snapshot=discipline_snapshot,
             now=now,
@@ -637,6 +736,7 @@ def run_nightly_alerts(
         plan_quality_snapshot=plan_quality_snapshot,
         market_monitor_snapshot=market_monitor_snapshot,
         strategy_governance_snapshot=strategy_governance_snapshot,
+        multi_horizon_snapshot=multi_horizon_snapshot,
         intraday_event_summary=intraday_event_summary,
         generated_at=now,
     )
@@ -734,6 +834,7 @@ def run_nightly_alerts(
             "satellite_candidate_snapshot": satellite_candidate_snapshot,
             "change_feed": change_feed,
             "manifest": manifest,
+            "multi_horizon_snapshot": multi_horizon_snapshot,
         }
 
     sent_results = ae.send_new_alerts(
@@ -907,6 +1008,7 @@ def run_nightly_alerts(
         "satellite_candidate_snapshot": satellite_candidate_snapshot,
         "discipline_snapshot": discipline_snapshot,
         "change_feed": change_feed,
+        "multi_horizon_snapshot": multi_horizon_snapshot,
         "manifest": manifest,
     }
 

@@ -22,6 +22,7 @@ from quant_core.execution import post_close_review
 from quant_core.jobs import job_registry
 from quant_core.ledger import transactions
 from quant_core.notifications import notification_config
+from quant_core.models.multi_horizon import config as multi_horizon_config
 from quant_core.portfolio import actions as portfolio_actions
 from quant_core.snapshots import system_snapshot
 
@@ -137,6 +138,13 @@ def run_weekend_research_once() -> dict:
     return result if isinstance(result, dict) else {"message": "weekend research completed", "result": result}
 
 
+def train_multi_horizon_model() -> dict:
+    from quant_core.models.multi_horizon.pipeline import run_multi_horizon_job
+
+    result = run_multi_horizon_job(train=True)
+    return result if isinstance(result, dict) else {"message": "multi-horizon training completed", "result": result}
+
+
 def import_robinhood_csv_text(csv_text: str, *, filename: str = "", replace_existing: bool = False) -> dict:
     if not str(csv_text or "").strip():
         raise ValueError("CSV content is empty.")
@@ -228,6 +236,15 @@ def save_notification_settings(config: Mapping) -> dict:
     return {
         "message": "notification config saved",
         "notification_config": saved,
+    }
+
+
+def save_multi_horizon_settings(config: Mapping) -> dict:
+    path = multi_horizon_config.save_multi_horizon_config(config)
+    return {
+        "message": "multi-horizon model config saved",
+        "path": path,
+        "multi_horizon_config": multi_horizon_config.load_multi_horizon_config(path=path),
     }
 
 

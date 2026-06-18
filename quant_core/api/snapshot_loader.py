@@ -35,8 +35,48 @@ SNAPSHOT_PATHS = {
     "plan-quality": qpaths.PLAN_QUALITY_SNAPSHOT_FILE,
     "strategy-governance": qpaths.STRATEGY_REGISTRY_STATE_FILE,
     "strategy-validation": qpaths.STRATEGY_VALIDATION_SNAPSHOT_FILE,
+    "multi-horizon": qpaths.MULTI_HORIZON_SNAPSHOT_FILE,
+    "model-governance": qpaths.MULTI_HORIZON_GOVERNANCE_FILE,
     "reports-latest": str(qpaths.PROJECT_ROOT / "reports" / "nightly_report_latest.json"),
 }
+
+
+def _multi_horizon_index(snapshot: Mapping | None) -> dict[str, dict]:
+    return {
+        str(row.get("symbol") or "").strip().upper(): dict(row or {})
+        for row in list(dict(snapshot or {}).get("symbols", []) or [])
+        if str(dict(row or {}).get("symbol") or "").strip()
+    }
+
+
+def enrich_rows_with_multi_horizon(rows, snapshot: Mapping | None) -> list[dict]:
+    indexed = _multi_horizon_index(snapshot)
+    generated_at = dict(snapshot or {}).get("generated_at")
+    result = []
+    for raw_row in list(rows or []):
+        row = dict(raw_row or {})
+        symbol = str(row.get("symbol") or "").strip().upper()
+        model_row = indexed.get(symbol)
+        if not model_row:
+            result.append(row)
+            continue
+        long_horizon = dict(model_row.get("long_horizon", {}) or {})
+        timing = dict(model_row.get("timing", {}) or {})
+        decision = dict(model_row.get("decision", {}) or {})
+        row.update(
+            {
+                "multi_horizon": model_row,
+                "long_horizon_state": long_horizon.get("state"),
+                "long_horizon_rank": long_horizon.get("blended_rank"),
+                "timing_state": timing.get("state"),
+                "model_decision": decision,
+                "final_action": decision.get("action"),
+                "target_weight_range_pct": decision.get("target_weight_range_pct"),
+                "model_generated_at": generated_at,
+            }
+        )
+        result.append(row)
+    return result
 
 
 def _parse_iso_datetime(value) -> Optional[datetime]:
@@ -152,6 +192,46 @@ def load_snapshot_response(
     )
 
 
+def load_model_enriched_snapshot_response(
+    name: str,
+    path: str,
+    *,
+    row_keys: tuple[str, ...],
+    max_age_seconds: Optional[int] = DEFAULT_SNAPSHOT_MAX_AGE_SECONDS,
+    now: Optional[datetime] = None,
+) -> dict:
+    response = load_snapshot_response(
+        name,
+        path,
+        max_age_seconds=max_age_seconds,
+        now=now,
+    )
+    model_snapshot, _ = safe_read_json(qpaths.MULTI_HORIZON_SNAPSHOT_FILE)
+    model_snapshot = model_snapshot if isinstance(model_snapshot, dict) else {}
+    payload = dict(response.get("payload", {}) or {})
+    for key in row_keys:
+        if isinstance(payload.get(key), list):
+            payload[key] = enrich_rows_with_multi_horizon(payload[key], model_snapshot)
+    if name == "satellite-radar" and list(model_snapshot.get("satellite_top3", []) or []):
+        payload["top_recommendations"] = list(model_snapshot["satellite_top3"])
+        payload["candidate_pool"] = list(model_snapshot.get("satellite_ranked_pool", []) or [])
+        payload["model_ranked"] = True
+    if name == "core-etfs" and list(model_snapshot.get("core_etfs", []) or []):
+        existing = {
+            str(row.get("symbol") or "").strip().upper(): dict(row or {})
+            for row in list(payload.get("symbols", []) or [])
+        }
+        payload["symbols"] = [
+            {**existing.get(str(row.get("symbol") or "").strip().upper(), {}), **dict(row or {})}
+            for row in list(model_snapshot.get("core_etfs", []) or [])
+        ]
+        payload["model_ranked"] = True
+    response["payload"] = payload
+    response["summary"] = _extract_summary(payload)
+    response["items"] = _extract_items(payload)
+    return response
+
+
 def _load_portfolio_payload() -> dict:
     payload, errors = safe_read_json(qpaths.PORTFOLIO_DATA_FILE)
     if errors or not isinstance(payload, dict):
@@ -203,9 +283,17 @@ def load_portfolio_response(*, now: Optional[datetime] = None) -> dict:
     plan_quality_snapshot = pq.load_plan_quality_snapshot()
     quant_analysis_payload, _ = safe_read_json(qpaths.QUANT_ANALYSIS_SNAPSHOT_FILE)
     quant_analysis_payload = quant_analysis_payload if isinstance(quant_analysis_payload, dict) else {}
+    multi_horizon_payload, _ = safe_read_json(qpaths.MULTI_HORIZON_SNAPSHOT_FILE)
+    multi_horizon_payload = multi_horizon_payload if isinstance(multi_horizon_payload, dict) else {}
 
-    holdings = list(data.get("holdings", []) or []) if isinstance(data, Mapping) else []
-    watchlist = list(data.get("watchlist", []) or []) if isinstance(data, Mapping) else []
+    holdings = enrich_rows_with_multi_horizon(
+        list(data.get("holdings", []) or []) if isinstance(data, Mapping) else [],
+        multi_horizon_payload,
+    )
+    watchlist = enrich_rows_with_multi_horizon(
+        list(data.get("watchlist", []) or []) if isinstance(data, Mapping) else [],
+        multi_horizon_payload,
+    )
     summary = {
         "holding_count": len(holdings),
         "watchlist_count": len(watchlist),
@@ -220,6 +308,11 @@ def load_portfolio_response(*, now: Optional[datetime] = None) -> dict:
         "unplanned_trade_count": post_close_review.get("unplanned_trade_count"),
         "plan_quality_status": plan_quality_snapshot.get("status") or dict(plan_quality_snapshot.get("summary", {}) or {}).get("status"),
         "quant_analysis_generated_at": quant_analysis_payload.get("generated_at"),
+        "multi_horizon_status": multi_horizon_payload.get("status"),
+        "multi_horizon_generated_at": multi_horizon_payload.get("generated_at"),
+        "multi_horizon_is_stale": bool(
+            (_age_seconds(multi_horizon_payload.get("generated_at"), now=now) or 0) > DEFAULT_SNAPSHOT_MAX_AGE_SECONDS
+        ),
     }
     payload = {
         "account": account,
@@ -230,6 +323,7 @@ def load_portfolio_response(*, now: Optional[datetime] = None) -> dict:
         "post_close_review": post_close_review,
         "plan_quality_snapshot": plan_quality_snapshot,
         "quant_analysis_snapshot": quant_analysis_payload,
+        "multi_horizon_snapshot": multi_horizon_payload,
     }
     return build_api_response(
         name="portfolio",
@@ -255,6 +349,7 @@ def load_dashboard_response(*, now: Optional[datetime] = None) -> dict:
     plan_quality_payload, _ = safe_read_json(qpaths.PLAN_QUALITY_SNAPSHOT_FILE)
     market_monitor_payload, _ = safe_read_json(qpaths.MARKET_MONITOR_SNAPSHOT_FILE)
     strategy_governance_payload, _ = safe_read_json(qpaths.STRATEGY_REGISTRY_STATE_FILE)
+    multi_horizon_payload, _ = safe_read_json(qpaths.MULTI_HORIZON_SNAPSHOT_FILE)
     job_status = job_registry.load_job_status()
 
     core_payload = core_payload if isinstance(core_payload, dict) else {}
@@ -265,19 +360,36 @@ def load_dashboard_response(*, now: Optional[datetime] = None) -> dict:
     plan_quality_payload = plan_quality_payload if isinstance(plan_quality_payload, dict) else {}
     market_monitor_payload = market_monitor_payload if isinstance(market_monitor_payload, dict) else {}
     strategy_governance_payload = strategy_governance_payload if isinstance(strategy_governance_payload, dict) else {}
+    multi_horizon_payload = multi_horizon_payload if isinstance(multi_horizon_payload, dict) else {}
 
     change_items = []
     for key in ("high_items", "medium_items", "items"):
         change_items.extend(list(change_payload.get(key, []) or []))
     core_rows = list(core_payload.get("symbols", []) or [])
+    core_rows = enrich_rows_with_multi_horizon(core_rows, multi_horizon_payload)
+    satellite_rows = enrich_rows_with_multi_horizon(
+        list(satellite_payload.get("top_recommendations", []) or satellite_payload.get("symbols", []) or []),
+        multi_horizon_payload,
+    )
+    if list(multi_horizon_payload.get("satellite_top3", []) or []):
+        satellite_rows = list(multi_horizon_payload.get("satellite_top3", []) or [])
+    core_payload["symbols"] = core_rows
+    satellite_payload["top_recommendations"] = satellite_rows
     actionable_core = [
         row for row in core_rows
-        if str(dict(row or {}).get("action") or "").upper() not in ("", "HOLD", "WATCH")
+        if str(
+            dict(dict(row or {}).get("decision", {}) or {}).get("action")
+            or dict(row or {}).get("final_action")
+            or dict(row or {}).get("action")
+            or ""
+        ).upper() not in ("", "HOLD", "WATCH")
     ]
     summary = {
         "total_capital": account.get("total_capital"),
         "cash_available": account.get("cash_available"),
         "exposure_pct": account.get("exposure_pct"),
+        "holding_count": len(list(data.get("holdings", []) or [])),
+        "watchlist_count": len(list(data.get("watchlist", []) or [])),
         "discipline_regime": discipline_payload.get("regime"),
         "risk_regime": discipline_payload.get("risk_regime"),
         "actionable_core_count": len(actionable_core),
@@ -295,6 +407,16 @@ def load_dashboard_response(*, now: Optional[datetime] = None) -> dict:
         "market_monitor_status": market_monitor_payload.get("status"),
         "market_monitor_action": dict(market_monitor_payload.get("summary", {}) or {}).get("recommended_action"),
         "strategy_governance_status": strategy_governance_payload.get("status") or dict(strategy_governance_payload.get("summary", {}) or {}).get("status"),
+        "multi_horizon_status": (
+            "STALE"
+            if bool((_age_seconds(multi_horizon_payload.get("generated_at"), now=now) or 0) > DEFAULT_SNAPSHOT_MAX_AGE_SECONDS)
+            else multi_horizon_payload.get("status") or dict(multi_horizon_payload.get("model", {}) or {}).get("status")
+        ),
+        "multi_horizon_is_stale": bool(
+            (_age_seconds(multi_horizon_payload.get("generated_at"), now=now) or 0) > DEFAULT_SNAPSHOT_MAX_AGE_SECONDS
+        ),
+        "multi_horizon_conflict_count": dict(multi_horizon_payload.get("summary", {}) or {}).get("conflict_count"),
+        "multi_horizon_action_counts": dict(multi_horizon_payload.get("summary", {}) or {}).get("action_counts", {}),
     }
     payload = {
         "account": account,
@@ -306,6 +428,7 @@ def load_dashboard_response(*, now: Optional[datetime] = None) -> dict:
         "plan_quality_snapshot": plan_quality_payload,
         "market_monitor_snapshot": market_monitor_payload,
         "strategy_governance_snapshot": strategy_governance_payload,
+        "multi_horizon_snapshot": multi_horizon_payload,
         "job_status": job_status,
     }
     generated_at = now_iso(now)
@@ -446,10 +569,12 @@ def load_settings_response(*, now: Optional[datetime] = None) -> dict:
     if not notification_config:
         notification_config, _ = safe_read_json(qpaths.NOTIFICATION_CONFIG_FILE)
     model_registry, _ = safe_read_json(qpaths.MODEL_REGISTRY_CONFIG_FILE)
+    multi_horizon_config, _ = safe_read_json(qpaths.MULTI_HORIZON_MODEL_CONFIG_FILE)
     settings_payload = {
         "runtime_schedule": schedule,
         "notification_config": _sanitize_notification_config(notification_config if isinstance(notification_config, dict) else {}),
         "model_registry": model_registry if isinstance(model_registry, dict) else {},
+        "multi_horizon_config": multi_horizon_config if isinstance(multi_horizon_config, dict) else {},
     }
     return build_api_response(
         name="settings",
@@ -463,6 +588,46 @@ def load_settings_response(*, now: Optional[datetime] = None) -> dict:
         data_quality={"status": "OK"},
         payload=settings_payload,
         generated_at=now_iso(now),
+    )
+
+
+def load_research_models_response(*, now: Optional[datetime] = None) -> dict:
+    snapshot, snapshot_errors = safe_read_json(qpaths.MULTI_HORIZON_SNAPSHOT_FILE)
+    validation, validation_errors = safe_read_json(qpaths.MULTI_HORIZON_VALIDATION_FILE)
+    registry, registry_errors = safe_read_json(qpaths.MODEL_REGISTRY_CONFIG_FILE)
+    config, config_errors = safe_read_json(qpaths.MULTI_HORIZON_MODEL_CONFIG_FILE)
+    governance, governance_errors = safe_read_json(qpaths.MULTI_HORIZON_GOVERNANCE_FILE)
+    snapshot = snapshot if isinstance(snapshot, dict) else {}
+    validation = validation if isinstance(validation, dict) else {}
+    registry = registry if isinstance(registry, dict) else {}
+    config = config if isinstance(config, dict) else {}
+    governance = governance if isinstance(governance, dict) else {}
+    errors = [*snapshot_errors, *validation_errors, *registry_errors, *config_errors, *governance_errors]
+    model_age = _age_seconds(snapshot.get("generated_at"), now=now)
+    model_stale = bool(model_age is not None and model_age > DEFAULT_SNAPSHOT_MAX_AGE_SECONDS)
+    return build_api_response(
+        name="research-models",
+        source="composed:model-registry+multi-horizon",
+        freshness_status="MISSING" if snapshot_errors else ("STALE" if model_stale else "OK"),
+        is_stale=bool(snapshot_errors or model_stale),
+        summary={
+            "model_status": snapshot.get("status") or dict(snapshot.get("model", {}) or {}).get("status"),
+            "validation_status": validation.get("status"),
+            "fold_count": validation.get("fold_count"),
+            "symbol_count": dict(snapshot.get("summary", {}) or {}).get("symbol_count"),
+            "automatic_promotion": False,
+            "governance_status": governance.get("status"),
+        },
+        errors=errors,
+        data_quality={"status": "MISSING" if snapshot_errors else "OK"},
+        payload={
+            "multi_horizon_snapshot": snapshot,
+            "validation": validation,
+            "model_registry": registry,
+            "config": config,
+            "governance": governance,
+        },
+        generated_at=snapshot.get("generated_at") or validation.get("generated_at") or now_iso(now),
     )
 
 

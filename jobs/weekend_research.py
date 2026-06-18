@@ -23,6 +23,8 @@ from quant_core.research import weekend_research as wr
 from quant_core.snapshots import system_snapshot as ss
 from quant_core.ledger import transactions as tx
 from quant_core.analytics.signal_scoreboard import build_signal_scoreboard
+from quant_core.models.multi_horizon import pipeline as mh_pipeline
+from quant_core.models.multi_horizon import governance as mh_governance
 from strategies import ui as su
 from strategies.registry import create_strategy
 
@@ -46,6 +48,7 @@ def run_weekend_research(
     slack_sender=None,
     email_sender=None,
     message_router=None,
+    multi_horizon_runner=None,
     environ=None,
 ):
     now = now or datetime.now()
@@ -59,6 +62,7 @@ def run_weekend_research(
     slack_sender = slack_sender or nch.send_slack_message
     email_sender = email_sender or nch.send_email_message
     message_router = message_router or dr.deliver_message
+    multi_horizon_runner = multi_horizon_runner or mh_pipeline.run_multi_horizon_job
 
     history_period = schedule["history_period"]
     data = du.load_data()
@@ -71,6 +75,21 @@ def run_weekend_research(
         live_scoreboard,
         risk_gate=risk_gate,
         account_snapshot=account_snapshot,
+    )
+    multi_horizon_snapshot = multi_horizon_runner(
+        data=data,
+        train=mh_pipeline.model_training_due(now=now),
+        risk_regime=str(getattr(risk_gate, "regime", None) or "NORMAL"),
+        now=now,
+    )
+    multi_horizon_snapshot = dict(multi_horizon_snapshot or {})
+    if dict(multi_horizon_snapshot or {}).get("status") == "READY":
+        mh_governance.append_prediction_journal(multi_horizon_snapshot)
+    multi_horizon_snapshot["governance"] = mh_governance.refresh_model_governance(
+        multi_horizon_snapshot,
+        load_history_fn=qa.get_historical_data,
+        score_outcomes=True,
+        now=now,
     )
 
     core_universe = cer.load_core_etf_universe()
@@ -95,28 +114,12 @@ def run_weekend_research(
         now=now,
     )
 
-    satellite_universe = cpool.load_satellite_universe()
-    weekend_universe = dict(satellite_universe or {})
-    weekend_universe["max_candidate_pool_size"] = max(int(weekend_universe.get("max_candidate_pool_size", 100) or 100), 100)
-    weekend_universe["max_deep_analysis_size"] = max(int(weekend_universe.get("max_deep_analysis_size", 20) or 20), 30)
-    weekend_universe["max_recommendations"] = max(int(weekend_universe.get("max_recommendations", 3) or 3), 5)
+    satellite_snapshot = mh_pipeline.build_satellite_snapshot_from_model(multi_horizon_snapshot)
+    cpool.save_satellite_candidate_pool_snapshot(satellite_snapshot)
     strategies = su.load_strategies()
     runtime_strategy = qpa.load_default_runtime_strategy(history_period="2y")
     if runtime_strategy is None and strategies:
         runtime_strategy = _runtime_strategy(strategies[0], history_period="2y")
-    satellite_snapshot = cpool.build_satellite_candidate_pool_snapshot(
-        data=data,
-        strategy=runtime_strategy,
-        history_period="2y",
-        universe=weekend_universe,
-        core_symbols={str(row.get("symbol") or "").strip().upper() for row in list((core_snapshot or {}).get("symbols", []) or [])},
-        previous_snapshot=cpool.load_satellite_candidate_pool_snapshot(),
-        discipline_snapshot=None,
-        policy=policy,
-        risk_gate=risk_gate,
-        allocation_regime=allocation_regime,
-        now=now,
-    )
 
     top_symbols = [
         str(row.get("symbol") or "").strip().upper()
@@ -197,6 +200,9 @@ def run_weekend_research(
         strategy_governance_snapshot=strategy_governance_snapshot,
         evidence_layer=evidence_layer,
     )
+    snapshot["multi_horizon_snapshot"] = multi_horizon_snapshot
+    snapshot["summary"]["multi_horizon_status"] = dict(multi_horizon_snapshot or {}).get("status")
+    snapshot["summary"]["multi_horizon_validation_status"] = dict(dict(multi_horizon_snapshot or {}).get("training", {}) or {}).get("validation_status")
     wr.save_weekend_research_snapshot(snapshot, path=snapshot_path)
     evid.append_weekend_research_journal(snapshot)
     report_text = wr.build_weekend_research_report(snapshot)

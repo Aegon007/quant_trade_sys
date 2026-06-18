@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "enabled": true,
+  "model_id": "finance_multi_asset_transformer",
+  "role": "primary_quant_decision_candidate",
+  "history_period": "10y",
+  "horizons": [
+    63,
+    126,
+    252
+  ],
+  "lookback": 252,
+  "observation_frequency": "W-FRI",
+  "maximum_training_symbols": 100,
+  "architecture": {
+    "d_model": 64,
+    "temporal_layers": 2,
+    "cross_asset_layers": 2,
+    "attention_heads": 4,
+    "feedforward_multiplier": 4,
+    "dropout": 0.1,
+    "patch_size": 10,
+    "patch_stride": 5,
+    "expert_count": 4,
+    "top_k_experts": 2
+  },
+  "training": {
+    "epochs": 30,
+    "batch_size": 8,
+    "learning_rate": 0.0003,
+    "weight_decay": 0.0001,
+    "device": "auto",
+    "pretraining_epochs": 5,
+    "walk_forward_epochs": 5,
+    "retrain_interval_days": 30
+  },
+  "artifacts": {
+    "checkpoint_path": "trained_models/finance_multi_asset_transformer.pt",
+    "pretraining_checkpoint_path": "trained_models/finance_multi_asset_transformer_pretrain.pt",
+    "snapshot_path": "storage/state/multi_horizon_snapshot.json",
+    "validation_path": "storage/state/multi_horizon_validation.json",
+    "panel_path": "storage/state/multi_horizon_panel.parquet"
+  },
+  "promotion": {
+    "automatic": false,
+    "minimum_walk_forward_folds": 3,
+    "require_pretraining_ablation": true,
+    "require_positive_top3_excess_return": true
+  },
+  "traditional_ml_policy": {
+    "production_enabled": false,
+    "allow_only_after_positive_ablation": true
+  }
+}

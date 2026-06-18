@@ -16,13 +16,13 @@ def default_model_registry() -> dict:
         "schema_version": 1,
         "models": [
             {
-                "model_id": "deep_tcn",
-                "display_name": "Deep TCN",
-                "role": "default_quant_signal",
-                "adapter_path": "strategies.deep_learning_strategy.DeepTCNStrategy",
+                "model_id": "finance_multi_asset_transformer",
+                "display_name": "Finance Multi-Asset Transformer",
+                "role": "primary_quant_decision",
+                "adapter_path": "quant_core.models.multi_horizon.pipeline.run_multi_horizon_job",
                 "enabled": True,
                 "is_default": True,
-                "params": {"device": "auto", "period": "2y", "epochs": 50},
+                "params": {"horizons": [63, 126, 252], "history_period": "10y"},
             }
         ],
     }

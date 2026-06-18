@@ -406,7 +406,6 @@ def build_satellite_candidate_pool_snapshot(
             "scoreboard",
             "guidance",
             "monte_carlo",
-            "tcn_profile",
             "position_advice",
             "error",
         ):

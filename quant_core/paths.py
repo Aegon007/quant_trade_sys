@@ -9,6 +9,7 @@ STORAGE_DIR = PROJECT_ROOT / "storage"
 STATE_DIR = STORAGE_DIR / "state"
 CONFIG_DIR = STORAGE_DIR / "config"
 JOURNALS_DIR = STORAGE_DIR / "journals"
+TRAINED_MODELS_DIR = PROJECT_ROOT / "trained_models"
 
 PORTFOLIO_DATA_FILE = str(STATE_DIR / "portfolio_data.json")
 PORTFOLIO_INPUT_FILE = str(STATE_DIR / "portfolio_input.json")
@@ -41,6 +42,11 @@ DATA_HEALTH_SNAPSHOT_FILE = str(STATE_DIR / "data_health_snapshot.json")
 PLAN_QUALITY_SNAPSHOT_FILE = str(STATE_DIR / "plan_quality_snapshot.json")
 MARKET_MONITOR_SNAPSHOT_FILE = str(STATE_DIR / "market_monitor_snapshot.json")
 STRATEGY_REGISTRY_STATE_FILE = str(STATE_DIR / "strategy_registry_state.json")
+MULTI_HORIZON_SNAPSHOT_FILE = str(STATE_DIR / "multi_horizon_snapshot.json")
+MULTI_HORIZON_VALIDATION_FILE = str(STATE_DIR / "multi_horizon_validation.json")
+MULTI_HORIZON_PANEL_FILE = str(STATE_DIR / "multi_horizon_panel.parquet")
+MULTI_HORIZON_GOVERNANCE_FILE = str(STATE_DIR / "multi_horizon_governance.json")
+MULTI_HORIZON_PREDICTION_JOURNAL_FILE = str(JOURNALS_DIR / "multi_horizon_predictions.jsonl")
 WEEKEND_RESEARCH_JOURNAL_FILE = str(JOURNALS_DIR / "weekend_research_journal.jsonl")
 
 MARKET_EVENTS_EXAMPLE_FILE = str(CONFIG_DIR / "market_events.example.json")
@@ -52,6 +58,9 @@ ENGINE_POLICY_FILE = str(CONFIG_DIR / "engine_policy.json")
 INTRADAY_TACTICAL_CONFIG_FILE = str(CONFIG_DIR / "intraday_tactical_overlay.json")
 RUNTIME_SCHEDULE_CONFIG_FILE = str(CONFIG_DIR / "runtime_schedule.json")
 MODEL_REGISTRY_CONFIG_FILE = str(CONFIG_DIR / "model_registry.json")
+MULTI_HORIZON_MODEL_CONFIG_FILE = str(CONFIG_DIR / "multi_horizon_model.json")
+MULTI_HORIZON_CHECKPOINT_FILE = str(TRAINED_MODELS_DIR / "finance_multi_asset_transformer.pt")
+MULTI_HORIZON_PRETRAIN_CHECKPOINT_FILE = str(TRAINED_MODELS_DIR / "finance_multi_asset_transformer_pretrain.pt")
 JOB_STATUS_FILE = str(STATE_DIR / "job_status.json")
 
 EVENT_SOURCES_CONFIG_FILE = str(PROJECT_ROOT / "config" / "event_sources.json")
@@ -86,6 +95,7 @@ def ensure_storage_layout():
     os.makedirs(str(STATE_DIR), exist_ok=True)
     os.makedirs(str(CONFIG_DIR), exist_ok=True)
     os.makedirs(str(JOURNALS_DIR), exist_ok=True)
+    os.makedirs(str(TRAINED_MODELS_DIR), exist_ok=True)
 
 
 def migrate_legacy_files(file_map: Iterable[Tuple[str, str]] = LEGACY_TO_NEW_FILE_MAP):

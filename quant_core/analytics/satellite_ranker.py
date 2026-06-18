@@ -56,13 +56,6 @@ def _model_component(row: Mapping) -> float:
     if mc_positive is not None:
         score += _clamp((mc_positive - 0.5) * 25.0, -4.0, 5.0)
 
-    tcn = dict(row.get("tcn_profile") or {})
-    tcn_prob = _safe_float(tcn.get("probability"))
-    tcn_expected = _safe_float(tcn.get("expected_return_pct"))
-    if tcn_prob is not None:
-        score += _clamp((tcn_prob - 0.5) * 30.0, -5.0, 6.0)
-    if tcn_expected is not None:
-        score += _clamp(tcn_expected * 80.0, -4.0, 6.0)
     return _clamp(score, -15.0, 25.0)
 
 

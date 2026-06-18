@@ -363,12 +363,29 @@ def build_nightly_report(snapshot: Mapping) -> str:
     plan_quality_snapshot = dict(snapshot.get("plan_quality_snapshot", {}) or {})
     market_monitor_snapshot = dict(snapshot.get("market_monitor_snapshot", {}) or {})
     strategy_governance_snapshot = dict(snapshot.get("strategy_governance_snapshot", {}) or {})
+    multi_horizon_snapshot = dict(snapshot.get("multi_horizon_snapshot", {}) or {})
     intraday_event_summary = dict(snapshot.get("intraday_event_summary", {}) or {})
     change_feed = dict(snapshot.get("change_feed", {}) or {})
     nightly_manifest = dict(snapshot.get("nightly_manifest", {}) or {})
     alerts = list(snapshot.get("alerts", []) or [])
     strategy_rows = list(performance.get("strategy_comparison", []) or [])
     quant_analysis_summary = dict(performance.get("quant_analysis_summary", {}) or {})
+
+    if multi_horizon_snapshot:
+        model_summary = dict(multi_horizon_snapshot.get("summary", {}) or {})
+        model_info = dict(multi_horizon_snapshot.get("model", {}) or {})
+        action_counts = dict(model_summary.get("action_counts", {}) or {})
+        lines_model = (
+            "Multi-horizon model: "
+            f"status={multi_horizon_snapshot.get('status') or model_info.get('status') or 'UNKNOWN'} "
+            f"version={model_info.get('version') or model_info.get('trained_at') or 'untrained'} "
+            f"symbols={int(_float(model_summary.get('symbol_count'), 0) or 0)} "
+            f"accumulate={int(_float(action_counts.get('ACCUMULATE'), 0) or 0)} "
+            f"trim={int(_float(action_counts.get('TRIM'), 0) or 0)} "
+            f"conflicts={int(_float(model_summary.get('conflict_count'), 0) or 0)}"
+        )
+    else:
+        lines_model = "Multi-horizon model: status=MISSING"
 
     lines = [
         "Nightly Portfolio Report",
@@ -378,6 +395,7 @@ def build_nightly_report(snapshot: Mapping) -> str:
         f"Allocation regime: {allocation_regime.get('regime', 'UNKNOWN')}",
         f"Closed trades: {int(_float(scoreboard.get('completed_trades'), 0) or 0)} | Win rate: {_format_pct(scoreboard.get('win_rate'))} | Expectancy: {_format_pct(scoreboard.get('expectancy_return_pct'), digits=2)} | Profit factor: {(_float(scoreboard.get('profit_factor')) or 0.0):.2f}" if scoreboard else "Closed trades: 0",
         f"Daily recap: trades={int(_float(recap.get('trade_count'), 0) or 0)}, buys={int(_float(recap.get('buy_count'), 0) or 0)}, sells={int(_float(recap.get('sell_count'), 0) or 0)}, events={int(_float(recap.get('portfolio_event_count'), 0) or 0)}, realized P/L={_format_money(recap.get('realized_pl'))}",
+        lines_model,
     ]
 
     symbols = ", ".join(recap.get("symbols", []) or [])

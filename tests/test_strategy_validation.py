@@ -15,13 +15,13 @@ class StrategyValidationTests(unittest.TestCase):
         snapshot = self.module.build_strategy_validation_snapshot(
             now=datetime.fromisoformat("2026-06-08T11:00:00"),
             history_period="5y",
-            default_strategy={"id": "deep_tcn", "name": "TCN"},
+            default_strategy={"id": "production_model", "name": "Production"},
             strategy_research_rows=[
                 {
                     "symbol": "MU",
                     "focus_role": "satellite",
                     "comparison_rows": [
-                        {"strategy_id": "deep_tcn", "strategy_name": "TCN", "composite_score": 4.2, "completed_trades": 8},
+                        {"strategy_id": "production_model", "strategy_name": "Production", "composite_score": 4.2, "completed_trades": 8},
                         {"strategy_id": "macd", "strategy_name": "MACD", "composite_score": 3.7, "completed_trades": 6},
                     ],
                 },
@@ -30,7 +30,7 @@ class StrategyValidationTests(unittest.TestCase):
                     "focus_role": "core",
                     "comparison_rows": [
                         {"strategy_id": "macd", "strategy_name": "MACD", "composite_score": 2.4, "completed_trades": 5},
-                        {"strategy_id": "deep_tcn", "strategy_name": "TCN", "composite_score": 1.8, "completed_trades": 7},
+                        {"strategy_id": "production_model", "strategy_name": "Production", "composite_score": 1.8, "completed_trades": 7},
                     ],
                 },
             ],
@@ -50,7 +50,7 @@ class StrategyValidationTests(unittest.TestCase):
         snapshot = self.module.build_strategy_validation_snapshot(
             now=datetime.fromisoformat("2026-06-08T11:00:00"),
             history_period="5y",
-            default_strategy={"id": "deep_tcn", "name": "TCN"},
+            default_strategy={"id": "production_model", "name": "Production"},
             strategy_research_rows=[],
             source="weekend_research",
         )
@@ -61,7 +61,7 @@ class StrategyValidationTests(unittest.TestCase):
 
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["status"], "NO_DATA")
-        self.assertEqual(rows[0]["default_strategy_id"], "deep_tcn")
+        self.assertEqual(rows[0]["default_strategy_id"], "production_model")
 
 
 if __name__ == "__main__":

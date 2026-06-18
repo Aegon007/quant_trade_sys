@@ -21,37 +21,36 @@ class StrategyUITests(unittest.TestCase):
     def test_load_strategies_hides_disabled_models_by_default(self):
         self._write_config(
             [
-                {"id": "deep_tcn", "name": "TCN", "enabled": True, "is_default": True},
                 {"id": "ma_crossover", "name": "MA", "enabled": True},
-                {"id": "ml_lightgbm", "name": "LGBM", "enabled": False},
+                {"id": "rsi", "name": "RSI", "enabled": False},
             ]
         )
 
         strategies = self.strategy_ui.load_strategies()
 
-        self.assertEqual([s["id"] for s in strategies], ["deep_tcn", "ma_crossover"])
+        self.assertEqual([s["id"] for s in strategies], ["ma_crossover"])
 
     def test_load_strategies_can_include_disabled_models(self):
         self._write_config(
             [
-                {"id": "deep_tcn", "name": "TCN", "enabled": True, "is_default": True},
-                {"id": "ml_lightgbm", "name": "LGBM", "enabled": False},
+                {"id": "ma_crossover", "name": "MA", "enabled": True, "is_default": True},
+                {"id": "rsi", "name": "RSI", "enabled": False},
             ]
         )
 
         strategies = self.strategy_ui.load_strategies(include_disabled=True)
 
-        self.assertEqual([s["id"] for s in strategies], ["deep_tcn", "ml_lightgbm"])
+        self.assertEqual([s["id"] for s in strategies], ["ma_crossover", "rsi"])
 
     def test_get_default_strategy_id_prefers_marked_default(self):
         strategies = [
             {"id": "ma_crossover", "name": "MA"},
-            {"id": "deep_tcn", "name": "TCN", "is_default": True},
+            {"id": "rsi", "name": "RSI", "is_default": True},
         ]
 
         default_id = self.strategy_ui.get_default_strategy_id(strategies)
 
-        self.assertEqual(default_id, "deep_tcn")
+        self.assertEqual(default_id, "rsi")
 
     def test_get_default_strategy_id_falls_back_to_first_available(self):
         strategies = [
