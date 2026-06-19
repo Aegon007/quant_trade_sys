@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
 from typing import Mapping, Sequence
@@ -31,6 +32,24 @@ def _compact_prediction_snapshot(snapshot: Mapping) -> dict:
                 "blended_rank": long_horizon.get("blended_rank"),
                 "horizon_ranks": {
                     str(horizon): dict(values or {}).get("rank")
+                    for horizon, values in horizons.items()
+                },
+                "horizon_forecasts": {
+                    str(horizon): {
+                        "rank": dict(values or {}).get("rank"),
+                        "positive_return_probability": dict(values or {}).get(
+                            "positive_return_probability"
+                        ),
+                        "risk_free_outperformance_probability": dict(values or {}).get(
+                            "risk_free_outperformance_probability"
+                        ),
+                        "market_outperformance_probability": dict(values or {}).get(
+                            "market_outperformance_probability"
+                        ),
+                        "median_return": dict(
+                            dict(values or {}).get("return_range", {}) or {}
+                        ).get("p50"),
+                    }
                     for horizon, values in horizons.items()
                 },
                 "timing_state": dict(row.get("timing", {}) or {}).get("state"),
@@ -89,16 +108,20 @@ def load_prediction_journal(*, path: str = DEFAULT_PREDICTION_JOURNAL_FILE) -> l
     return rows
 
 
-def _forward_excess_return(asset, benchmark, *, as_of, horizon: int):
-    asset_close = pd.to_numeric(asset["Close"], errors="coerce").dropna().sort_index()
-    benchmark_close = pd.to_numeric(benchmark["Close"], errors="coerce").dropna().sort_index()
+def _forward_return(frame, *, as_of, horizon: int):
+    close = pd.to_numeric(frame["Close"], errors="coerce").dropna().sort_index()
     observation_day = pd.Timestamp(as_of).normalize()
-    asset_after = asset_close.loc[observation_day:]
-    benchmark_after = benchmark_close.loc[observation_day:]
-    if len(asset_after) <= horizon or len(benchmark_after) <= horizon:
+    after = close.loc[observation_day:]
+    if len(after) <= horizon:
         return None
-    asset_return = float(asset_after.iloc[horizon] / asset_after.iloc[0] - 1.0)
-    benchmark_return = float(benchmark_after.iloc[horizon] / benchmark_after.iloc[0] - 1.0)
+    return float(after.iloc[horizon] / after.iloc[0] - 1.0)
+
+
+def _forward_excess_return(asset, benchmark, *, as_of, horizon: int):
+    asset_return = _forward_return(asset, as_of=as_of, horizon=horizon)
+    benchmark_return = _forward_return(benchmark, as_of=as_of, horizon=horizon)
+    if asset_return is None or benchmark_return is None:
+        return None
     return asset_return - benchmark_return
 
 
@@ -108,6 +131,7 @@ def score_shadow_outcomes(
     histories: Mapping[str, pd.DataFrame],
     horizons: Sequence[int] = (63, 126, 252),
     benchmark_symbol: str = "SPY",
+    risk_free_symbol: str = "BIL",
     top_k: int = 3,
 ) -> dict:
     normalized_histories = {
@@ -116,10 +140,16 @@ def score_shadow_outcomes(
         if isinstance(frame, pd.DataFrame) and not frame.empty
     }
     benchmark = normalized_histories.get(str(benchmark_symbol).strip().upper())
+    risk_free = normalized_histories.get(str(risk_free_symbol).strip().upper())
     horizon_reports = {}
     for horizon in (int(value) for value in horizons):
         observation_ics = []
         observation_top = []
+        absolute_errors = []
+        positive_predictions = []
+        positive_outcomes = []
+        risk_free_predictions = []
+        risk_free_outcomes = []
         matured = 0
         if benchmark is not None:
             for entry in list(journal_entries or []):
@@ -130,6 +160,10 @@ def score_shadow_outcomes(
                     symbol = str(dict(prediction or {}).get("symbol") or "").strip().upper()
                     asset = normalized_histories.get(symbol)
                     score = dict(dict(prediction or {}).get("horizon_ranks", {}) or {}).get(str(horizon))
+                    forecast = dict(
+                        dict(prediction or {}).get("horizon_forecasts", {}).get(str(horizon), {})
+                        or {}
+                    )
                     if asset is None or score is None:
                         continue
                     outcome = _forward_excess_return(asset, benchmark, as_of=as_of, horizon=horizon)
@@ -137,6 +171,26 @@ def score_shadow_outcomes(
                         continue
                     scores.append(float(score))
                     outcomes.append(float(outcome))
+                    absolute_outcome = _forward_return(asset, as_of=as_of, horizon=horizon)
+                    if absolute_outcome is not None:
+                        median = forecast.get("median_return")
+                        if median is not None:
+                            absolute_errors.append(abs(float(median) - float(absolute_outcome)))
+                        probability = forecast.get("positive_return_probability")
+                        if probability is not None:
+                            positive_predictions.append(float(probability))
+                            positive_outcomes.append(float(absolute_outcome > 0))
+                    if risk_free is not None:
+                        risk_free_outcome = _forward_excess_return(
+                            asset,
+                            risk_free,
+                            as_of=as_of,
+                            horizon=horizon,
+                        )
+                        probability = forecast.get("risk_free_outperformance_probability")
+                        if risk_free_outcome is not None and probability is not None:
+                            risk_free_predictions.append(float(probability))
+                            risk_free_outcomes.append(float(risk_free_outcome > 0))
                 if len(scores) < 2:
                     continue
                 matured += 1
@@ -150,6 +204,45 @@ def score_shadow_outcomes(
             "matured_observations": matured,
             "rank_ic": float(np.mean(observation_ics)) if observation_ics else None,
             "top_k_excess_return": float(np.mean(observation_top)) if observation_top else None,
+            "median_return_mae": float(np.mean(absolute_errors)) if absolute_errors else None,
+            "directional_accuracy": (
+                float(
+                    np.mean(
+                        (np.asarray(positive_predictions) >= 0.5)
+                        == (np.asarray(positive_outcomes) >= 0.5)
+                    )
+                )
+                if positive_outcomes
+                else None
+            ),
+            "brier_score": (
+                float(
+                    np.mean(
+                        (np.asarray(positive_predictions) - np.asarray(positive_outcomes)) ** 2
+                    )
+                )
+                if positive_outcomes
+                else None
+            ),
+            "risk_free_directional_accuracy": (
+                float(
+                    np.mean(
+                        (np.asarray(risk_free_predictions) >= 0.5)
+                        == (np.asarray(risk_free_outcomes) >= 0.5)
+                    )
+                )
+                if risk_free_outcomes
+                else None
+            ),
+            "risk_free_brier_score": (
+                float(
+                    np.mean(
+                        (np.asarray(risk_free_predictions) - np.asarray(risk_free_outcomes)) ** 2
+                    )
+                )
+                if risk_free_outcomes
+                else None
+            ),
         }
     return {
         "generated_at": datetime.now().isoformat(),
@@ -169,6 +262,8 @@ def build_model_governance_snapshot(
     validation_snapshot = dict(validation_snapshot or {})
     shadow_outcomes = dict(shadow_outcomes or {})
     validation_status = str(validation_snapshot.get("status") or "PENDING").upper()
+    model = dict(prediction_snapshot.get("model", {}) or {})
+    model_version = str(model.get("version") or model.get("trained_at") or "").strip() or None
     lifecycle = "SHADOW" if prediction_snapshot.get("status") == "READY" else "RESEARCH"
     eligible = validation_status == "PASS" and not bool(
         dict(validation_snapshot.get("governance", {}) or {}).get("moe_collapsed")
@@ -179,9 +274,12 @@ def build_model_governance_snapshot(
         "status": "ELIGIBLE_FOR_MANUAL_PROMOTION" if eligible else lifecycle,
         "lifecycle": lifecycle,
         "automatic_promotion": False,
+        "production_authorized": False,
+        "approved_model_version": None,
         "validation_status": validation_status,
         "shadow_outcomes": shadow_outcomes,
-        "model": dict(prediction_snapshot.get("model", {}) or {}),
+        "model": model,
+        "model_version": model_version,
         "requirements": {
             "walk_forward_pass": validation_status == "PASS",
             "shadow_observations_available": any(
@@ -191,6 +289,83 @@ def build_model_governance_snapshot(
             "manual_approval_required": True,
         },
     }
+
+
+def approve_model_for_production(
+    prediction_snapshot: Mapping,
+    governance_snapshot: Mapping,
+    *,
+    path: str = DEFAULT_GOVERNANCE_FILE,
+    now: datetime | None = None,
+) -> dict:
+    prediction_snapshot = dict(prediction_snapshot or {})
+    governance = dict(governance_snapshot or {})
+    model = dict(prediction_snapshot.get("model", {}) or {})
+    version = str(model.get("version") or model.get("trained_at") or "").strip()
+    if str(governance.get("status") or "").upper() != "ELIGIBLE_FOR_MANUAL_PROMOTION":
+        raise ValueError("Model is not eligible for production promotion.")
+    if str(governance.get("validation_status") or "").upper() != "PASS":
+        raise ValueError("Walk-forward validation has not passed.")
+    if not version:
+        raise ValueError("Model version is missing; retrain before promotion.")
+    promoted = {
+        **governance,
+        "status": "PRODUCTION",
+        "lifecycle": "PRODUCTION",
+        "production_authorized": True,
+        "approved_at": (now or datetime.now()).isoformat(),
+        "approved_model_version": version,
+        "model_version": version,
+    }
+    save_model_governance_snapshot(promoted, path=path)
+    return promoted
+
+
+def apply_production_gate(
+    prediction_snapshot: Mapping | None,
+    governance_snapshot: Mapping | None,
+) -> dict:
+    snapshot = deepcopy(dict(prediction_snapshot or {}))
+    governance = dict(governance_snapshot or {})
+    model = dict(snapshot.get("model", {}) or {})
+    version = str(model.get("version") or model.get("trained_at") or "").strip()
+    authorized = bool(
+        governance.get("production_authorized")
+        and str(governance.get("status") or "").upper() == "PRODUCTION"
+        and version
+        and version == str(governance.get("approved_model_version") or "").strip()
+    )
+    snapshot["production_authorized"] = authorized
+    snapshot["governance"] = governance
+    if authorized:
+        for collection_name in ("symbols", "core_etfs", "satellite_top3", "satellite_ranked_pool"):
+            for row in list(snapshot.get(collection_name, []) or []):
+                shadow_decision = dict(row.get("shadow_decision", {}) or {})
+                if shadow_decision:
+                    row["decision"] = shadow_decision
+        return snapshot
+    seen = set()
+    for collection_name in ("symbols", "core_etfs", "satellite_top3", "satellite_ranked_pool"):
+        for row in list(snapshot.get(collection_name, []) or []):
+            row_key = id(row)
+            if row_key in seen:
+                continue
+            seen.add(row_key)
+            decision = dict(row.get("shadow_decision", {}) or row.get("decision", {}) or {})
+            if decision:
+                row["shadow_decision"] = decision
+                row["decision"] = {
+                    **decision,
+                    "action": "HOLD" if str(row.get("list_type") or "").lower() == "holding" else "WATCH",
+                    "target_weight_range_pct": [float(row.get("current_weight_pct") or 0.0)] * 2,
+                    "reason_codes": [*list(decision.get("reason_codes", []) or []), "MODEL_NOT_PROMOTED"],
+                }
+    snapshot["summary"] = {
+        **dict(snapshot.get("summary", {}) or {}),
+        "production_authorized": False,
+        "message": "Model predictions are shadow-only until validation passes and manual promotion is approved.",
+    }
+    return snapshot
 
 
 def save_model_governance_snapshot(
@@ -233,6 +408,10 @@ def refresh_model_governance(
     outcomes = dict(previous.get("shadow_outcomes", {}) or {})
     if score_outcomes and load_history_fn is not None:
         entries = load_prediction_journal(path=journal_path)
+        risk_free_symbol = str(
+            dict(prediction_snapshot.get("benchmarks", {}) or {}).get("risk_free")
+            or "BIL"
+        ).strip().upper()
         symbols = sorted(
             {
                 str(prediction.get("symbol") or "").strip().upper()
@@ -242,19 +421,38 @@ def refresh_model_governance(
             }
         )
         histories = {}
-        for symbol in [*symbols, "SPY"]:
+        for symbol in [*symbols, "SPY", risk_free_symbol]:
             try:
                 frame = load_history_fn(symbol, period="2y")
             except Exception:
                 continue
             if isinstance(frame, pd.DataFrame) and not frame.empty:
                 histories[symbol] = frame
-        outcomes = score_shadow_outcomes(entries, histories=histories)
+        outcomes = score_shadow_outcomes(
+            entries,
+            histories=histories,
+            risk_free_symbol=risk_free_symbol,
+        )
     governance = build_model_governance_snapshot(
         prediction_snapshot=prediction_snapshot,
         validation_snapshot=validation,
         shadow_outcomes=outcomes,
         now=now,
     )
+    current_version = str(governance.get("model_version") or "").strip()
+    if (
+        bool(previous.get("production_authorized"))
+        and str(previous.get("approved_model_version") or "").strip() == current_version
+        and str(governance.get("validation_status") or "").upper() == "PASS"
+    ):
+        governance.update(
+            {
+                "status": "PRODUCTION",
+                "lifecycle": "PRODUCTION",
+                "production_authorized": True,
+                "approved_at": previous.get("approved_at"),
+                "approved_model_version": current_version,
+            }
+        )
     save_model_governance_snapshot(governance, path=governance_path)
     return governance

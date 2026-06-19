@@ -1,6 +1,9 @@
 # Multi-Horizon Quant Engine Upgrade Plan
 
-Status: Implemented foundation and system migration. Long-duration shadow outcomes are now accumulating and still require time plus manual review.
+Status: Target-schema V2 implementation is complete. The model must now be
+retrained because checkpoints from the retired relative-ranking target schema
+are rejected. After walk-forward validation, the new version enters shadow
+observation and still requires explicit manual promotion.
 
 ## 1. Product Objective
 
@@ -8,15 +11,18 @@ The system should not ask one model to answer every trading question.
 
 The upgraded decision engine will separate:
 
-1. Long-horizon opportunity: is this asset likely to outperform over the next
-   quarter, half year, or year?
+1. Long-horizon opportunity: what absolute return and price distribution is
+   plausible over the next quarter, half year, or year, and is the expected
+   return sufficient to beat short-Treasury exposure?
 2. Entry timing: is now a reasonable time to add, or should the system wait?
 3. Portfolio discipline: how much exposure is appropriate under current
    account and market risk?
 
 ```text
-Long-horizon rank
-    + return distribution
+Absolute-return distribution
+    + positive-return probability
+    + short-Treasury outperformance probability
+    + auxiliary SPY-relative rank
     + short-term timing evidence
     + risk and portfolio constraints
     = final target-weight action
@@ -31,21 +37,24 @@ actions.
 
 ## 2. Model Research Conclusions
 
-### 2.1 The primary task is ranking, not exact price forecasting
+### 2.1 The primary task is probabilistic return forecasting
 
-The most useful question for this system is:
+The primary questions for this system are:
 
-> Among the available stocks and ETFs today, which assets are most likely to
-> deliver attractive benchmark-relative returns over the next 3 to 12 months?
+> What is the probability that an asset produces a positive return over the
+> next 3, 6, and 12 months, what return and price range is plausible, and is
+> that expected return sufficient to beat short-term Treasury exposure?
 
-This is a cross-sectional ranking problem. It fits the product better than
-predicting an exact price one year in the future because:
+The model forecasts a distribution rather than one exact future price.
+Cross-sectional ranking remains useful, but it is an auxiliary task:
 
-- Satellite Radar ultimately needs a ranked Top 3.
-- Core ETF rotation compares alternatives at the same decision date.
-- Long-horizon price levels are highly uncertain, while relative ordering can
-  still be useful.
-- Ranking losses optimize the order of candidates directly.
+- Primary targets: absolute return, positive-return probability, absolute
+  return quantiles, and probability of outperforming a short-Treasury proxy.
+- Auxiliary targets: probability of outperforming SPY and cross-sectional
+  relative-return rank.
+- The default short-Treasury total-return proxy is BIL and is configurable.
+- P10/P50/P90 absolute-return forecasts are converted into price ranges from
+  the latest observed price.
 
 ### 2.2 Production candidate: Finance-Native Multi-Asset Transformer
 
@@ -61,7 +70,9 @@ daily / weekly / monthly market sequences
     -> market, sector, and regime tokens
     -> sparse regime Mixture-of-Experts
     -> TFT-style variable selection and multi-horizon decoder
-    -> ranking, quantile-return, downside-risk, and timing heads
+    -> absolute-return quantiles and upside-probability heads
+    -> short-Treasury and SPY outperformance heads
+    -> auxiliary ranking, downside-risk, and timing heads
 ```
 
 The model must learn jointly from:
@@ -80,9 +91,11 @@ The primary horizons are:
 
 The main outputs are trained jointly:
 
+- Probability of a positive absolute return.
+- Probability of outperforming the configured short-Treasury benchmark.
+- P10, P50, and P90 absolute-return and price ranges.
+- Probability of outperforming SPY.
 - Cross-sectional relative-return score and rank.
-- Probability of outperforming the relevant benchmark.
-- P10, P50, and P90 return quantiles.
 - Maximum favorable and adverse excursion.
 - Long-horizon state.
 - Short-term timing state.
@@ -138,9 +151,10 @@ Market and sector tokens provide context for dynamic feature selection. The
 model should be able to learn that a feature or relationship matters in one
 market regime but not another.
 
-The model's supervised ranking loss must group samples by observation date so
-it learns which stocks are preferable relative to the alternatives available
-at that time.
+The primary supervised losses learn absolute-return quantiles, positive-return
+probability, and short-Treasury outperformance. The auxiliary ranking loss is
+grouped by observation date so the model can also compare alternatives without
+replacing the primary forecasting objective.
 
 ### 2.6 Regime Mixture-of-Experts
 
@@ -251,14 +265,17 @@ Primary horizons:
 For each horizon calculate:
 
 - Forward absolute return.
-- Forward benchmark return.
-- Forward benchmark-relative return.
+- Forward short-Treasury proxy return.
+- Forward excess return over the short-Treasury proxy.
+- Forward SPY return and SPY-relative return.
 - Cross-sectional relevance bucket.
 - Maximum favorable excursion.
 - Maximum adverse excursion.
 
 Benchmark mapping:
 
+- Capital opportunity-cost benchmark: configurable short-Treasury total-return
+  proxy, default `BIL`.
 - Broad-market ETFs: configurable peer or SPY.
 - Growth ETFs: QQQ or configured peer group.
 - Individual stocks: sector ETF as primary and SPY as secondary.
@@ -319,20 +336,25 @@ Each symbol should produce one stable DTO:
   "symbol": "MSFT",
   "as_of": "2026-06-18",
   "long_horizon": {
-    "rank_63d": 0.72,
-    "rank_126d": 0.81,
-    "rank_252d": 0.86,
+    "state": "ATTRACTIVE",
+    "expected_return": 0.14,
+    "positive_return_probability": 0.68,
+    "risk_free_outperformance_probability": 0.64,
     "blended_rank": 0.83,
-    "return_range_252d": {
-      "p10": -0.12,
-      "p50": 0.14,
-      "p90": 0.38
-    },
-    "state": "ATTRACTIVE"
+    "horizons": {
+      "252": {
+        "positive_return_probability": 0.68,
+        "risk_free_outperformance_probability": 0.64,
+        "market_outperformance_probability": 0.57,
+        "rank": 0.86,
+        "return_range": {"p10": -0.12, "p50": 0.14, "p90": 0.38},
+        "price_range": {"p10": 355.0, "p50": 459.0, "p90": 555.0}
+      }
+    }
   },
   "timing": {
     "state": "WAIT_FOR_ENTRY",
-    "tcn_probability": 0.46,
+    "confidence": 0.46,
     "breakout_state": "NEUTRAL"
   },
   "risk": {
@@ -367,7 +389,8 @@ This permits a conclusion such as:
 
 An `EXIT` should normally require at least one of:
 
-- Long-horizon rank has materially deteriorated.
+- Absolute expected return and upside probability have materially
+  deteriorated relative to short-Treasury exposure.
 - Fundamental or structural evidence has failed.
 - Risk-break level is violated.
 - Portfolio risk limits require reduction.
@@ -378,6 +401,10 @@ The risk and discipline layer retains final veto authority.
 
 Primary metrics:
 
+- Absolute-return median MAE.
+- Positive-return directional accuracy and Brier score.
+- Short-Treasury-outperformance directional accuracy and Brier score.
+- Top 3 excess return over the configured short-Treasury proxy.
 - Precision@3 and Precision@10.
 - Mean 63/126/252-day benchmark-relative return by rank decile.
 - Rank IC and rank stability.
@@ -397,9 +424,23 @@ Lifecycle:
 Promotion rules:
 
 - No automatic promotion.
-- Candidate must beat simple baselines in multiple walk-forward periods.
+- At least three purged walk-forward folds.
+- 252-day positive-return direction accuracy must exceed chance.
+- Positive-return and short-Treasury-outperformance Brier scores must be below
+  `0.25`.
+- Median absolute-return MAE must remain below the governance threshold,
+  initially `20%`.
+- Top 3 short-Treasury excess return must be positive.
+- Rank IC and Top 3 SPY-relative return remain auxiliary checks.
+- The pretrained candidate must improve short-Treasury-relative economic
+  performance over the same architecture trained from scratch.
+- MoE routing must not collapse.
 - Results must not depend on one market regime or a small number of symbols.
 - UI and reports must show which model version produced the recommendation.
+- Passing validation only yields `ELIGIBLE_FOR_MANUAL_PROMOTION`; it does not
+  authorize trade-plan actions.
+- Promotion is tied to the exact checkpoint version. Retraining automatically
+  returns the new version to shadow status.
 
 ## 7. UI Research and Redesign
 
@@ -452,8 +493,10 @@ Default columns:
 
 Each row should expand or open a detail drawer containing:
 
-- 63/126/252-day ranks.
-- P10/P50/P90 ranges.
+- 63/126/252-day positive-return probabilities.
+- Probability of beating the configured short-Treasury benchmark and SPY.
+- P10/P50/P90 absolute-return and price ranges.
+- Auxiliary cross-sectional ranks.
 - Top structured reasons.
 - Risk-break level.
 - Model version and freshness.
@@ -489,7 +532,8 @@ Default ranking columns:
 
 - Rank
 - Symbol
-- Long-horizon score
+- Expected absolute return
+- Probability of beating short Treasuries
 - Timing state
 - Risk
 - Final state
@@ -512,7 +556,8 @@ Add a focused model-governance view, either as a new page or as a clear
 Operations section:
 
 - Production and shadow model versions.
-- Latest walk-forward metrics.
+- Latest walk-forward absolute-return MAE, direction accuracy, Brier scores,
+  short-Treasury excess return, and auxiliary rank metrics.
 - Baseline comparison.
 - Rank-decile chart.
 - Quantile calibration.
@@ -575,7 +620,9 @@ Deliver as one coherent model package:
 - Patch-based temporal encoder.
 - Cross-sectional and market-guided Transformer.
 - Regime Mixture-of-Experts.
-- Multi-task ranking, quantile, downside-risk, and timing heads.
+- Multi-task absolute-return quantile, upside-probability,
+  short-Treasury/SPY-outperformance, auxiliary ranking, downside-risk, and
+  timing heads.
 - Traditional and rule-based models only as offline evaluation controls.
 - Walk-forward evaluation and model-governance report.
 - Unified multi-horizon prediction DTO.
@@ -585,8 +632,9 @@ The retired short-horizon branch is excluded from production and evaluation.
 Stage exit:
 
 - Reproducible walk-forward report exists.
-- The neural candidate improves useful ranking and economic metrics over simple
-  rule-based and from-scratch neural baselines.
+- The neural candidate demonstrates useful out-of-sample absolute-return
+  forecasting and short-Treasury-relative economic value, while auxiliary
+  ranking metrics remain stable.
 - Pretraining demonstrates incremental value over training the same
   architecture from scratch.
 - MoE routing remains stable and does not collapse to one expert.
@@ -620,8 +668,10 @@ Run the new engine in shadow mode for an agreed observation period.
 Deliver:
 
 - Production-versus-candidate attribution.
-- Rank-decile and Top 3 outcome tracking.
-- Quantile calibration tracking.
+- Absolute-return error and probability-calibration tracking.
+- Short-Treasury and SPY outperformance tracking.
+- Rank-decile and Top 3 outcome tracking as auxiliary diagnostics.
+- Return-quantile calibration tracking.
 - Manual model promotion decision.
 - Retirement of failed candidates and stale artifacts.
 - Final code, configuration, model, and report cleanup.
@@ -645,7 +695,9 @@ Context and specialization:
 
 Multi-horizon output:
   TFT-style variable selection, gating, and quantile decoder
-  neural ranking + P10/P50/P90 + downside-risk heads
+  absolute-return quantiles + upside probability
+  short-Treasury and SPY outperformance probabilities
+  auxiliary neural ranking + downside-risk heads
 
 Pretraining:
   finance-domain masked modeling

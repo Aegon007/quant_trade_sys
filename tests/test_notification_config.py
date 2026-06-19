@@ -24,9 +24,6 @@ class NotificationConfigTests(unittest.TestCase):
         self.assertTrue(config["alert_settings"]["send_hourly_market_summary_market_hours_only"])
         self.assertTrue(config["alert_settings"]["send_premarket_brief"])
         self.assertTrue(config["alert_settings"]["send_intraday_alerts"])
-        self.assertTrue(config["alert_settings"]["enable_auto_quant_analysis"])
-        self.assertEqual(config["alert_settings"]["auto_quant_analysis_min_interval_seconds"], 7200)
-        self.assertEqual(config["alert_settings"]["auto_quant_analysis_price_jump_pct"], 0.03)
         self.assertTrue(config["alert_settings"]["enable_weekend_research"])
         self.assertEqual(config["alert_settings"]["weekend_research_day_local"], "saturday")
         self.assertEqual(config["alert_settings"]["weekend_research_hour_local"], 10)
@@ -146,13 +143,10 @@ class NotificationConfigTests(unittest.TestCase):
         self.assertEqual(config["local_slm"]["model"], "Qwen/Qwen3-0.6B")
         self.assertEqual(config["local_slm"]["max_tokens"], 180)
 
-    def test_save_and_load_normalizes_auto_quant_analysis_settings(self):
+    def test_save_and_load_normalizes_research_schedule(self):
         self.module.save_notification_config(
             {
                 "alert_settings": {
-                    "enable_auto_quant_analysis": False,
-                    "auto_quant_analysis_min_interval_seconds": "5400",
-                    "auto_quant_analysis_price_jump_pct": "0.045",
                     "send_premarket_brief": False,
                     "send_intraday_alerts": False,
                     "enable_weekend_research": True,
@@ -167,9 +161,6 @@ class NotificationConfigTests(unittest.TestCase):
 
         config = self.module.load_notification_config(self.config_path)
 
-        self.assertFalse(config["alert_settings"]["enable_auto_quant_analysis"])
-        self.assertEqual(config["alert_settings"]["auto_quant_analysis_min_interval_seconds"], 5400)
-        self.assertEqual(config["alert_settings"]["auto_quant_analysis_price_jump_pct"], 0.045)
         self.assertFalse(config["alert_settings"]["send_premarket_brief"])
         self.assertFalse(config["alert_settings"]["send_intraday_alerts"])
         self.assertTrue(config["alert_settings"]["enable_weekend_research"])

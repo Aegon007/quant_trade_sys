@@ -1,64 +1,37 @@
+import tempfile
 import unittest
+from pathlib import Path
 
-import pandas as pd
+from quant_core.analytics import candidate_pool
 
 
-class SatelliteCandidatePoolTests(unittest.TestCase):
-    def setUp(self):
-        from quant_core.analytics import candidate_pool
-
-        self.module = candidate_pool
-
-    def test_build_satellite_candidate_pool_snapshot_ranks_and_limits_candidates(self):
-        history = pd.DataFrame(
+class CandidatePoolStorageTests(unittest.TestCase):
+    def test_normalize_satellite_universe_cleans_symbols_and_limits(self):
+        config = candidate_pool.normalize_satellite_universe(
             {
-                "Close": [100 + idx for idx in range(260)],
+                "source_indexes": ["SP500", ""],
+                "manual_include": [" nvda ", "NVDA", "mu"],
+                "manual_exclude": [" tsla "],
+                "max_candidate_pool_size": "80",
+                "max_recommendations": 0,
             }
         )
 
-        snapshot = self.module.build_satellite_candidate_pool_snapshot(
-            data={
-                "account": {},
-                "holdings": [{"symbol": "AAPL"}],
-                "watchlist": [{"symbol": "MSFT"}],
-            },
-            strategy={"id": "ma_crossover", "params": {"period": "2y"}},
-            history_period="2y",
-            load_historical_data_fn=lambda symbol, period="2y": history,
-            universe={
-                "manual_include": ["MU", "ANET", "VRT"],
-                "manual_exclude": [],
-                "max_candidate_pool_size": 4,
-                "max_deep_analysis_size": 2,
-                "max_recommendations": 3,
-                "candidate_persistence_days": 1,
-            },
-            core_symbols={"QQQ", "VOO"},
-            policy={
-                "candidate_entry_threshold": 55.0,
-                "candidate_exit_threshold": 40.0,
-                "candidate_persistence_days": 1,
-                "satellite_max_single_weight_pct": 5.0,
-            },
-            discipline_snapshot={"can_open_new_satellite_positions": True},
-            quant_analysis_snapshot_builder=lambda data, **kwargs: {
-                "symbols": [
-                    {
-                        "symbol": row["symbol"],
-                        "signal": "BUY",
-                        "backtest": {"total_return": 0.12, "win_rate": 0.6, "sharpe_ratio": 1.0},
-                        "monte_carlo": {"expected_return": 0.05, "positive_probability": 0.62},
-                    }
-                    for row in list(data.get("watchlist", []) or [])
-                ]
-            },
-        )
+        self.assertEqual(config["source_indexes"], ["sp500"])
+        self.assertEqual(config["manual_include"], ["MU", "NVDA"])
+        self.assertEqual(config["manual_exclude"], ["TSLA"])
+        self.assertEqual(config["max_candidate_pool_size"], 80)
+        self.assertEqual(config["max_recommendations"], 1)
 
-        self.assertEqual(snapshot["summary"]["candidate_count"], 4)
-        self.assertEqual(snapshot["summary"]["deep_analysis_count"], 2)
-        self.assertLessEqual(len(snapshot["top_recommendations"]), 3)
-        self.assertTrue(any(row["symbol"] == "MU" for row in snapshot["symbols"]))
-        self.assertIn("confirmed_count", snapshot["summary"])
+    def test_snapshot_round_trip(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = str(Path(temp_dir) / "satellite_candidate_pool.json")
+            snapshot = {"status": "READY", "top_recommendations": [{"symbol": "MU"}]}
+
+            saved_path = candidate_pool.save_satellite_candidate_pool_snapshot(snapshot, path=path)
+
+            self.assertEqual(saved_path, path)
+            self.assertEqual(candidate_pool.load_satellite_candidate_pool_snapshot(path=path), snapshot)
 
 
 if __name__ == "__main__":

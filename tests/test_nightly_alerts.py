@@ -114,10 +114,7 @@ class NightlyAlertsTests(unittest.TestCase):
         self.module.ncfg.load_notification_config = lambda _path: {
             "slack": {"enabled": False, "webhook_url": ""},
             "email": {"enabled": False},
-            "alert_settings": {
-                "send_daily_summary": True,
-                "send_quant_analysis_change_summary": False,
-            },
+            "alert_settings": {"send_daily_summary": True},
         }
         self.module.tx.load_transactions = lambda: []
         self.module.tx.normalize_transactions = lambda rows: rows
@@ -163,10 +160,7 @@ class NightlyAlertsTests(unittest.TestCase):
         self.module.ncfg.load_notification_config = lambda _path: {
             "slack": {"enabled": True, "webhook_url": "https://hooks.slack.com/services/test"},
             "email": {"enabled": False},
-            "alert_settings": {
-                "send_daily_summary": True,
-                "send_quant_analysis_change_summary": True,
-            },
+            "alert_settings": {"send_daily_summary": True},
         }
         self.module.tx.load_transactions = lambda: []
         self.module.tx.normalize_transactions = lambda rows: rows
@@ -180,7 +174,11 @@ class NightlyAlertsTests(unittest.TestCase):
         changed_snapshot = {
             "status": "READY",
             "generated_at": "2026-05-08T23:30:00",
-            "model": {"model_id": "finance_multi_asset_transformer", "status": "SHADOW"},
+            "model": {
+                "model_id": "finance_multi_asset_transformer",
+                "status": "SHADOW",
+                "version": "validated-v1",
+            },
             "summary": {"symbol_count": 1, "action_counts": {"ACCUMULATE": 1}, "conflict_count": 0},
             "symbols": [{
                 "symbol": "AAPL",
@@ -200,6 +198,22 @@ class NightlyAlertsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             manifest_path = Path(temp_dir) / "nightly_run_manifest.json"
             change_feed_path = Path(temp_dir) / "change_feed_latest.json"
+            validation_path = Path(temp_dir) / "multi_horizon_validation.json"
+            governance_path = Path(temp_dir) / "multi_horizon_governance.json"
+            validation_path.write_text(
+                json.dumps({"status": "PASS", "governance": {"moe_collapsed": False}}),
+                encoding="utf-8",
+            )
+            governance_path.write_text(
+                json.dumps(
+                    {
+                        "status": "PRODUCTION",
+                        "production_authorized": True,
+                        "approved_model_version": "validated-v1",
+                    }
+                ),
+                encoding="utf-8",
+            )
             result = self.module.run_nightly_alerts(
                 now=datetime(2026, 5, 8, 23, 30, 0),
                 dry_run=False,
@@ -208,8 +222,8 @@ class NightlyAlertsTests(unittest.TestCase):
                 change_feed_path=str(change_feed_path),
                 multi_horizon_snapshot_path=str(Path(temp_dir) / "multi_horizon_snapshot.json"),
                 model_prediction_journal_path=str(Path(temp_dir) / "multi_horizon_predictions.jsonl"),
-                model_governance_path=str(Path(temp_dir) / "multi_horizon_governance.json"),
-                model_validation_path=str(Path(temp_dir) / "multi_horizon_validation.json"),
+                model_governance_path=str(governance_path),
+                model_validation_path=str(validation_path),
                 multi_horizon_runner=lambda **kwargs: changed_snapshot,
                 slack_sender=lambda text, url: (sent_messages.append((text, url)) or True, "ok"),
             )

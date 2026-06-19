@@ -162,6 +162,14 @@ def create_app():
             run_async=True,
         )
 
+    @app.post("/api/actions/promote-multi-horizon")
+    def promote_multi_horizon():
+        return api_actions.run_with_job_status(
+            "manual-multi-horizon-promotion",
+            api_actions.promote_multi_horizon_model,
+            run_async=False,
+        )
+
     @app.post("/api/actions/import-robinhood-csv")
     def import_robinhood_csv(payload: dict):
         payload = dict(payload or {})

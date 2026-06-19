@@ -8,6 +8,8 @@ from .dataset import (
 from .config import load_multi_horizon_config, save_multi_horizon_config
 from .fusion import FusedDecision, fuse_multi_horizon_decision
 from .governance import (
+    apply_production_gate,
+    approve_model_for_production,
     append_prediction_journal,
     build_model_governance_snapshot,
     refresh_model_governance,
@@ -36,6 +38,8 @@ __all__ = [
     "FusedDecision",
     "MultiAssetTransformerConfig",
     "build_forward_labels",
+    "apply_production_gate",
+    "approve_model_for_production",
     "build_model_governance_snapshot",
     "build_panel_frame",
     "build_prediction_snapshot",

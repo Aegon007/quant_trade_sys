@@ -27,8 +27,6 @@ class PackageImportTests(unittest.TestCase):
             "quant_core.analytics.monte_carlo",
             "quant_core.analytics.core_etf_rotation",
             "quant_core.analytics.candidate_pool",
-            "quant_core.analytics.satellite_ranker",
-            "quant_core.analytics.portfolio_analysis",
             "quant_core.analytics.signal_scoreboard",
             "quant_core.risk.risk_gate",
             "quant_core.events.event_news",
@@ -89,8 +87,6 @@ class PackageImportTests(unittest.TestCase):
         monte_carlo = reload_module("quant_core.analytics.monte_carlo")
         core_etf_rotation = reload_module("quant_core.analytics.core_etf_rotation")
         candidate_pool = reload_module("quant_core.analytics.candidate_pool")
-        satellite_ranker = reload_module("quant_core.analytics.satellite_ranker")
-        portfolio_analysis = reload_module("quant_core.analytics.portfolio_analysis")
         signal_scoreboard = reload_module("quant_core.analytics.signal_scoreboard")
         risk_gate = reload_module("quant_core.risk.risk_gate")
         event_news = reload_module("quant_core.events.event_news")
@@ -150,12 +146,8 @@ class PackageImportTests(unittest.TestCase):
         self.assertTrue(hasattr(quant_analysis, "get_historical_data"))
         self.assertTrue(hasattr(monte_carlo, "simulate_return_distribution"))
         self.assertTrue(hasattr(core_etf_rotation, "build_core_etf_rotation_snapshot"))
-        self.assertTrue(hasattr(candidate_pool, "build_satellite_candidate_pool_snapshot"))
-        self.assertTrue(hasattr(satellite_ranker, "rank_satellite_candidates"))
-        self.assertTrue(hasattr(portfolio_analysis, "build_portfolio_quant_analysis_snapshot"))
+        self.assertTrue(hasattr(candidate_pool, "load_satellite_universe"))
         self.assertTrue(hasattr(signal_scoreboard, "build_signal_scoreboard"))
-        self.assertTrue(hasattr(portfolio_analysis, "save_quant_analysis_snapshot"))
-        self.assertTrue(hasattr(portfolio_analysis, "evaluate_auto_refresh_trigger"))
         self.assertTrue(hasattr(risk_gate, "evaluate_market_risk_gate"))
         self.assertTrue(hasattr(event_news, "load_market_events"))
         self.assertTrue(hasattr(event_fetcher, "fetch_events_from_sources"))

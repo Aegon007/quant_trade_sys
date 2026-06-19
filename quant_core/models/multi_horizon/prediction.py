@@ -24,10 +24,22 @@ def _cross_sectional_percentiles(values: np.ndarray) -> np.ndarray:
     return frame.rank(axis=0, pct=True, method="average").to_numpy(dtype=float)
 
 
-def _long_horizon_state(blended_rank: float) -> str:
-    if blended_rank >= 0.70:
+def _long_horizon_state(
+    expected_return: float,
+    positive_probability: float,
+    risk_free_outperformance_probability: float,
+) -> str:
+    if (
+        expected_return >= 0.05
+        and positive_probability >= 0.55
+        and risk_free_outperformance_probability >= 0.55
+    ):
         return "ATTRACTIVE"
-    if blended_rank >= 0.40:
+    if (
+        expected_return > 0
+        and positive_probability >= 0.45
+        and risk_free_outperformance_probability >= 0.45
+    ):
         return "NEUTRAL"
     return "WEAK"
 
@@ -38,6 +50,7 @@ def build_prediction_snapshot(
     symbols: Sequence[str],
     horizons: Sequence[int],
     current_weights_pct: Mapping[str, float] | None = None,
+    current_prices: Mapping[str, float] | None = None,
     risk_regime: str = "NORMAL",
     model_metadata: Mapping | None = None,
     generated_at: str | None = None,
@@ -49,9 +62,22 @@ def build_prediction_snapshot(
         str(symbol).strip().upper(): float(weight or 0.0)
         for symbol, weight in dict(current_weights_pct or {}).items()
     }
+    current_prices = {
+        str(symbol).strip().upper(): float(price)
+        for symbol, price in dict(current_prices or {}).items()
+        if price is not None
+    }
     rank_scores = _to_numpy(outputs["rank_scores"])[0]
     rank_percentiles = _cross_sectional_percentiles(rank_scores)
-    probabilities = 1.0 / (1.0 + np.exp(-_to_numpy(outputs["outperformance_logits"])[0]))
+    positive_probabilities = 1.0 / (
+        1.0 + np.exp(-_to_numpy(outputs["positive_return_logits"])[0])
+    )
+    risk_free_probabilities = 1.0 / (
+        1.0 + np.exp(-_to_numpy(outputs["risk_free_outperformance_logits"])[0])
+    )
+    market_probabilities = 1.0 / (
+        1.0 + np.exp(-_to_numpy(outputs["market_outperformance_logits"])[0])
+    )
     quantiles = _to_numpy(outputs["return_quantiles"])[0]
     adverse = _to_numpy(outputs["adverse_excursion"])[0]
     favorable = _to_numpy(outputs["favorable_excursion"])[0]
@@ -65,20 +91,45 @@ def build_prediction_snapshot(
     rows = []
     for index, symbol in enumerate(normalized_symbols):
         horizon_rows = {}
+        current_price = current_prices.get(symbol)
         for horizon_index, horizon in enumerate(normalized_horizons):
+            return_range = {
+                "p10": round(float(quantiles[index, horizon_index, 0]), 6),
+                "p50": round(float(quantiles[index, horizon_index, 1]), 6),
+                "p90": round(float(quantiles[index, horizon_index, 2]), 6),
+            }
+            price_range = {
+                label: round(current_price * (1.0 + value), 4)
+                for label, value in return_range.items()
+            } if current_price is not None else {}
             horizon_rows[str(horizon)] = {
                 "rank": round(float(rank_percentiles[index, horizon_index]), 6),
-                "outperformance_probability": round(float(probabilities[index, horizon_index]), 6),
-                "return_range": {
-                    "p10": round(float(quantiles[index, horizon_index, 0]), 6),
-                    "p50": round(float(quantiles[index, horizon_index, 1]), 6),
-                    "p90": round(float(quantiles[index, horizon_index, 2]), 6),
-                },
+                "positive_return_probability": round(
+                    float(positive_probabilities[index, horizon_index]),
+                    6,
+                ),
+                "risk_free_outperformance_probability": round(
+                    float(risk_free_probabilities[index, horizon_index]),
+                    6,
+                ),
+                "market_outperformance_probability": round(
+                    float(market_probabilities[index, horizon_index]),
+                    6,
+                ),
+                "return_range": return_range,
+                "price_range": price_range,
                 "maximum_adverse_excursion": round(float(adverse[index, horizon_index]), 6),
                 "maximum_favorable_excursion": round(float(favorable[index, horizon_index]), 6),
             }
         blended_rank = float(np.dot(rank_percentiles[index], blend_weights))
-        state = _long_horizon_state(blended_rank)
+        blended_expected_return = float(np.dot(quantiles[index, :, 1], blend_weights))
+        blended_positive_probability = float(np.dot(positive_probabilities[index], blend_weights))
+        blended_risk_free_probability = float(np.dot(risk_free_probabilities[index], blend_weights))
+        state = _long_horizon_state(
+            blended_expected_return,
+            blended_positive_probability,
+            blended_risk_free_probability,
+        )
         timing_state = TIMING_STATES[int(timing_indices[index])]
         decision = fuse_multi_horizon_decision(
             symbol=symbol,
@@ -94,6 +145,12 @@ def build_prediction_snapshot(
                 "long_horizon": {
                     "state": state,
                     "blended_rank": round(blended_rank, 6),
+                    "expected_return": round(blended_expected_return, 6),
+                    "positive_return_probability": round(blended_positive_probability, 6),
+                    "risk_free_outperformance_probability": round(
+                        blended_risk_free_probability,
+                        6,
+                    ),
                     "horizons": horizon_rows,
                 },
                 "timing": {
@@ -125,6 +182,8 @@ def build_prediction_snapshot(
             "model_id": metadata.get("model_id") or "finance_multi_asset_transformer",
             "trained_at": metadata.get("trained_at"),
             "version": metadata.get("version") or metadata.get("checkpoint_version"),
+            "target_schema_version": metadata.get("target_schema_version"),
+            "target_definition": dict(metadata.get("target_definition", {}) or {}),
             "status": "PRODUCTION_CANDIDATE",
         },
         "horizons": normalized_horizons,

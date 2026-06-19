@@ -17,7 +17,6 @@ from quant_core.portfolio.control_loop import evaluate_allocation_regime
 from quant_core.portfolio import core_etf_engine as cee
 from quant_core.portfolio import discipline as discipline
 from quant_core.analytics import quant_analysis as qa
-from quant_core.analytics import portfolio_analysis as qpa
 from quant_core.analytics import core_etf_rotation as cer
 from quant_core.analytics import candidate_pool as cpool
 from quant_core.execution import nightly_planner as np
@@ -27,7 +26,6 @@ from quant_core.execution import decision_journal as djour
 from quant_core.execution import nightly_manifest as nman
 from quant_core.monitoring import intraday_journal as ij
 from quant_core.monitoring import market_monitor as mmonitor
-from quant_core.analytics.strategy_compare import compare_strategies_for_symbol
 from quant_core.research import strategy_validation as sval
 from quant_core.research import strategy_governance as sgov
 from quant_core.snapshots import system_snapshot as ss
@@ -37,9 +35,6 @@ from quant_core.risk.risk_gate import build_market_risk_snapshot_from_histories,
 from quant_core.models.multi_horizon import pipeline as mh_pipeline
 from quant_core.models.multi_horizon import snapshot as mh_snapshot
 from quant_core.models.multi_horizon import governance as mh_governance
-from strategies.registry import create_strategy
-from strategies import ui as su
-from engine import BacktraderEngine
 
 
 def _tracked_symbols(data):
@@ -139,7 +134,6 @@ def run_nightly_alerts(
     force=False,
     dry_run=False,
     history_period="2y",
-    with_strategy_comparison=True,
     notification_config_path=ncfg.NOTIFICATION_CONFIG_FILE,
     alert_state_path=ae.ALERT_STATE_FILE,
     snapshot_journal_path=ss.DEFAULT_NIGHTLY_JOURNAL_FILE,
@@ -155,10 +149,6 @@ def run_nightly_alerts(
     premarket_brief_builder=None,
     review_builder=None,
     review_saver=None,
-    quant_analysis_snapshot_builder=None,
-    quant_analysis_report_builder=None,
-    quant_analysis_report_writer=None,
-    quant_analysis_snapshot_path=qpa.DEFAULT_QUANT_ANALYSIS_SNAPSHOT_FILE,
     trade_plan_path=np.DEFAULT_TRADE_PLAN_FILE,
     post_close_review_path=pcr.DEFAULT_POST_CLOSE_REVIEW_FILE,
     manifest_path=nman.DEFAULT_NIGHTLY_MANIFEST_FILE,
@@ -182,9 +172,6 @@ def run_nightly_alerts(
     premarket_brief_builder = premarket_brief_builder or np.build_premarket_brief
     review_builder = review_builder or pcr.build_execution_review
     review_saver = review_saver or pcr.save_post_close_review
-    quant_analysis_snapshot_builder = quant_analysis_snapshot_builder or qpa.build_portfolio_quant_analysis_snapshot
-    quant_analysis_report_builder = quant_analysis_report_builder or nr.build_quant_analysis_report
-    quant_analysis_report_writer = quant_analysis_report_writer or nr.save_quant_analysis_report_files
     md.reset_market_data_status()
     manifest = nman.initialize_nightly_run_manifest(now=now, force=force, path=manifest_path)
     manifest_input_version = str(manifest.get("run_id") or now.strftime("%Y%m%d-nightly"))
@@ -374,19 +361,17 @@ def run_nightly_alerts(
         governance_path=model_governance_path,
         now=now,
     )
-    multi_horizon_snapshot["governance"] = model_governance_snapshot
+    multi_horizon_snapshot = mh_governance.apply_production_gate(
+        multi_horizon_snapshot,
+        model_governance_snapshot,
+    )
     mh_snapshot.save_multi_horizon_snapshot(multi_horizon_snapshot, path=multi_horizon_snapshot_path)
-    strategy_comparison_rows = []
-    quant_analysis_snapshot = None
-    quant_analysis_report_files = {}
-    quant_analysis_change_results = []
     trade_plan = None
     premarket_brief_text = ""
     core_etf_rotation_snapshot = None
     core_etf_snapshot = None
     satellite_candidate_snapshot = None
     discipline_snapshot = None
-    default_runtime_strategy = qpa.load_default_runtime_strategy(history_period=history_period)
     try:
         if nman.can_resume_step(manifest, step_name="core_etf_snapshot", output_file=cee.DEFAULT_CORE_ETF_SNAPSHOT_FILE, now=now):
             core_etf_snapshot = cee.load_core_etf_snapshot()
@@ -478,186 +463,52 @@ def run_nightly_alerts(
     except Exception as exc:
         manifest = nman.mark_step_failed(manifest, step_name="discipline_snapshot", error_message=str(exc), path=manifest_path, now=now)
         raise
-    core_etf_universe = cer.load_core_etf_universe()
-    core_etf_symbols = {
-        str(row.get("symbol") or "").strip().upper()
-        for row in list(core_etf_universe.get("etfs", []) or [])
-        if bool(row.get("enabled", True))
-    }
     satellite_candidate_snapshot = mh_pipeline.build_satellite_snapshot_from_model(multi_horizon_snapshot)
     cpool.save_satellite_candidate_pool_snapshot(satellite_candidate_snapshot)
-    if with_strategy_comparison and symbols:
-        symbol_for_compare = symbols[0]
-        strategies = su.load_strategies()
-
-        def _runtime_strategy(strategy):
-            runtime = dict(strategy)
-            params = dict(strategy.get("params", {}))
-            params["period"] = history_period
-            runtime["params"] = params
-            return runtime
-
-        strategy_comparison_rows = compare_strategies_for_symbol(
-            symbol=symbol_for_compare,
-            strategies=strategies,
-            load_historical_data_fn=qa.get_historical_data,
-            create_strategy_fn=create_strategy,
-            engine_factory_fn=lambda: BacktraderEngine(initial_cash=100000),
-            history_period=history_period,
-            runtime_param_fn=_runtime_strategy,
-        )
-
-    if default_runtime_strategy is not None:
-        previous_quant_snapshot = qpa.load_quant_analysis_snapshot(path=quant_analysis_snapshot_path)
-        try:
-            if nman.can_resume_step(manifest, step_name="quant_analysis_snapshot", output_file=quant_analysis_snapshot_path, now=now):
-                quant_analysis_snapshot = qpa.load_quant_analysis_snapshot(path=quant_analysis_snapshot_path)
-                manifest = nman.mark_step_completed(
-                    manifest,
-                    step_name="quant_analysis_snapshot",
-                    output_file=quant_analysis_snapshot_path,
-                    input_version=manifest_input_version,
-                    reused=True,
-                    path=manifest_path,
-                    now=now,
-                )
-            else:
-                manifest = nman.mark_step_started(
-                    manifest,
-                    step_name="quant_analysis_snapshot",
-                    input_version=manifest_input_version,
-                    path=manifest_path,
-                    now=now,
-                )
-                quant_analysis_snapshot = quant_analysis_snapshot_builder(
-                    data=data,
-                    strategy=default_runtime_strategy,
-                    history_period=history_period,
-                    engine_name="backtrader",
-                    risk_gate=risk_decision,
-                    allocation_regime=allocation_regime,
-                    now=now,
-                )
-                qpa.save_quant_analysis_snapshot(quant_analysis_snapshot, path=quant_analysis_snapshot_path)
-                manifest = nman.mark_step_completed(
-                    manifest,
-                    step_name="quant_analysis_snapshot",
-                    output_file=quant_analysis_snapshot_path,
-                    input_version=manifest_input_version,
-                    metadata={"top_buy_symbols": list((quant_analysis_snapshot or {}).get("summary", {}).get("top_buy_symbols", []) or [])},
-                    path=manifest_path,
-                    now=now,
-                )
-        except Exception as exc:
-            manifest = nman.mark_step_failed(manifest, step_name="quant_analysis_snapshot", error_message=str(exc), path=manifest_path, now=now)
-            raise
-        quant_analysis_change_summary = qpa.build_quant_analysis_change_summary(previous_quant_snapshot, quant_analysis_snapshot)
-        try:
-            if nman.can_resume_step(manifest, step_name="satellite_candidate_pool", output_file=cpool.DEFAULT_SATELLITE_CANDIDATE_POOL_FILE, now=now):
-                satellite_candidate_snapshot = cpool.load_satellite_candidate_pool_snapshot()
-                manifest = nman.mark_step_completed(
-                    manifest,
-                    step_name="satellite_candidate_pool",
-                    output_file=cpool.DEFAULT_SATELLITE_CANDIDATE_POOL_FILE,
-                    input_version=manifest_input_version,
-                    reused=True,
-                    path=manifest_path,
-                    now=now,
-                )
-            else:
-                manifest = nman.mark_step_started(
-                    manifest,
-                    step_name="satellite_candidate_pool",
-                    input_version=manifest_input_version,
-                    path=manifest_path,
-                    now=now,
-                )
-                satellite_candidate_snapshot = cpool.build_satellite_candidate_pool_snapshot(
-                    data=data,
-                    strategy=default_runtime_strategy,
-                    history_period=history_period,
-                    load_historical_data_fn=qa.get_historical_data,
-                    universe=cpool.load_satellite_universe(),
-                    core_symbols=core_etf_symbols,
-                    previous_snapshot=previous_satellite_snapshot,
-                    discipline_snapshot=discipline_snapshot,
-                    policy=cer.load_engine_policy(),
-                    risk_gate=risk_decision,
-                    allocation_regime=allocation_regime,
-                    now=now,
-                )
-                cpool.save_satellite_candidate_pool_snapshot(satellite_candidate_snapshot)
-                manifest = nman.mark_step_completed(
-                    manifest,
-                    step_name="satellite_candidate_pool",
-                    output_file=cpool.DEFAULT_SATELLITE_CANDIDATE_POOL_FILE,
-                    input_version=manifest_input_version,
-                    metadata={"top_symbols": list((satellite_candidate_snapshot or {}).get("summary", {}).get("top_symbols", []) or [])},
-                    path=manifest_path,
-                    now=now,
-                )
-        except Exception as exc:
-            manifest = nman.mark_step_failed(manifest, step_name="satellite_candidate_pool", error_message=str(exc), path=manifest_path, now=now)
-            raise
-        try:
-            if nman.can_resume_step(manifest, step_name="trade_plan", output_file=trade_plan_path, now=now):
-                trade_plan = plan_loader(path=trade_plan_path)
-                manifest = nman.mark_step_completed(
-                    manifest,
-                    step_name="trade_plan",
-                    output_file=trade_plan_path,
-                    input_version=manifest_input_version,
-                    reused=True,
-                    path=manifest_path,
-                    now=now,
-                )
-            else:
-                manifest = nman.mark_step_started(
-                    manifest,
-                    step_name="trade_plan",
-                    input_version=manifest_input_version,
-                    path=manifest_path,
-                    now=now,
-                )
-                model_plan_source = {
-                    **dict(multi_horizon_snapshot or {}),
-                    "allocation_regime": allocation_regime.to_dict() if hasattr(allocation_regime, "to_dict") else allocation_regime,
-                }
-                trade_plan = plan_builder(
-                    model_plan_source,
-                    satellite_candidate_snapshot=None,
-                    discipline_snapshot=discipline_snapshot,
-                    now=now,
-                )
-                plan_saver(trade_plan, path=trade_plan_path)
-                manifest = nman.mark_step_completed(
-                    manifest,
-                    step_name="trade_plan",
-                    output_file=trade_plan_path,
-                    input_version=manifest_input_version,
-                    metadata={"decision": (trade_plan or {}).get("decision"), "action_count": int((trade_plan or {}).get("action_count", 0) or 0)},
-                    path=manifest_path,
-                    now=now,
-                )
-        except Exception as exc:
-            manifest = nman.mark_step_failed(manifest, step_name="trade_plan", error_message=str(exc), path=manifest_path, now=now)
-            raise
-        premarket_brief_text = premarket_brief_builder(trade_plan, execution_review=execution_review)
-    else:
-        previous_quant_snapshot = None
-        quant_analysis_change_summary = {"has_changes": False, "message": ""}
-        model_plan_source = {
-            **dict(multi_horizon_snapshot or {}),
-            "allocation_regime": allocation_regime.to_dict() if hasattr(allocation_regime, "to_dict") else allocation_regime,
-        }
-        trade_plan = plan_builder(
-            model_plan_source,
-            satellite_candidate_snapshot=None,
-            discipline_snapshot=discipline_snapshot,
-            now=now,
-        )
-        plan_saver(trade_plan, path=trade_plan_path)
-        premarket_brief_text = premarket_brief_builder(trade_plan, execution_review=execution_review)
+    try:
+        if nman.can_resume_step(manifest, step_name="trade_plan", output_file=trade_plan_path, now=now):
+            trade_plan = plan_loader(path=trade_plan_path)
+            manifest = nman.mark_step_completed(
+                manifest,
+                step_name="trade_plan",
+                output_file=trade_plan_path,
+                input_version=manifest_input_version,
+                reused=True,
+                path=manifest_path,
+                now=now,
+            )
+        else:
+            manifest = nman.mark_step_started(
+                manifest,
+                step_name="trade_plan",
+                input_version=manifest_input_version,
+                path=manifest_path,
+                now=now,
+            )
+            model_plan_source = {
+                **dict(multi_horizon_snapshot or {}),
+                "allocation_regime": allocation_regime.to_dict() if hasattr(allocation_regime, "to_dict") else allocation_regime,
+            }
+            trade_plan = plan_builder(
+                model_plan_source,
+                satellite_candidate_snapshot=None,
+                discipline_snapshot=discipline_snapshot,
+                now=now,
+            )
+            plan_saver(trade_plan, path=trade_plan_path)
+            manifest = nman.mark_step_completed(
+                manifest,
+                step_name="trade_plan",
+                output_file=trade_plan_path,
+                input_version=manifest_input_version,
+                metadata={"decision": (trade_plan or {}).get("decision"), "action_count": int((trade_plan or {}).get("action_count", 0) or 0)},
+                path=manifest_path,
+                now=now,
+            )
+    except Exception as exc:
+        manifest = nman.mark_step_failed(manifest, step_name="trade_plan", error_message=str(exc), path=manifest_path, now=now)
+        raise
+    premarket_brief_text = premarket_brief_builder(trade_plan, execution_review=execution_review)
 
     strategy_validation_snapshot = sval.load_strategy_validation_snapshot()
     try:
@@ -720,8 +571,6 @@ def run_nightly_alerts(
                 "profit_factor": getattr(live_scoreboard, "profit_factor", None),
                 "max_drawdown_pct": getattr(live_scoreboard, "max_drawdown_pct", None),
             },
-            "strategy_comparison": strategy_comparison_rows,
-            "quant_analysis_summary": dict((quant_analysis_snapshot or {}).get("summary", {}) or {}),
         },
         allocation_regime=allocation_regime.to_dict(),
         daily_recap=daily_recap,
@@ -823,8 +672,6 @@ def run_nightly_alerts(
             "sent_results": [],
             "report_results": [],
             "report_files": {},
-            "quant_analysis_report_files": {},
-            "quant_analysis_change_results": [],
             "premarket_brief_results": [],
             "dry_run": True,
             "snapshot": snapshot,
@@ -852,14 +699,6 @@ def run_nightly_alerts(
     )
     report_text = report_builder(snapshot)
     report_files = report_writer(snapshot, report_text=report_text, reports_dir=report_output_dir)
-    if quant_analysis_snapshot is not None:
-        qpa.save_quant_analysis_snapshot(quant_analysis_snapshot, path=quant_analysis_snapshot_path)
-        quant_analysis_report_text = quant_analysis_report_builder(quant_analysis_snapshot)
-        quant_analysis_report_files = quant_analysis_report_writer(
-            quant_analysis_snapshot,
-            report_text=quant_analysis_report_text,
-            reports_dir=report_output_dir,
-        )
     if core_etf_snapshot is not None:
         cee.save_core_etf_snapshot(core_etf_snapshot)
     if satellite_candidate_snapshot is not None:
@@ -873,7 +712,6 @@ def run_nightly_alerts(
         input_version=manifest_input_version,
         metadata={
             "json_path": report_files.get("json_path"),
-            "quant_pdf_path": quant_analysis_report_files.get("pdf_path"),
         },
         path=manifest_path,
         now=now,
@@ -921,24 +759,6 @@ def run_nightly_alerts(
         report_results = [{"channel": "summary", "ok": False, "message": "nightly report skipped: daily summaries are disabled"}]
         premarket_results = [{"channel": "summary", "ok": False, "message": "premarket brief skipped: daily summaries are disabled"}]
 
-    if (
-        quant_analysis_snapshot is not None
-        and bool(alert_settings.get("send_quant_analysis_change_summary", True))
-    ):
-        if quant_analysis_change_summary.get("has_changes"):
-            try:
-                quant_analysis_change_results = message_router(
-                    "quant_analysis_change_summary",
-                    subject=f"Quant Analysis Change Summary {now.strftime('%Y-%m-%d')}",
-                    body=quant_analysis_change_summary.get("message", ""),
-                    config=config,
-                    slack_sender=slack_sender,
-                    email_sender=email_sender,
-                )
-            except Exception as exc:
-                quant_analysis_change_results.append({"channel": "router", "ok": False, "message": f"quant change summary failed: {exc}"})
-        else:
-            quant_analysis_change_results.append({"channel": "summary", "ok": False, "message": "quant change summary skipped: no material changes"})
     manifest = nman.mark_step_completed(
         manifest,
         step_name="notifications",
@@ -946,7 +766,6 @@ def run_nightly_alerts(
         metadata={
             "nightly_report_success": any(bool(row.get("ok")) for row in list(report_results or [])),
             "premarket_success": any(bool(row.get("ok")) for row in list(premarket_results or [])),
-            "quant_change_success": any(bool(row.get("ok")) for row in list(quant_analysis_change_results or [])),
         },
         path=manifest_path,
         now=now,
@@ -996,8 +815,6 @@ def run_nightly_alerts(
         "report_results": report_results,
         "premarket_brief_results": premarket_results,
         "report_files": report_files,
-        "quant_analysis_report_files": quant_analysis_report_files,
-        "quant_analysis_change_results": quant_analysis_change_results,
         "dry_run": False,
         "snapshot": snapshot,
         "snapshot_journal_path": journal_path,
@@ -1018,14 +835,12 @@ def main(argv=None):
     parser.add_argument("--force", action="store_true", help="Force analyst consensus refresh even outside the normal cycle.")
     parser.add_argument("--dry-run", action="store_true", help="Print generated alerts without sending notifications.")
     parser.add_argument("--history-period", default="2y", help="History period for market risk evaluation.")
-    parser.add_argument("--no-strategy-comparison", action="store_true", help="Skip nightly strategy comparison.")
     args = parser.parse_args(argv)
 
     result = run_nightly_alerts(
         force=args.force,
         dry_run=args.dry_run,
         history_period=args.history_period,
-        with_strategy_comparison=not args.no_strategy_comparison,
     )
     print(f"alerts={len(result['alerts'])} sent_results={len(result['sent_results'])} dry_run={result['dry_run']}")
     for alert in result["alerts"]:

@@ -1,5 +1,10 @@
 # Quant Trade System Master Update Plan
 
+> 文档状态：历史产品蓝图。当前架构与实施状态以
+> `master_update_plan_v3.md` 为准；神经量化模型的目标、标签、验证和
+> 晋升规则以 `multi_horizon_model_upgrade_plan.md` 的 target schema v2
+> 为准。若本文旧描述与后两份文档冲突，应以后两份文档为准。
+
 ## 0. 文档目标
 
 这份文档用于指导系统下一阶段的主线升级。新版本系统不再以“单只股票信号展示器”为中心，而是重构为：
@@ -1374,12 +1379,12 @@ LLM 仅用于：
 - 默认保持静默
 - 只在高优先级条件命中时触发提醒
 
-### `quant_core/analytics/satellite_ranker.py`
+### `quant_core/models/multi_horizon/pipeline.py`
 
 职责：
 
-- 计算 Top 3 分数
-- 输出状态标签
+- 统一计算卫星候选池与 Top 3
+- 输出多周期状态、收益分布与动作标签
 
 ### `quant_core/portfolio/discipline.py`
 
@@ -1454,8 +1459,8 @@ LLM 仅用于：
 
 交付：
 
-- `candidate_pool.py`
-- `satellite_ranker.py`
+- `candidate_pool.py`（只负责候选池配置与快照）
+- `multi_horizon/pipeline.py`（统一评分与 Top 3）
 - `nightly_planner.py`
 - 候选池快照与页面
 

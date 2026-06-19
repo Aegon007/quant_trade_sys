@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import math
-import os
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from time import time as unix_time
@@ -10,10 +9,6 @@ from typing import Mapping, Optional
 from zoneinfo import ZoneInfo
 
 from quant_core import paths as qpaths
-
-_MPL_CONFIG_DIR = qpaths.STATE_DIR / "matplotlib"
-os.environ["MPLCONFIGDIR"] = str(_MPL_CONFIG_DIR)
-_MPL_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
 
 
 US_MARKET_TZ = ZoneInfo("America/New_York")
@@ -76,16 +71,6 @@ def us_market_holidays(year: int) -> set[date]:
         _nth_weekday(year, 11, 3, 4),  # Thanksgiving
         _observed_fixed_holiday(year, 12, 25),  # Christmas
     }
-
-
-def _load_matplotlib():
-    import matplotlib
-
-    matplotlib.use("Agg")
-    from matplotlib import pyplot as plt
-    from matplotlib.backends.backend_pdf import PdfPages
-
-    return plt, PdfPages
 
 
 def _mapping_value(payload, key, default=None):
@@ -368,8 +353,6 @@ def build_nightly_report(snapshot: Mapping) -> str:
     change_feed = dict(snapshot.get("change_feed", {}) or {})
     nightly_manifest = dict(snapshot.get("nightly_manifest", {}) or {})
     alerts = list(snapshot.get("alerts", []) or [])
-    strategy_rows = list(performance.get("strategy_comparison", []) or [])
-    quant_analysis_summary = dict(performance.get("quant_analysis_summary", {}) or {})
 
     if multi_horizon_snapshot:
         model_summary = dict(multi_horizon_snapshot.get("summary", {}) or {})
@@ -412,15 +395,6 @@ def build_nightly_report(snapshot: Mapping) -> str:
             f"pending={int(_float(signal_attribution.get('pending_count'), 0) or 0)} "
             f"({', '.join(signal_attribution.get('pending_symbols', []) or []) or '-'})"
         )
-
-    if strategy_rows:
-        leader = strategy_rows[0]
-        strategy_name = leader.get("strategy_name") or leader.get("strategy") or leader.get("name") or "n/a"
-        metric = leader.get("total_return_pct")
-        if metric is None:
-            metric = leader.get("total_return")
-        metric_text = _format_pct(metric, digits=2) if metric is not None else "-"
-        lines.append(f"Strategy leader: {strategy_name} ({metric_text})")
 
     if strategy_validation_snapshot:
         validation_summary = dict(strategy_validation_snapshot.get("summary", {}) or {})
@@ -477,19 +451,6 @@ def build_nightly_report(snapshot: Mapping) -> str:
             f"action={monitor_summary.get('recommended_action') or '—'} "
             f"symbol={monitor_summary.get('recommended_symbol') or '—'}"
         )
-
-    if quant_analysis_summary:
-        lines.append(
-            "Quant analysis: "
-            f"symbols={int(_float(quant_analysis_summary.get('total_symbols'), 0) or 0)} "
-            f"BUY={int(_float(quant_analysis_summary.get('buy_count'), 0) or 0)} "
-            f"SELL={int(_float(quant_analysis_summary.get('sell_count'), 0) or 0)} "
-            f"HOLD={int(_float(quant_analysis_summary.get('hold_count'), 0) or 0)} "
-            f"errors={int(_float(quant_analysis_summary.get('error_count'), 0) or 0)}"
-        )
-        top_buys = ", ".join(quant_analysis_summary.get("top_buy_symbols", []) or [])
-        if top_buys:
-            lines.append(f"Top buy candidates: {top_buys}")
 
     if core_etf_snapshot:
         core_summary = dict(core_etf_snapshot.get("summary", {}) or {})
@@ -638,175 +599,3 @@ def save_nightly_report_files(snapshot: Mapping, *, report_text: Optional[str] =
         "latest_json_path": str(latest_json),
         "saved_at_unix": int(unix_time()),
     }
-
-
-def build_quant_analysis_report(snapshot: Mapping) -> str:
-    snapshot = dict(snapshot or {})
-    strategy = dict(snapshot.get("strategy", {}) or {})
-    engine = dict(snapshot.get("engine", {}) or {})
-    summary = dict(snapshot.get("summary", {}) or {})
-    symbol_rows = list(snapshot.get("symbols", []) or [])
-
-    lines = [
-        "Quant Analysis Report",
-        f"Generated: {str(snapshot.get('generated_at') or '')}",
-        f"Strategy: {strategy.get('name', strategy.get('id', 'n/a'))} | Engine: {engine.get('name', 'backtrader')} | History: {snapshot.get('history_period', '-')}",
-        (
-            "Summary: "
-            f"tracked={int(_float(summary.get('total_symbols'), 0) or 0)} "
-            f"analyzed={int(_float(summary.get('analyzed_symbols'), 0) or 0)} "
-            f"BUY={int(_float(summary.get('buy_count'), 0) or 0)} "
-            f"SELL={int(_float(summary.get('sell_count'), 0) or 0)} "
-            f"HOLD={int(_float(summary.get('hold_count'), 0) or 0)} "
-            f"errors={int(_float(summary.get('error_count'), 0) or 0)}"
-        ),
-    ]
-
-    top_buys = ", ".join(summary.get("top_buy_symbols", []) or [])
-    if top_buys:
-        lines.append(f"Top buys: {top_buys}")
-
-    lines.append("")
-    lines.append("## Symbols")
-    for row in symbol_rows:
-        backtest = dict(row.get("backtest", {}) or {})
-        monte_carlo = dict(row.get("monte_carlo", {}) or {})
-        advice = dict(row.get("position_advice", {}) or {})
-        line = (
-            f"- {row.get('symbol')} [{row.get('list_type', '-')}] "
-            f"signal={row.get('signal', 'HOLD')} "
-            f"price={_format_money(row.get('latest_price'))} "
-            f"backtest={_format_pct(backtest.get('total_return'), digits=2)} "
-            f"sharpe={(_float(backtest.get('sharpe_ratio')) or 0.0):.2f} "
-            f"win={_format_pct(backtest.get('win_rate'))} "
-            f"mc={_format_pct(monte_carlo.get('expected_return'), digits=2)}"
-        )
-        if advice:
-            line += f" advice={advice.get('action', 'HOLD')}"
-        if row.get("error"):
-            line += f" error={row.get('error')}"
-        lines.append(line)
-        reason = str(row.get("signal_reason") or "").strip()
-        if reason:
-            lines.append(f"  reason: {reason}")
-
-    return "\n".join(lines)
-
-
-def _draw_quant_analysis_pdf(snapshot: Mapping, pdf_path: Path):
-    plt, PdfPages = _load_matplotlib()
-    snapshot = dict(snapshot or {})
-    summary = dict(snapshot.get("summary", {}) or {})
-    symbol_rows = list(snapshot.get("symbols", []) or [])
-    strategy = dict(snapshot.get("strategy", {}) or {})
-    engine = dict(snapshot.get("engine", {}) or {})
-
-    def _summary_lines():
-        return [
-            "Quant Analysis Report",
-            f"Generated: {str(snapshot.get('generated_at') or '')}",
-            f"Strategy: {strategy.get('name', strategy.get('id', 'n/a'))}",
-            f"Engine: {engine.get('name', 'backtrader')} | History: {snapshot.get('history_period', '-')}",
-            (
-                f"Tracked: {int(_float(summary.get('total_symbols'), 0) or 0)} | "
-                f"Analyzed: {int(_float(summary.get('analyzed_symbols'), 0) or 0)} | "
-                f"BUY: {int(_float(summary.get('buy_count'), 0) or 0)} | "
-                f"SELL: {int(_float(summary.get('sell_count'), 0) or 0)} | "
-                f"HOLD: {int(_float(summary.get('hold_count'), 0) or 0)} | "
-                f"Errors: {int(_float(summary.get('error_count'), 0) or 0)}"
-            ),
-            "Top buys: " + (", ".join(summary.get("top_buy_symbols", []) or []) or "-"),
-        ]
-
-    with PdfPages(pdf_path) as pdf:
-        fig = plt.figure(figsize=(11.0, 8.5))
-        fig.patch.set_facecolor("white")
-        plt.axis("off")
-        for index, line in enumerate(_summary_lines()):
-            fig.text(0.06, 0.92 - index * 0.07, line, fontsize=13, family="monospace")
-        pdf.savefig(fig, bbox_inches="tight")
-        plt.close(fig)
-
-        header = f"{'Symbol':<8} {'Type':<10} {'Signal':<12} {'Price':>10} {'BT Ret':>10} {'Win':>8} {'MC Exp':>10} {'Action':>10}"
-        rows = []
-        for row in symbol_rows:
-            backtest = dict(row.get("backtest", {}) or {})
-            monte_carlo = dict(row.get("monte_carlo", {}) or {})
-            advice = row.get("position_advice") or {}
-            rows.append(
-                f"{str(row.get('symbol', '')):<8} "
-                f"{str(row.get('list_type', '')):<10} "
-                f"{str(row.get('signal', 'HOLD')):<12} "
-                f"{(_format_money(row.get('latest_price'))):>10} "
-                f"{(_format_pct(backtest.get('total_return'), digits=2)):>10} "
-                f"{(_format_pct(backtest.get('win_rate'))):>8} "
-                f"{(_format_pct(monte_carlo.get('expected_return'), digits=2)):>10} "
-                f"{str((advice or {}).get('action', 'WATCH')):>10}"
-            )
-
-        if not rows:
-            rows = ["No tracked symbols available."]
-
-        chunk_size = 24
-        for chunk_start in range(0, len(rows), chunk_size):
-            fig = plt.figure(figsize=(11.0, 8.5))
-            fig.patch.set_facecolor("white")
-            plt.axis("off")
-            fig.text(0.04, 0.95, header, fontsize=10.5, family="monospace")
-            for line_index, line in enumerate(rows[chunk_start:chunk_start + chunk_size], start=1):
-                fig.text(0.04, 0.95 - line_index * 0.032, line, fontsize=10, family="monospace")
-            pdf.savefig(fig, bbox_inches="tight")
-            plt.close(fig)
-
-
-def save_quant_analysis_report_files(snapshot: Mapping, *, report_text: Optional[str] = None, reports_dir: Optional[str] = None):
-    reports_path = Path(reports_dir or DEFAULT_REPORTS_DIR)
-    reports_path.mkdir(parents=True, exist_ok=True)
-
-    generated_at = _parse_datetime((snapshot or {}).get("generated_at")) or datetime.now()
-    stem = generated_at.strftime("quant_analysis_report_%Y%m%d_%H%M%S")
-    markdown_path = reports_path / f"{stem}.md"
-    json_path = reports_path / f"{stem}.json"
-    pdf_path = reports_path / f"{stem}.pdf"
-
-    resolved_report_text = report_text or build_quant_analysis_report(snapshot or {})
-    markdown_path.write_text(resolved_report_text, encoding="utf-8")
-    json_path.write_text(json.dumps(dict(snapshot or {}), ensure_ascii=False, indent=2), encoding="utf-8")
-    _draw_quant_analysis_pdf(snapshot or {}, pdf_path)
-
-    latest_markdown = reports_path / "quant_analysis_report_latest.md"
-    latest_json = reports_path / "quant_analysis_report_latest.json"
-    latest_pdf = reports_path / "quant_analysis_report_latest.pdf"
-    latest_markdown.write_text(resolved_report_text, encoding="utf-8")
-    latest_json.write_text(json.dumps(dict(snapshot or {}), ensure_ascii=False, indent=2), encoding="utf-8")
-    latest_pdf.write_bytes(pdf_path.read_bytes())
-
-    return {
-        "markdown_path": str(markdown_path),
-        "json_path": str(json_path),
-        "pdf_path": str(pdf_path),
-        "latest_markdown_path": str(latest_markdown),
-        "latest_json_path": str(latest_json),
-        "latest_pdf_path": str(latest_pdf),
-        "saved_at_unix": int(unix_time()),
-    }
-
-
-def get_quant_analysis_report_latest_paths(*, reports_dir: Optional[str] = None):
-    reports_path = Path(reports_dir or DEFAULT_REPORTS_DIR)
-    return {
-        "latest_markdown_path": str(reports_path / "quant_analysis_report_latest.md"),
-        "latest_json_path": str(reports_path / "quant_analysis_report_latest.json"),
-        "latest_pdf_path": str(reports_path / "quant_analysis_report_latest.pdf"),
-    }
-
-
-def load_latest_quant_analysis_snapshot(*, reports_dir: Optional[str] = None):
-    latest_paths = get_quant_analysis_report_latest_paths(reports_dir=reports_dir)
-    json_path = Path(latest_paths["latest_json_path"])
-    if not json_path.exists():
-        return None
-    try:
-        return json.loads(json_path.read_text(encoding="utf-8"))
-    except Exception:
-        return None

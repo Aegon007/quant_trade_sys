@@ -9,13 +9,13 @@
 - 持仓管理：支持添加、编辑、删除、加仓买入、部分卖出，以及“转到关注/转到持仓”等仓位迁移操作；最小交易单位为 `0.001` share，适合 Robinhood 等支持 fractional shares 的账户。
 - 观察列表：维护关注股票、备注，并显示模型估算的上涨预期价区间。
 - 实时行情：通过 Yahoo Finance 获取持仓和观察列表价格，并使用本地缓存减少重复请求；应用运行时会自动刷新过期价格。
-- 多周期决策：对持仓、核心 ETF 和卫星候选统一输出 `63/126/252` 交易日的相对排名、收益分位区间、短期时机与最终仓位动作。
+- 多周期决策：对持仓、核心 ETF 和卫星候选统一输出 `63/126/252` 交易日的上涨概率、绝对收益/价格区间、跑赢短债与 SPY 的概率、短期时机和最终仓位动作。
 - 分析师共识增强：夜间抓取分析师买卖共识；当看多或看空比例超过 `90%` 且样本充足时，增强关注列表提示为“强烈买入”或“强烈卖出”。
 - ETF 代理意见：当 ETF 本身没有分析师评级时，系统会自动读取前十大持仓，并按权重聚合成分股分析师共识，生成 ETF 的代理买卖意见。
 - 仓位建议：结合当前持仓、目标仓位和回测结果，给出加仓、减仓、退出或观望建议。
 - 组合级建议：分析行业集中度和高相关股票组合，避免只看单只股票信号而忽略整体风险。
-- 神经量化引擎：默认模型为跨资产多周期 Transformer，组合 Patch 时序编码、跨股票注意力、稀疏 regime experts、排序/分位数/下行风险/时机多任务输出。
-- 模型治理：周末执行 masked-patch 预训练、purged walk-forward、Top 3 超额收益、Rank IC、分位数覆盖和 MoE 路由检查；任何 promotion 都必须人工确认。
+- 神经量化引擎：默认模型为跨资产多周期 Transformer，以绝对收益、上涨概率和跑赢短期美债为主要训练目标，以跑赢 SPY 和横截面排名为辅助目标；短债总回报默认使用可配置的 `BIL` 代理。
+- 模型治理：周末执行 masked-patch 预训练和 purged walk-forward，检查绝对收益误差、上涨/跑赢短债概率校准、Top 3 相对短债及 SPY 的超额收益、Rank IC、分位数覆盖和 MoE 路由；任何 promotion 都必须人工确认。
 - 新闻/事件系统：支持本地 `storage/state/market_events.json` 事件输入，并可通过事件源适配层自动抓取外部新闻事件。
 - 事件风控急刹车：可基于 FOMC/宏观事件和 VIX 高波动阈值触发临时风险收缩（限制仓位或暂停新增仓位）。
 - FinBERT 情绪分析：事件/新闻可选用 FinBERT 进行情绪打分；未安装时自动回退为关键词情绪规则。
@@ -77,7 +77,8 @@ PYTHONPYCACHEPREFIX=/tmp/pycache ~/venv/bin/python -m unittest discover -s tests
 3. 模型默认使用 `10y` 历史、`252` 日 lookback 和 `63/126/252` 日目标。夜间只推理，不会每天盲目重训。
 4. 周末按 `retrain_interval_days` 检查是否需要重训，默认间隔 `30` 天；训练包含预训练与 walk-forward 验证。
 5. `Research & Models` 页面可以手动触发完整训练，并查看候选模型、从零训练版本和相对强弱基线的对比。
-6. 夜间报告、盘前计划、风险和强信号仍可通过 Slack 与 Email 发送。
+6. 新训练版本先进入 shadow；只有 walk-forward 验证通过并在 `Research & Models` 手动晋升后，才可进入夜间正式交易建议。
+7. 夜间报告、盘前计划、风险和强信号仍可通过 Slack 与 Email 发送。
 
 ## 周末研究模式
 
@@ -246,7 +247,7 @@ journalctl --user -u quant-trade-system.service -f
 - `config/event_sources.json`：事件源配置，定义本地 mock 与自动抓取源（如 yfinance 新闻）。
 - `storage/state/transactions.json`：买入/卖出交易记录与组合动作事件记录（如转到关注、转到持仓等）。
 - `storage/state/multi_horizon_snapshot.json`：前端、夜间计划和通知共同读取的统一多周期模型快照。
-- `storage/state/multi_horizon_validation.json`：walk-forward、Top 3、分位数校准和 MoE 路由验证结果。
+- `storage/state/multi_horizon_validation.json`：walk-forward 绝对收益误差、上涨/跑赢短债概率校准、Top 3 对短债及 SPY 超额收益、分位数覆盖和 MoE 路由验证结果。
 - `storage/journals/multi_horizon_predictions.jsonl`：紧凑预测日志，用于未来 63/126/252 日实际结果归因。
 - `storage/config/multi_horizon_model.json`：模型结构、训练周期、候选池上限和 artifact 路径配置。
 
@@ -265,74 +266,7 @@ journalctl --user -u quant-trade-system.service -f
 - 传统规则策略仍保留，主要用于做对照、解释和回测基线。
 - LightGBM、CatBoost、XGBoost 及其生产依赖已经删除；除非未来消融实验证明有稳定的增量经济价值，否则不会重新加入生产。
 
-回测流程：
-
-1. 在“量化分析”页选择股票。
-2. 选择策略并运行 Backtrader 回测。
-3. 运行回测，查看累计收益、夏普比率、最大回撤、胜率和资金曲线。
-4. 系统会结合回测结果和当前持仓，生成更偏仓位管理的建议。
-
-## 新增策略
-
-新增策略时，优先使用配置式扩展，不需要修改 `strategies/registry.py` 或 `strategies/ui.py`。
-
-### 1. 实现策略类
-
-策略类需要继承 `engine.base.BaseStrategy`，并实现 `init()` 和 `next(i)`：
-
-```python
-from engine.base import BaseStrategy
-
-class MyStrategy(BaseStrategy):
-    def __init__(self, window=20):
-        super().__init__({"window": window})
-        self.window = window
-        self.ma = None
-
-    def init(self):
-        self.ma = self.data["Close"].rolling(self.window).mean()
-
-    def next(self, i):
-        if i < self.window:
-            return None
-        if self.data["Close"].iloc[i] > self.ma.iloc[i]:
-            return {"action": "BUY", "size": 100}
-        return {"action": "HOLD", "size": 0}
-```
-
-### 2. 实现当前信号函数
-
-信号函数用于 UI 中显示某只股票当前是买入、持有还是卖出：
-
-```python
-def get_my_signal(symbol, window=20):
-    return "HOLD", f"{symbol} 暂无明确突破信号"
-```
-
-### 3. 添加配置
-
-在 `config/strategies.json` 的 `strategies` 数组中添加：
-
-```json
-{
-  "id": "my_strategy",
-  "name": "我的策略",
-  "description": "策略说明",
-  "strategy_class": "strategies.my_strategy.MyStrategy",
-  "signal_function": "strategies.my_strategy.get_my_signal",
-  "params": {
-    "window": 20
-  }
-}
-```
-
-如果策略类构造函数接收整个参数字典，而不是展开后的关键字参数，可以加：
-
-```json
-{
-  "params_mode": "dict"
-}
-```
+离线基准只在周末研究任务中运行，用来回答“复杂模型是否真的优于简单规则”。它们不会生成日常生产信号，也不会阻塞多周期模型的训练、推理或页面读取。
 
 ## 深度学习策略
 
@@ -680,7 +614,7 @@ export SLACK_APP_TOKEN="xapp-..."
 - 既能支持更自然的输入表达；
 - 又不会把核心执行逻辑完全交给模型“自由发挥”。
 
-如果未来要选本地小模型，我更倾向于从指令微调的小模型开始，而不是过小的基础模型。像 `Qwen2.5-0.5B-Instruct` 这一类 0.5B 级别模型，更适合做轻量命令归一化；`0.3B` 级别模型可以尝试，但对中英文混合、股票代码、数值和动作词的稳定解析能力通常会更吃紧。
+本地 SLM 当前只负责把结构化原因转述得更自然，不负责研究、预测或自由决定交易动作；复杂解释和调研交给远程 LLM。
 
 ## 项目取舍
 
@@ -699,8 +633,8 @@ export SLACK_APP_TOKEN="xapp-..."
 ├── frontend/                              # React/Vite 前端
 ├── quant_core/                            # 核心业务（数据/风控/组合/通知/快照）
 ├── integrations/                          # 外部集成（Slack Socket Mode bot / command service）
-├── strategies/                            # 策略配置加载与策略类
-├── engine/                                # Backtrader 回测适配器
+├── strategies/                            # 周末离线规则基准
+├── engine/                                # 周末离线 Backtrader 适配器
 ├── jobs/                                  # api_server / run_all / nightly_alerts / weekend_research
 ├── config/strategies.json                 # 策略配置
 ├── storage/config/*.example.json          # 示例配置

@@ -1,5 +1,5 @@
 import type React from "react";
-import { asDict, formatPercent, longHorizon, modelDecision, text, timing, type Dict } from "../lib/data";
+import { asDict, formatCurrency, formatPercent, longHorizon, modelDecision, text, timing, type Dict } from "../lib/data";
 import { EmptyState, Status } from "./Primitives";
 
 export type DecisionColumn = {
@@ -37,10 +37,17 @@ export function ModelDetail({ row }: { row: Dict }) {
         {[63, 126, 252].map((horizon) => {
           const item = asDict(horizonRows[String(horizon)]);
           const range = asDict(item.return_range);
+          const prices = asDict(item.price_range);
           return (
             <p key={horizon}>
               <b>{horizon}d</b>
-              <span>Rank {formatPercent(item.rank)} · Outperform {formatPercent(item.outperformance_probability)} · P10/P50/P90 {formatPercent(range.p10)} / {formatPercent(range.p50)} / {formatPercent(range.p90)}</span>
+              <span>
+                Up {formatPercent(item.positive_return_probability)}
+                {" · "}Beat BIL {formatPercent(item.risk_free_outperformance_probability)}
+                {" · "}Beat SPY {formatPercent(item.market_outperformance_probability)}
+                {" · "}Return P10/P50/P90 {formatPercent(range.p10)} / {formatPercent(range.p50)} / {formatPercent(range.p90)}
+                {Object.keys(prices).length ? ` · Price ${formatCurrency(prices.p10, 2)} / ${formatCurrency(prices.p50, 2)} / ${formatCurrency(prices.p90, 2)}` : ""}
+              </span>
             </p>
           );
         })}

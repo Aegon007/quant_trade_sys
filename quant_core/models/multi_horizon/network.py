@@ -124,7 +124,9 @@ class FinanceMultiAssetTransformer(nn.Module):
         self.cross_asset = nn.TransformerEncoder(layer, num_layers=config.cross_asset_layers)
         self.moe = SparseRegimeMoE(config)
         self.rank_head = nn.Linear(config.d_model, config.horizon_count)
-        self.outperformance_head = nn.Linear(config.d_model, config.horizon_count)
+        self.positive_return_head = nn.Linear(config.d_model, config.horizon_count)
+        self.risk_free_outperformance_head = nn.Linear(config.d_model, config.horizon_count)
+        self.market_outperformance_head = nn.Linear(config.d_model, config.horizon_count)
         self.quantile_head = nn.Linear(config.d_model, config.horizon_count * 3)
         self.adverse_head = nn.Linear(config.d_model, config.horizon_count)
         self.favorable_head = nn.Linear(config.d_model, config.horizon_count)
@@ -153,7 +155,9 @@ class FinanceMultiAssetTransformer(nn.Module):
         p90 = p50 + F.softplus(quantile_raw[..., 2])
         return {
             "rank_scores": self.rank_head(representation),
-            "outperformance_logits": self.outperformance_head(representation),
+            "positive_return_logits": self.positive_return_head(representation),
+            "risk_free_outperformance_logits": self.risk_free_outperformance_head(representation),
+            "market_outperformance_logits": self.market_outperformance_head(representation),
             "return_quantiles": torch.stack([p10, p50, p90], dim=-1),
             "adverse_excursion": -F.softplus(self.adverse_head(representation)),
             "favorable_excursion": F.softplus(self.favorable_head(representation)),

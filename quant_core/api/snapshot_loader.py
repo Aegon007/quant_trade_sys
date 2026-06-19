@@ -19,6 +19,7 @@ from quant_core.execution import post_close_review as pcr
 from quant_core.jobs import job_registry
 from quant_core.ledger import transactions as tx
 from quant_core.notifications import notification_config as ncfg
+from quant_core.models.multi_horizon import governance as mh_governance
 from quant_core.snapshots import system_snapshot as ss
 
 
@@ -39,6 +40,15 @@ SNAPSHOT_PATHS = {
     "model-governance": qpaths.MULTI_HORIZON_GOVERNANCE_FILE,
     "reports-latest": str(qpaths.PROJECT_ROOT / "reports" / "nightly_report_latest.json"),
 }
+
+
+def _load_gated_multi_horizon_snapshot() -> dict:
+    snapshot, _ = safe_read_json(qpaths.MULTI_HORIZON_SNAPSHOT_FILE)
+    governance, _ = safe_read_json(qpaths.MULTI_HORIZON_GOVERNANCE_FILE)
+    return mh_governance.apply_production_gate(
+        snapshot if isinstance(snapshot, dict) else {},
+        governance if isinstance(governance, dict) else {},
+    )
 
 
 def _multi_horizon_index(snapshot: Mapping | None) -> dict[str, dict]:
@@ -206,8 +216,7 @@ def load_model_enriched_snapshot_response(
         max_age_seconds=max_age_seconds,
         now=now,
     )
-    model_snapshot, _ = safe_read_json(qpaths.MULTI_HORIZON_SNAPSHOT_FILE)
-    model_snapshot = model_snapshot if isinstance(model_snapshot, dict) else {}
+    model_snapshot = _load_gated_multi_horizon_snapshot()
     payload = dict(response.get("payload", {}) or {})
     for key in row_keys:
         if isinstance(payload.get(key), list):
@@ -281,10 +290,7 @@ def load_portfolio_response(*, now: Optional[datetime] = None) -> dict:
     daily_activity = tx.summarize_daily_activity(transaction_rows, day=latest_day) if latest_day else {}
     post_close_review = pcr.load_post_close_review() or {}
     plan_quality_snapshot = pq.load_plan_quality_snapshot()
-    quant_analysis_payload, _ = safe_read_json(qpaths.QUANT_ANALYSIS_SNAPSHOT_FILE)
-    quant_analysis_payload = quant_analysis_payload if isinstance(quant_analysis_payload, dict) else {}
-    multi_horizon_payload, _ = safe_read_json(qpaths.MULTI_HORIZON_SNAPSHOT_FILE)
-    multi_horizon_payload = multi_horizon_payload if isinstance(multi_horizon_payload, dict) else {}
+    multi_horizon_payload = _load_gated_multi_horizon_snapshot()
 
     holdings = enrich_rows_with_multi_horizon(
         list(data.get("holdings", []) or []) if isinstance(data, Mapping) else [],
@@ -307,7 +313,6 @@ def load_portfolio_response(*, now: Optional[datetime] = None) -> dict:
         "post_close_review_status": post_close_review.get("status"),
         "unplanned_trade_count": post_close_review.get("unplanned_trade_count"),
         "plan_quality_status": plan_quality_snapshot.get("status") or dict(plan_quality_snapshot.get("summary", {}) or {}).get("status"),
-        "quant_analysis_generated_at": quant_analysis_payload.get("generated_at"),
         "multi_horizon_status": multi_horizon_payload.get("status"),
         "multi_horizon_generated_at": multi_horizon_payload.get("generated_at"),
         "multi_horizon_is_stale": bool(
@@ -322,7 +327,6 @@ def load_portfolio_response(*, now: Optional[datetime] = None) -> dict:
         "daily_activity": daily_activity,
         "post_close_review": post_close_review,
         "plan_quality_snapshot": plan_quality_snapshot,
-        "quant_analysis_snapshot": quant_analysis_payload,
         "multi_horizon_snapshot": multi_horizon_payload,
     }
     return build_api_response(
@@ -349,7 +353,7 @@ def load_dashboard_response(*, now: Optional[datetime] = None) -> dict:
     plan_quality_payload, _ = safe_read_json(qpaths.PLAN_QUALITY_SNAPSHOT_FILE)
     market_monitor_payload, _ = safe_read_json(qpaths.MARKET_MONITOR_SNAPSHOT_FILE)
     strategy_governance_payload, _ = safe_read_json(qpaths.STRATEGY_REGISTRY_STATE_FILE)
-    multi_horizon_payload, _ = safe_read_json(qpaths.MULTI_HORIZON_SNAPSHOT_FILE)
+    multi_horizon_payload = _load_gated_multi_horizon_snapshot()
     job_status = job_registry.load_job_status()
 
     core_payload = core_payload if isinstance(core_payload, dict) else {}
@@ -360,7 +364,6 @@ def load_dashboard_response(*, now: Optional[datetime] = None) -> dict:
     plan_quality_payload = plan_quality_payload if isinstance(plan_quality_payload, dict) else {}
     market_monitor_payload = market_monitor_payload if isinstance(market_monitor_payload, dict) else {}
     strategy_governance_payload = strategy_governance_payload if isinstance(strategy_governance_payload, dict) else {}
-    multi_horizon_payload = multi_horizon_payload if isinstance(multi_horizon_payload, dict) else {}
 
     change_items = []
     for key in ("high_items", "medium_items", "items"):
@@ -602,6 +605,7 @@ def load_research_models_response(*, now: Optional[datetime] = None) -> dict:
     registry = registry if isinstance(registry, dict) else {}
     config = config if isinstance(config, dict) else {}
     governance = governance if isinstance(governance, dict) else {}
+    snapshot = mh_governance.apply_production_gate(snapshot, governance)
     errors = [*snapshot_errors, *validation_errors, *registry_errors, *config_errors, *governance_errors]
     model_age = _age_seconds(snapshot.get("generated_at"), now=now)
     model_stale = bool(model_age is not None and model_age > DEFAULT_SNAPSHOT_MAX_AGE_SECONDS)

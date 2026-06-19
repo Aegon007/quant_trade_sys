@@ -15,6 +15,7 @@ DEFAULT_CONFIG = {
     "model_id": "finance_multi_asset_transformer",
     "role": "primary_quant_decision_candidate",
     "history_period": "10y",
+    "risk_free_benchmark": "BIL",
     "horizons": [63, 126, 252],
     "lookback": 252,
     "observation_frequency": "W-FRI",
@@ -65,6 +66,9 @@ def normalize_multi_horizon_config(config: Mapping | None = None) -> dict:
             normalized[key] = value
     normalized["horizons"] = sorted({max(int(value), 1) for value in normalized.get("horizons", [])})
     normalized["lookback"] = max(int(normalized.get("lookback", 252)), 40)
+    normalized["risk_free_benchmark"] = str(
+        normalized.get("risk_free_benchmark") or "BIL"
+    ).strip().upper()
     normalized["maximum_training_symbols"] = max(int(normalized.get("maximum_training_symbols", 100)), 2)
     training = normalized["training"]
     for key, default in (

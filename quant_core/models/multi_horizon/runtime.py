@@ -105,11 +105,19 @@ def run_multi_horizon_inference(
         if key == "representation":
             continue
         filtered_outputs[key] = value[:, valid_indices]
+    current_prices = {}
+    for symbol in valid_symbols:
+        frame = histories.get(symbol)
+        if isinstance(frame, pd.DataFrame) and not frame.empty:
+            close = pd.to_numeric(frame["Close"], errors="coerce").dropna()
+            if not close.empty:
+                current_prices[symbol] = float(close.iloc[-1])
     return build_prediction_snapshot(
         filtered_outputs,
         symbols=valid_symbols,
         horizons=metadata.get("horizons") or [63, 126, 252],
         current_weights_pct=current_weights_pct,
+        current_prices=current_prices,
         risk_regime=risk_regime,
         model_metadata=metadata,
         generated_at=pd.Timestamp(latest_date).isoformat(),

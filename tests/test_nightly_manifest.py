@@ -18,10 +18,10 @@ class NightlyManifestTests(unittest.TestCase):
             now = datetime(2026, 5, 13, 23, 0, 0)
 
             manifest = self.module.initialize_nightly_run_manifest(now=now, force=False, path=manifest_path)
-            manifest = self.module.mark_step_started(manifest, step_name="quant_analysis_snapshot", input_version="20260513-nightly", path=manifest_path, now=now)
+            manifest = self.module.mark_step_started(manifest, step_name="multi_horizon_inference", input_version="20260513-nightly", path=manifest_path, now=now)
             manifest = self.module.mark_step_completed(
                 manifest,
-                step_name="quant_analysis_snapshot",
+                step_name="multi_horizon_inference",
                 output_file=output_path,
                 input_version="20260513-nightly",
                 path=manifest_path,
@@ -29,7 +29,7 @@ class NightlyManifestTests(unittest.TestCase):
             )
 
             resumed = self.module.initialize_nightly_run_manifest(now=now, force=False, path=manifest_path)
-            self.assertTrue(self.module.can_resume_step(resumed, step_name="quant_analysis_snapshot", output_file=output_path, now=now))
+            self.assertTrue(self.module.can_resume_step(resumed, step_name="multi_horizon_inference", output_file=output_path, now=now))
             finalized = self.module.finalize_nightly_run_manifest(resumed, status="completed", path=manifest_path, now=now)
             self.assertEqual(finalized["status"], "completed")
 

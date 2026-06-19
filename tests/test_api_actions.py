@@ -100,6 +100,7 @@ class ApiActionsTests(unittest.TestCase):
             "/api/actions/run-nightly-once",
             "/api/actions/run-weekend-research-once",
             "/api/actions/train-multi-horizon",
+            "/api/actions/promote-multi-horizon",
             "/api/actions/save-multi-horizon-config",
         ]:
             self.assertIn(path, route_paths)

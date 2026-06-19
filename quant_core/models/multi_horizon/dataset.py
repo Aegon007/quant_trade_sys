@@ -51,19 +51,24 @@ def _future_path_stat(close: pd.Series, horizon: int, reducer) -> pd.Series:
 def build_forward_labels(
     asset_history: pd.DataFrame,
     benchmark_history: pd.DataFrame,
+    risk_free_history: pd.DataFrame,
     *,
     horizons: Sequence[int] = DEFAULT_HORIZONS,
 ) -> pd.DataFrame:
     asset_close = _close(asset_history)
     benchmark_close = _close(benchmark_history).reindex(asset_close.index).ffill()
+    risk_free_close = _close(risk_free_history).reindex(asset_close.index).ffill()
     labels = pd.DataFrame(index=asset_close.index)
     for raw_horizon in horizons:
         horizon = max(int(raw_horizon), 1)
         asset_return = asset_close.shift(-horizon) / asset_close - 1.0
         benchmark_return = benchmark_close.shift(-horizon) / benchmark_close - 1.0
+        risk_free_return = risk_free_close.shift(-horizon) / risk_free_close - 1.0
         labels[f"forward_return_{horizon}d"] = asset_return
         labels[f"benchmark_return_{horizon}d"] = benchmark_return
-        labels[f"excess_return_{horizon}d"] = asset_return - benchmark_return
+        labels[f"risk_free_return_{horizon}d"] = risk_free_return
+        labels[f"market_excess_return_{horizon}d"] = asset_return - benchmark_return
+        labels[f"risk_free_excess_return_{horizon}d"] = asset_return - risk_free_return
         labels[f"max_favorable_{horizon}d"] = _future_path_stat(asset_close, horizon, np.max)
         labels[f"max_adverse_{horizon}d"] = _future_path_stat(asset_close, horizon, np.min)
     return labels
@@ -121,6 +126,7 @@ def build_panel_frame(
     horizons: Sequence[int] = DEFAULT_HORIZONS,
     observation_frequency: str = "W-FRI",
     include_unlabeled: bool = False,
+    risk_free_symbol: str = "BIL",
 ) -> pd.DataFrame:
     normalized_histories = {
         str(symbol).strip().upper(): frame.copy()
@@ -133,7 +139,10 @@ def build_panel_frame(
         if str(symbol).strip().upper() in normalized_histories
     ]
     rows = []
-    required_labels = [f"excess_return_{int(horizon)}d" for horizon in horizons]
+    required_labels = [f"forward_return_{int(horizon)}d" for horizon in horizons]
+    risk_free_symbol = str(risk_free_symbol or "BIL").strip().upper()
+    if risk_free_symbol not in normalized_histories:
+        return pd.DataFrame(columns=("observation_date", "symbol", "benchmark", *FEATURE_COLUMNS))
     for symbol in selected_symbols:
         benchmark_symbol = str(benchmark_map.get(symbol) or "SPY").strip().upper()
         if symbol == benchmark_symbol or benchmark_symbol not in normalized_histories:
@@ -141,7 +150,12 @@ def build_panel_frame(
         asset_history = normalized_histories[symbol]
         benchmark_history = normalized_histories[benchmark_symbol]
         features = build_feature_frame(asset_history, benchmark_history)
-        labels = build_forward_labels(asset_history, benchmark_history, horizons=horizons)
+        labels = build_forward_labels(
+            asset_history,
+            benchmark_history,
+            normalized_histories[risk_free_symbol],
+            horizons=horizons,
+        )
         frame = features.join(labels, how="left")
         for observation_date in _observation_dates(frame.index, observation_frequency):
             row = frame.loc[observation_date]
@@ -151,6 +165,7 @@ def build_panel_frame(
                 "observation_date": pd.Timestamp(observation_date),
                 "symbol": symbol,
                 "benchmark": benchmark_symbol,
+                "risk_free_benchmark": risk_free_symbol,
             }
             payload.update({column: row.get(column) for column in frame.columns})
             rows.append(payload)
@@ -158,7 +173,7 @@ def build_panel_frame(
         return pd.DataFrame(columns=("observation_date", "symbol", "benchmark", *FEATURE_COLUMNS))
     panel = pd.DataFrame(rows).sort_values(["observation_date", "symbol"]).reset_index(drop=True)
     for horizon in horizons:
-        label_column = f"excess_return_{int(horizon)}d"
+        label_column = f"market_excess_return_{int(horizon)}d"
         rank_column = f"relevance_{int(horizon)}d"
         panel[rank_column] = panel.groupby("observation_date")[label_column].rank(
             pct=True,

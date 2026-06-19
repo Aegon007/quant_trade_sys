@@ -19,7 +19,6 @@ from types import SimpleNamespace
 from typing import Callable, List, Optional
 
 from quant_core.analytics import quant_analysis as qa
-from quant_core.analytics import portfolio_analysis as qpa
 from quant_core.api import snapshot_loader as api_snapshots
 from quant_core.data import market_data as md
 from quant_core.data import data_health as dhealth
@@ -50,8 +49,6 @@ DEFAULT_MONITOR_SECONDS = 10
 DEFAULT_NIGHTLY_POLL_SECONDS = 300
 DEFAULT_MARKET_REFRESH_POLL_SECONDS = 300
 DEFAULT_MARKET_REFRESH_INTERVAL_SECONDS = 3600
-DEFAULT_AUTO_QUANT_ANALYSIS_MIN_INTERVAL_SECONDS = ncfg.DEFAULT_AUTO_QUANT_ANALYSIS_MIN_INTERVAL_SECONDS
-DEFAULT_AUTO_QUANT_ANALYSIS_PRICE_JUMP_PCT = ncfg.DEFAULT_AUTO_QUANT_ANALYSIS_PRICE_JUMP_PCT
 DEFAULT_TRADE_PLAN_FILE = np.DEFAULT_TRADE_PLAN_FILE
 DEFAULT_API_HOST = "127.0.0.1"
 DEFAULT_API_PORT = 8710
@@ -504,14 +501,9 @@ def maybe_run_market_refresh(
     slack_sender: Callable[..., tuple] = nch.send_slack_message,
     email_sender: Callable[..., tuple] = nch.send_email_message,
     message_router: Callable[..., list] = dr.deliver_message,
-    quant_analysis_snapshot_path: str = qpa.DEFAULT_QUANT_ANALYSIS_SNAPSHOT_FILE,
-    report_output_dir: str = nr.DEFAULT_REPORTS_DIR,
     intraday_alert_state_path: str = cfeed.DEFAULT_INTRADAY_ALERT_STATE_FILE,
     intraday_event_journal_path: str = ij.DEFAULT_INTRADAY_EVENT_JOURNAL_FILE,
     intraday_event_alert_state_path: str = im.DEFAULT_INTRADAY_EVENT_ALERT_STATE_FILE,
-    auto_quant_analysis_min_interval_seconds: Optional[int] = None,
-    auto_quant_analysis_price_jump_pct: Optional[float] = None,
-    enable_auto_quant_analysis: Optional[bool] = None,
     environ=None,
     logger: Optional[logging.Logger] = None,
 ) -> bool:
@@ -544,7 +536,6 @@ def maybe_run_market_refresh(
         logger.exception("Data health snapshot update failed.")
     config = _load_notification_config(config_loader, environ=environ)
     alert_settings = config.get("alert_settings", {}) if isinstance(config, dict) else {}
-    slack_config = config.get("slack", {}) if isinstance(config, dict) else {}
     latest_change_feed = cfeed.load_change_feed() or {}
     latest_snapshot_journal = ss.load_snapshot_journal(limit=1)
     latest_trade_plan = np.load_next_day_trade_plan()
@@ -565,33 +556,6 @@ def maybe_run_market_refresh(
         else None
     )
     notifications_enabled = _has_enabled_delivery_channel(config)
-    try:
-        resolved_auto_quant_analysis_min_interval_seconds = int(
-            auto_quant_analysis_min_interval_seconds
-            if auto_quant_analysis_min_interval_seconds is not None
-            else alert_settings.get(
-                "auto_quant_analysis_min_interval_seconds",
-                DEFAULT_AUTO_QUANT_ANALYSIS_MIN_INTERVAL_SECONDS,
-            )
-        )
-    except (TypeError, ValueError):
-        resolved_auto_quant_analysis_min_interval_seconds = DEFAULT_AUTO_QUANT_ANALYSIS_MIN_INTERVAL_SECONDS
-    try:
-        resolved_auto_quant_analysis_price_jump_pct = float(
-            auto_quant_analysis_price_jump_pct
-            if auto_quant_analysis_price_jump_pct is not None
-            else alert_settings.get(
-                "auto_quant_analysis_price_jump_pct",
-                DEFAULT_AUTO_QUANT_ANALYSIS_PRICE_JUMP_PCT,
-            )
-        )
-    except (TypeError, ValueError):
-        resolved_auto_quant_analysis_price_jump_pct = DEFAULT_AUTO_QUANT_ANALYSIS_PRICE_JUMP_PCT
-    resolved_enable_auto_quant_analysis = (
-        bool(enable_auto_quant_analysis)
-        if enable_auto_quant_analysis is not None
-        else bool(alert_settings.get("enable_auto_quant_analysis", True))
-    )
     tracked_symbols = sorted(
         {
             str(item.get("symbol", "")).strip().upper()
@@ -653,75 +617,6 @@ def maybe_run_market_refresh(
         if intraday_alerts_enabled
         else None
     )
-
-    previous_snapshot = None
-    auto_trigger = {"should_run": False, "message": "Auto quant analysis disabled."}
-    if resolved_enable_auto_quant_analysis:
-        try:
-            previous_snapshot = qpa.load_quant_analysis_snapshot(path=quant_analysis_snapshot_path)
-            auto_trigger = qpa.evaluate_auto_refresh_trigger(
-                before_data=before_data,
-                after_data=refreshed_data,
-                previous_snapshot=previous_snapshot,
-                risk_decision=risk_decision,
-                event_decision=event_decision,
-                active_events=active_events,
-                now=now,
-                price_jump_threshold=resolved_auto_quant_analysis_price_jump_pct,
-                min_interval_seconds=resolved_auto_quant_analysis_min_interval_seconds,
-            )
-        except Exception:
-            logger.exception("Auto full-analysis trigger evaluation failed.")
-            previous_snapshot = None
-            auto_trigger = {"should_run": False, "message": "Auto trigger evaluation failed."}
-
-        if auto_trigger.get("should_run"):
-            try:
-                runtime_strategy = qpa.load_default_runtime_strategy(history_period="2y")
-                if runtime_strategy is not None:
-                    analysis_snapshot = qpa.build_portfolio_quant_analysis_snapshot(
-                        refreshed_data,
-                        strategy=runtime_strategy,
-                        history_period="2y",
-                        engine_name="backtrader",
-                        risk_gate=risk_decision,
-                        allocation_regime=allocation_regime,
-                        active_events=active_events,
-                        event_decision=event_decision,
-                        now=now,
-                    )
-                    qpa.save_quant_analysis_snapshot(analysis_snapshot, path=quant_analysis_snapshot_path)
-                    analysis_report_text = nr.build_quant_analysis_report(analysis_snapshot)
-                    nr.save_quant_analysis_report_files(
-                        analysis_snapshot,
-                        report_text=analysis_report_text,
-                        reports_dir=report_output_dir,
-                    )
-                    if (
-                        slack_config.get("enabled")
-                        and slack_config.get("webhook_url")
-                        and bool(alert_settings.get("send_quant_analysis_change_summary", True))
-                    ):
-                        change_summary = qpa.build_quant_analysis_change_summary(previous_snapshot, analysis_snapshot)
-                        if change_summary.get("has_changes"):
-                            message = auto_trigger.get("message", "")
-                            if change_summary.get("message"):
-                                message = f"{message}\n\n{change_summary['message']}".strip()
-                            delivery_results = message_router(
-                                "quant_analysis_change_summary",
-                                subject=f"Quant Analysis Change Summary {now.strftime('%Y-%m-%d %H:%M')}",
-                                body=message,
-                                config=config,
-                                environ=environ,
-                                slack_sender=slack_sender,
-                                email_sender=email_sender,
-                            )
-                            if dr.any_success(delivery_results):
-                                logger.info("Auto full-analysis change summary sent to Slack.")
-                            else:
-                                logger.warning("Auto full-analysis change summary failed: %s", delivery_results)
-            except Exception:
-                logger.exception("Auto full-analysis refresh failed.")
 
     if notifications_enabled and bool(alert_settings.get("send_hourly_market_summary", True)):
         market_hours_only = bool(alert_settings.get("send_hourly_market_summary_market_hours_only", True))
@@ -1054,11 +949,6 @@ def market_refresh_loop(
     loader: Callable[[], dict] = data_storage.load_data,
     refresher: Callable[..., tuple] = data_storage.auto_refresh_market_data,
     saver: Callable[[dict], None] = data_storage.save_data,
-    quant_analysis_snapshot_path: str = qpa.DEFAULT_QUANT_ANALYSIS_SNAPSHOT_FILE,
-    report_output_dir: str = nr.DEFAULT_REPORTS_DIR,
-    auto_quant_analysis_min_interval_seconds: Optional[int] = None,
-    auto_quant_analysis_price_jump_pct: Optional[float] = None,
-    enable_auto_quant_analysis: Optional[bool] = None,
     logger: Optional[logging.Logger] = None,
 ):
     logger = logger or logging.getLogger(__name__)
@@ -1071,11 +961,6 @@ def market_refresh_loop(
                 refresher=refresher,
                 saver=saver,
                 refresh_interval_seconds=refresh_interval_seconds,
-                quant_analysis_snapshot_path=quant_analysis_snapshot_path,
-                report_output_dir=report_output_dir,
-                auto_quant_analysis_min_interval_seconds=auto_quant_analysis_min_interval_seconds,
-                auto_quant_analysis_price_jump_pct=auto_quant_analysis_price_jump_pct,
-                enable_auto_quant_analysis=enable_auto_quant_analysis,
                 logger=logger,
             )
             maybe_run_intraday_tactical_tick(
@@ -1110,9 +995,6 @@ def run_supervisor(
     nightly_poll_seconds: int = DEFAULT_NIGHTLY_POLL_SECONDS,
     market_refresh_poll_seconds: int = DEFAULT_MARKET_REFRESH_POLL_SECONDS,
     market_refresh_interval_seconds: int = DEFAULT_MARKET_REFRESH_INTERVAL_SECONDS,
-    auto_quant_analysis_min_interval_seconds: Optional[int] = None,
-    auto_quant_analysis_price_jump_pct: Optional[float] = None,
-    enable_auto_quant_analysis: Optional[bool] = None,
     api_host: str = DEFAULT_API_HOST,
     api_port: int = DEFAULT_API_PORT,
     frontend_host: str = DEFAULT_FRONTEND_HOST,
@@ -1248,11 +1130,6 @@ def run_supervisor(
                     "loader": data_storage.load_data,
                     "refresher": data_storage.auto_refresh_market_data,
                     "saver": data_storage.save_data,
-                    "quant_analysis_snapshot_path": qpa.DEFAULT_QUANT_ANALYSIS_SNAPSHOT_FILE,
-                    "report_output_dir": nr.DEFAULT_REPORTS_DIR,
-                    "auto_quant_analysis_min_interval_seconds": auto_quant_analysis_min_interval_seconds,
-                    "auto_quant_analysis_price_jump_pct": auto_quant_analysis_price_jump_pct,
-                    "enable_auto_quant_analysis": enable_auto_quant_analysis,
                     "logger": logger,
                 },
                 daemon=True,
@@ -1350,9 +1227,6 @@ def main(argv=None):
     parser.add_argument("--nightly-poll-seconds", type=int, default=None, help="How often to check whether nightly alerts are due. Defaults to Settings runtime schedule.")
     parser.add_argument("--market-refresh-poll-seconds", type=int, default=None, help="How often to check whether market cache refresh is due. Defaults to Settings runtime schedule.")
     parser.add_argument("--market-refresh-interval-seconds", type=int, default=None, help="Minimum interval between market cache refreshes. Defaults to Settings runtime schedule.")
-    parser.add_argument("--auto-quant-analysis-min-interval-seconds", type=int, default=None, help="Override config-page minimum interval between auto-triggered full quant analysis runs.")
-    parser.add_argument("--auto-quant-analysis-price-jump-pct", type=float, default=None, help="Override config-page absolute price change threshold that triggers auto full quant analysis.")
-    parser.add_argument("--disable-auto-quant-analysis", action="store_true", help="Do not auto-run full quant analysis during market refresh.")
     args = parser.parse_args(argv)
     runtime_schedule = api_snapshots.load_runtime_schedule()
     trading_schedule = dict(runtime_schedule.get("trading_hours", {}) or {})
@@ -1383,9 +1257,6 @@ def main(argv=None):
         nightly_poll_seconds=nightly_poll_seconds,
         market_refresh_poll_seconds=market_refresh_poll_seconds,
         market_refresh_interval_seconds=market_refresh_interval_seconds,
-        auto_quant_analysis_min_interval_seconds=args.auto_quant_analysis_min_interval_seconds,
-        auto_quant_analysis_price_jump_pct=args.auto_quant_analysis_price_jump_pct,
-        enable_auto_quant_analysis=False if args.disable_auto_quant_analysis else None,
         api_host=args.api_host,
         api_port=args.api_port,
         frontend_host=args.frontend_host,

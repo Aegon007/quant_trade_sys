@@ -4,6 +4,7 @@
   "model_id": "finance_multi_asset_transformer",
   "role": "primary_quant_decision_candidate",
   "history_period": "10y",
+  "risk_free_benchmark": "BIL",
   "horizons": [
     63,
     126,

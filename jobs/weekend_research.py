@@ -8,7 +8,6 @@ from jobs.nightly_alerts import evaluate_current_market_risk
 from quant_core.analytics import candidate_pool as cpool
 from quant_core.analytics import core_etf_rotation as cer
 from quant_core.analytics import quant_analysis as qa
-from quant_core.analytics import portfolio_analysis as qpa
 from quant_core.analytics.strategy_compare import compare_strategies_for_symbol
 from quant_core.data import storage as du
 from quant_core.notifications import delivery_router as dr
@@ -85,11 +84,15 @@ def run_weekend_research(
     multi_horizon_snapshot = dict(multi_horizon_snapshot or {})
     if dict(multi_horizon_snapshot or {}).get("status") == "READY":
         mh_governance.append_prediction_journal(multi_horizon_snapshot)
-    multi_horizon_snapshot["governance"] = mh_governance.refresh_model_governance(
+    model_governance = mh_governance.refresh_model_governance(
         multi_horizon_snapshot,
         load_history_fn=qa.get_historical_data,
         score_outcomes=True,
         now=now,
+    )
+    multi_horizon_snapshot = mh_governance.apply_production_gate(
+        multi_horizon_snapshot,
+        model_governance,
     )
 
     core_universe = cer.load_core_etf_universe()
@@ -116,10 +119,9 @@ def run_weekend_research(
 
     satellite_snapshot = mh_pipeline.build_satellite_snapshot_from_model(multi_horizon_snapshot)
     cpool.save_satellite_candidate_pool_snapshot(satellite_snapshot)
-    strategies = su.load_strategies()
-    runtime_strategy = qpa.load_default_runtime_strategy(history_period="2y")
-    if runtime_strategy is None and strategies:
-        runtime_strategy = _runtime_strategy(strategies[0], history_period="2y")
+    # Disabled rule strategies remain useful as offline controls, never as production signals.
+    strategies = su.load_strategies(include_disabled=True)
+    runtime_strategy = _runtime_strategy(strategies[0], history_period="2y") if strategies else None
 
     top_symbols = [
         str(row.get("symbol") or "").strip().upper()

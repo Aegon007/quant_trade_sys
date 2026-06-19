@@ -166,7 +166,7 @@ class ReportingTests(unittest.TestCase):
                     "run_id": "20260511-nightly",
                     "status": "completed",
                     "steps": {
-                        "quant_analysis_snapshot": {"status": "completed"},
+                        "multi_horizon_inference": {"status": "completed"},
                         "trade_plan": {"status": "completed"},
                     },
                 },
@@ -191,55 +191,6 @@ class ReportingTests(unittest.TestCase):
         self.assertIn("ignore=1", text.lower())
         self.assertIn("Strategy validation:", text)
         self.assertIn("status=CAUTION", text)
-
-    def test_build_quant_analysis_report_includes_summary_and_symbols(self):
-        from quant_core.notifications.reporting import build_quant_analysis_report
-
-        text = build_quant_analysis_report(
-            {
-                "generated_at": "2026-05-11T23:15:00",
-                "strategy": {"id": "ma_crossover", "name": "MA"},
-                "engine": {"name": "backtrader"},
-                "history_period": "2y",
-                "summary": {
-                    "total_symbols": 2,
-                    "analyzed_symbols": 2,
-                    "buy_count": 1,
-                    "sell_count": 0,
-                    "hold_count": 1,
-                    "error_count": 0,
-                    "top_buy_symbols": ["AAPL"],
-                },
-                "symbols": [
-                    {
-                        "symbol": "AAPL",
-                        "list_type": "holding",
-                        "signal": "BUY",
-                        "signal_reason": "trend healthy",
-                        "latest_price": 109.0,
-                        "backtest": {"total_return": 0.15, "sharpe_ratio": 1.2, "win_rate": 0.6},
-                        "monte_carlo": {"expected_return": 0.03, "positive_probability": 0.62},
-                        "position_advice": {"action": "ADD", "target_weight_pct": 15.0},
-                    },
-                    {
-                        "symbol": "MSFT",
-                        "list_type": "watchlist",
-                        "signal": "HOLD",
-                        "signal_reason": "waiting",
-                        "latest_price": 206.0,
-                        "backtest": {"total_return": -0.02, "sharpe_ratio": -0.1, "win_rate": 0.0},
-                        "monte_carlo": {"expected_return": 0.01, "positive_probability": 0.52},
-                        "position_advice": None,
-                    },
-                ],
-            }
-        )
-
-        self.assertIn("Quant Analysis Report", text)
-        self.assertIn("AAPL", text)
-        self.assertIn("MSFT", text)
-        self.assertIn("BUY=1", text)
-
 
 if __name__ == "__main__":
     unittest.main()

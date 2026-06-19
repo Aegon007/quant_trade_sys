@@ -81,11 +81,12 @@ def load_histories(
     symbols: Sequence[str],
     *,
     history_period: str,
+    risk_free_symbol: str = "BIL",
     load_history_fn: Callable = qa.get_historical_data,
 ) -> tuple[dict[str, pd.DataFrame], list[dict]]:
     histories = {}
     failures = []
-    for symbol in _unique_symbols([*symbols, "SPY"]):
+    for symbol in _unique_symbols([*symbols, "SPY", risk_free_symbol]):
         try:
             frame = load_history_fn(symbol, period=history_period)
         except Exception as exc:
@@ -273,6 +274,7 @@ def run_multi_horizon_job(
         progress_pct=1,
     )
     normalized = normalize_multi_horizon_config(config) if config is not None else load_multi_horizon_config()
+    risk_free_symbol = str(normalized.get("risk_free_benchmark") or "BIL").strip().upper()
     artifacts = dict(normalized.get("artifacts", {}) or {})
     checkpoint_path = _artifact_path(str(artifacts["checkpoint_path"]))
     snapshot_path = _artifact_path(str(artifacts["snapshot_path"]))
@@ -336,6 +338,7 @@ def run_multi_horizon_job(
     histories, failures = load_histories(
         symbols,
         history_period=str(normalized["history_period"]),
+        risk_free_symbol=risk_free_symbol,
         load_history_fn=load_history_fn,
     )
     usable_symbols = [symbol for symbol in symbols if symbol in histories]
@@ -348,12 +351,15 @@ def run_multi_horizon_job(
         failed_symbol_count=len(failures),
     )
     benchmark_map = build_benchmark_map(usable_symbols)
-    if len(usable_symbols) < 2 or "SPY" not in histories:
+    if len(usable_symbols) < 2 or "SPY" not in histories or risk_free_symbol not in histories:
         snapshot = _not_ready_snapshot(
             symbols=symbols,
             checkpoint_path=checkpoint_path,
             generated_at=now,
-            reason="At least two usable asset histories plus SPY are required.",
+            reason=(
+                "At least two usable asset histories plus SPY and "
+                f"{risk_free_symbol} are required."
+            ),
         )
         snapshot["data_failures"] = failures
         save_multi_horizon_snapshot(snapshot, path=snapshot_path)
@@ -379,6 +385,7 @@ def run_multi_horizon_job(
             symbols=usable_symbols,
             horizons=normalized["horizons"],
             observation_frequency=str(normalized["observation_frequency"]),
+            risk_free_symbol=risk_free_symbol,
         )
         panel_path = _save_panel(panel, _artifact_path(str(artifacts["panel_path"])))
         _emit_progress(
@@ -395,6 +402,7 @@ def run_multi_horizon_job(
             horizons=normalized["horizons"],
             lookback=int(normalized["lookback"]),
             observation_frequency=str(normalized["observation_frequency"]),
+            risk_free_symbol=risk_free_symbol,
         )
         _emit_progress(
             progress_callback,
@@ -500,6 +508,10 @@ def run_multi_horizon_job(
         checkpoint_path=checkpoint_path,
         device=str(dict(normalized.get("training", {}) or {}).get("device", "auto")),
     )
+    snapshot["benchmarks"] = {
+        "risk_free": risk_free_symbol,
+        "market": "SPY",
+    }
     holding_symbols = {
         str(row.get("symbol") or "").strip().upper()
         for row in list(data.get("holdings", []) or [])
@@ -538,7 +550,16 @@ def run_multi_horizon_job(
         and str(row.get("symbol") or "").strip().upper() not in holding_symbols
     ]
     satellite_candidates.sort(
-        key=lambda row: float(dict(row.get("long_horizon", {}) or {}).get("blended_rank") or 0.0),
+        key=lambda row: (
+            float(
+                dict(row.get("long_horizon", {}) or {}).get(
+                    "risk_free_outperformance_probability"
+                )
+                or 0.0
+            ),
+            float(dict(row.get("long_horizon", {}) or {}).get("expected_return") or 0.0),
+            float(dict(row.get("long_horizon", {}) or {}).get("blended_rank") or 0.0),
+        ),
         reverse=True,
     )
     satellite_top3 = satellite_candidates[:3]

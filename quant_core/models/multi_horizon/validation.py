@@ -50,7 +50,12 @@ def top_k_excess_return(predictions, targets, *, k: int = 3) -> float | None:
 def evaluate_prediction_arrays(
     *,
     rank_scores,
-    targets,
+    absolute_targets,
+    risk_free_excess_targets,
+    market_excess_targets,
+    positive_probabilities,
+    risk_free_outperformance_probabilities,
+    market_outperformance_probabilities,
     quantiles,
     expert_weights,
     asset_mask,
@@ -58,7 +63,18 @@ def evaluate_prediction_arrays(
     top_k: int = 3,
 ) -> dict:
     rank_scores = np.asarray(rank_scores, dtype=float)
-    targets = np.asarray(targets, dtype=float)
+    absolute_targets = np.asarray(absolute_targets, dtype=float)
+    risk_free_excess_targets = np.asarray(risk_free_excess_targets, dtype=float)
+    market_excess_targets = np.asarray(market_excess_targets, dtype=float)
+    positive_probabilities = np.asarray(positive_probabilities, dtype=float)
+    risk_free_outperformance_probabilities = np.asarray(
+        risk_free_outperformance_probabilities,
+        dtype=float,
+    )
+    market_outperformance_probabilities = np.asarray(
+        market_outperformance_probabilities,
+        dtype=float,
+    )
     quantiles = np.asarray(quantiles, dtype=float)
     expert_weights = np.asarray(expert_weights, dtype=float)
     asset_mask = np.asarray(asset_mask, dtype=bool)
@@ -67,26 +83,130 @@ def evaluate_prediction_arrays(
     for horizon_index, horizon in enumerate(horizon_values):
         daily_ics = []
         daily_top_k = []
+        daily_top_k_risk_free = []
+        absolute_observed = []
+        median_predictions = []
+        positive_observed = []
+        positive_predictions = []
+        risk_free_observed = []
+        risk_free_predictions = []
+        market_observed = []
+        market_predictions = []
         for sample_index in range(rank_scores.shape[0]):
-            valid = asset_mask[sample_index] & np.isfinite(targets[sample_index, :, horizon_index])
-            if int(valid.sum()) < 2:
-                continue
-            score = rank_scores[sample_index, valid, horizon_index]
-            target = targets[sample_index, valid, horizon_index]
-            ic = rank_information_coefficient(score, target)
-            top_return = top_k_excess_return(score, target, k=top_k)
-            if ic is not None:
-                daily_ics.append(ic)
-            if top_return is not None:
-                daily_top_k.append(top_return)
+            rank_valid = asset_mask[sample_index] & np.isfinite(
+                market_excess_targets[sample_index, :, horizon_index]
+            )
+            if int(rank_valid.sum()) >= 2:
+                score = rank_scores[sample_index, rank_valid, horizon_index]
+                excess = market_excess_targets[sample_index, rank_valid, horizon_index]
+                ic = rank_information_coefficient(score, excess)
+                top_return = top_k_excess_return(score, excess, k=top_k)
+                if ic is not None:
+                    daily_ics.append(ic)
+                if top_return is not None:
+                    daily_top_k.append(top_return)
+            forecast_valid = asset_mask[sample_index] & np.isfinite(
+                absolute_targets[sample_index, :, horizon_index]
+            )
+            if forecast_valid.any():
+                observed = absolute_targets[sample_index, forecast_valid, horizon_index]
+                probability = positive_probabilities[sample_index, forecast_valid, horizon_index]
+                median = quantiles[sample_index, forecast_valid, horizon_index, 1]
+                absolute_observed.extend(observed.tolist())
+                median_predictions.extend(median.tolist())
+                positive_observed.extend((observed > 0).astype(float).tolist())
+                positive_predictions.extend(probability.tolist())
+                risk_free_excess = risk_free_excess_targets[
+                    sample_index,
+                    forecast_valid,
+                    horizon_index,
+                ]
+                market_excess = market_excess_targets[
+                    sample_index,
+                    forecast_valid,
+                    horizon_index,
+                ]
+                risk_free_observed.extend((risk_free_excess > 0).astype(float).tolist())
+                risk_free_predictions.extend(
+                    risk_free_outperformance_probabilities[
+                        sample_index,
+                        forecast_valid,
+                        horizon_index,
+                    ].tolist()
+                )
+                market_observed.extend((market_excess > 0).astype(float).tolist())
+                market_predictions.extend(
+                    market_outperformance_probabilities[
+                        sample_index,
+                        forecast_valid,
+                        horizon_index,
+                    ].tolist()
+                )
+                risk_free_score = risk_free_outperformance_probabilities[
+                    sample_index,
+                    forecast_valid,
+                    horizon_index,
+                ]
+                risk_free_top = top_k_excess_return(
+                    risk_free_score,
+                    risk_free_excess,
+                    k=top_k,
+                )
+                if risk_free_top is not None:
+                    daily_top_k_risk_free.append(risk_free_top)
+        observed_array = np.asarray(absolute_observed, dtype=float)
+        median_array = np.asarray(median_predictions, dtype=float)
+        positive_array = np.asarray(positive_observed, dtype=float)
+        probability_array = np.asarray(positive_predictions, dtype=float)
+        risk_free_array = np.asarray(risk_free_observed, dtype=float)
+        risk_free_probability_array = np.asarray(risk_free_predictions, dtype=float)
+        market_array = np.asarray(market_observed, dtype=float)
+        market_probability_array = np.asarray(market_predictions, dtype=float)
         horizon_reports[str(horizon)] = {
             "rank_ic": float(np.mean(daily_ics)) if daily_ics else None,
             "top_k_excess_return": float(np.mean(daily_top_k)) if daily_top_k else None,
+            "top_k_risk_free_excess_return": (
+                float(np.mean(daily_top_k_risk_free)) if daily_top_k_risk_free else None
+            ),
             "sample_count": len(daily_top_k),
+            "median_return_mae": (
+                float(np.mean(np.abs(median_array - observed_array))) if len(observed_array) else None
+            ),
+            "directional_accuracy": (
+                float(np.mean((probability_array >= 0.5) == (positive_array >= 0.5)))
+                if len(positive_array)
+                else None
+            ),
+            "brier_score": (
+                float(np.mean((probability_array - positive_array) ** 2))
+                if len(positive_array)
+                else None
+            ),
+            "positive_rate": float(np.mean(positive_array)) if len(positive_array) else None,
+            "risk_free_directional_accuracy": (
+                float(np.mean((risk_free_probability_array >= 0.5) == (risk_free_array >= 0.5)))
+                if len(risk_free_array)
+                else None
+            ),
+            "risk_free_brier_score": (
+                float(np.mean((risk_free_probability_array - risk_free_array) ** 2))
+                if len(risk_free_array)
+                else None
+            ),
+            "market_directional_accuracy": (
+                float(np.mean((market_probability_array >= 0.5) == (market_array >= 0.5)))
+                if len(market_array)
+                else None
+            ),
+            "market_brier_score": (
+                float(np.mean((market_probability_array - market_array) ** 2))
+                if len(market_array)
+                else None
+            ),
         }
 
-    expanded_mask = asset_mask[..., None] & np.isfinite(targets)
-    observed = targets[expanded_mask]
+    expanded_mask = asset_mask[..., None] & np.isfinite(absolute_targets)
+    observed = absolute_targets[expanded_mask]
     p10 = quantiles[..., 0][expanded_mask]
     p50 = quantiles[..., 1][expanded_mask]
     p90 = quantiles[..., 2][expanded_mask]
@@ -122,7 +242,9 @@ def _subset_bundle(bundle, indices):
         sequences=bundle.sequences[positions],
         market_context=bundle.market_context[positions],
         asset_mask=bundle.asset_mask[positions],
-        excess_returns=bundle.excess_returns[positions],
+        absolute_returns=bundle.absolute_returns[positions],
+        risk_free_excess_returns=bundle.risk_free_excess_returns[positions],
+        market_excess_returns=bundle.market_excess_returns[positions],
         favorable_excursion=bundle.favorable_excursion[positions],
         adverse_excursion=bundle.adverse_excursion[positions],
         timing_targets=bundle.timing_targets[positions],
@@ -130,6 +252,7 @@ def _subset_bundle(bundle, indices):
         symbols=bundle.symbols,
         horizons=bundle.horizons,
         feature_columns=bundle.feature_columns,
+        risk_free_symbol=bundle.risk_free_symbol,
     )
 
 
@@ -163,6 +286,25 @@ def _aggregate_fold_reports(fold_reports, *, horizons):
         result["horizons"][str(horizon)] = {
             "rank_ic": _finite_mean([row.get("rank_ic") for row in rows]),
             "top_k_excess_return": _finite_mean([row.get("top_k_excess_return") for row in rows]),
+            "top_k_risk_free_excess_return": _finite_mean(
+                [row.get("top_k_risk_free_excess_return") for row in rows]
+            ),
+            "median_return_mae": _finite_mean([row.get("median_return_mae") for row in rows]),
+            "directional_accuracy": _finite_mean([row.get("directional_accuracy") for row in rows]),
+            "brier_score": _finite_mean([row.get("brier_score") for row in rows]),
+            "positive_rate": _finite_mean([row.get("positive_rate") for row in rows]),
+            "risk_free_directional_accuracy": _finite_mean(
+                [row.get("risk_free_directional_accuracy") for row in rows]
+            ),
+            "risk_free_brier_score": _finite_mean(
+                [row.get("risk_free_brier_score") for row in rows]
+            ),
+            "market_directional_accuracy": _finite_mean(
+                [row.get("market_directional_accuracy") for row in rows]
+            ),
+            "market_brier_score": _finite_mean(
+                [row.get("market_brier_score") for row in rows]
+            ),
             "fold_count": len([row for row in rows if row.get("rank_ic") is not None]),
         }
     result["quantile_coverage"] = {
@@ -200,6 +342,89 @@ def _finite_mean(values):
     return float(np.mean(finite)) if finite else None
 
 
+def evaluate_promotion_gates(
+    *,
+    candidate,
+    baseline,
+    scratch,
+    primary_horizon: int,
+    fold_count: int,
+    minimum_folds: int = 3,
+) -> dict:
+    horizon = str(int(primary_horizon))
+    candidate_row = dict(dict(candidate or {}).get("horizons", {}).get(horizon, {}) or {})
+    baseline_row = dict(dict(baseline or {}).get("horizons", {}).get(horizon, {}) or {})
+    scratch_row = dict(dict(scratch or {}).get("horizons", {}).get(horizon, {}) or {})
+    candidate_rank_ic = candidate_row.get("rank_ic")
+    candidate_top = candidate_row.get("top_k_excess_return")
+    candidate_risk_free_top = candidate_row.get("top_k_risk_free_excess_return")
+    directional_accuracy = candidate_row.get("directional_accuracy")
+    brier_score = candidate_row.get("brier_score")
+    risk_free_directional_accuracy = candidate_row.get("risk_free_directional_accuracy")
+    risk_free_brier_score = candidate_row.get("risk_free_brier_score")
+    median_return_mae = candidate_row.get("median_return_mae")
+    baseline_top = baseline_row.get("top_k_excess_return")
+    scratch_top = scratch_row.get("top_k_excess_return")
+    scratch_risk_free_top = scratch_row.get("top_k_risk_free_excess_return")
+
+    def positive(value) -> bool:
+        try:
+            return bool(np.isfinite(float(value)) and float(value) > 0)
+        except (TypeError, ValueError):
+            return False
+
+    def greater(left, right) -> bool:
+        try:
+            return bool(np.isfinite(float(left)) and np.isfinite(float(right)) and float(left) > float(right))
+        except (TypeError, ValueError):
+            return False
+
+    def less(value, threshold) -> bool:
+        try:
+            return bool(np.isfinite(float(value)) and float(value) < float(threshold))
+        except (TypeError, ValueError):
+            return False
+
+    gates = {
+        "minimum_walk_forward_folds": int(fold_count) >= int(minimum_folds),
+        "absolute_direction_better_than_chance": greater(directional_accuracy, 0.5),
+        "absolute_probability_calibrated": less(brier_score, 0.25),
+        "risk_free_direction_better_than_chance": greater(
+            risk_free_directional_accuracy,
+            0.5,
+        ),
+        "risk_free_probability_calibrated": less(risk_free_brier_score, 0.25),
+        "median_return_error_bounded": less(median_return_mae, 0.20),
+        "positive_top_k_risk_free_excess": positive(candidate_risk_free_top),
+        "positive_rank_ic": positive(candidate_rank_ic),
+        "positive_top_k_excess_return": positive(candidate_top),
+        "beats_baseline_top_k": greater(candidate_top, baseline_top),
+        "pretraining_incremental": greater(
+            candidate_risk_free_top,
+            scratch_risk_free_top,
+        ),
+        "moe_stable": not bool(dict(candidate or {}).get("moe", {}).get("collapsed")),
+    }
+    return {
+        "status": "PASS" if all(gates.values()) else "REVIEW",
+        "primary_horizon": int(primary_horizon),
+        "gates": gates,
+        "metrics": {
+            "candidate_rank_ic": candidate_rank_ic,
+            "candidate_top_k_excess_return": candidate_top,
+            "candidate_top_k_risk_free_excess_return": candidate_risk_free_top,
+            "directional_accuracy": directional_accuracy,
+            "brier_score": brier_score,
+            "risk_free_directional_accuracy": risk_free_directional_accuracy,
+            "risk_free_brier_score": risk_free_brier_score,
+            "median_return_mae": median_return_mae,
+            "baseline_top_k_excess_return": baseline_top,
+            "scratch_top_k_excess_return": scratch_top,
+            "scratch_top_k_risk_free_excess_return": scratch_risk_free_top,
+        },
+    }
+
+
 def _baseline_report(bundle, test_indices, *, top_k):
     feature_index = (
         bundle.feature_columns.index("relative_strength_252d")
@@ -208,7 +433,7 @@ def _baseline_report(bundle, test_indices, *, top_k):
     )
     score = bundle.sequences[np.asarray(test_indices), :, -1, feature_index]
     score = np.repeat(score[..., None], len(bundle.horizons), axis=-1)
-    targets = bundle.excess_returns[np.asarray(test_indices)]
+    targets = bundle.market_excess_returns[np.asarray(test_indices)]
     mask = bundle.asset_mask[np.asarray(test_indices)]
     reports = {}
     for horizon_index, horizon in enumerate(bundle.horizons):
@@ -359,7 +584,14 @@ def walk_forward_validate_bundle(
             candidate_outputs = _predict_bundle(candidate_model, test_bundle, candidate_metadata, device=device)
             candidate_report = evaluate_prediction_arrays(
                 rank_scores=candidate_outputs["rank_scores"],
-                targets=test_bundle.excess_returns,
+                absolute_targets=test_bundle.absolute_returns,
+                risk_free_excess_targets=test_bundle.risk_free_excess_returns,
+                market_excess_targets=test_bundle.market_excess_returns,
+                positive_probabilities=1.0 / (1.0 + np.exp(-candidate_outputs["positive_return_logits"])),
+                risk_free_outperformance_probabilities=1.0
+                / (1.0 + np.exp(-candidate_outputs["risk_free_outperformance_logits"])),
+                market_outperformance_probabilities=1.0
+                / (1.0 + np.exp(-candidate_outputs["market_outperformance_logits"])),
                 quantiles=candidate_outputs["return_quantiles"],
                 expert_weights=candidate_outputs["expert_weights"],
                 asset_mask=test_bundle.asset_mask,
@@ -387,7 +619,14 @@ def walk_forward_validate_bundle(
                 scratch_outputs = _predict_bundle(scratch_model, test_bundle, scratch_metadata, device=device)
                 scratch_report = evaluate_prediction_arrays(
                     rank_scores=scratch_outputs["rank_scores"],
-                    targets=test_bundle.excess_returns,
+                    absolute_targets=test_bundle.absolute_returns,
+                    risk_free_excess_targets=test_bundle.risk_free_excess_returns,
+                    market_excess_targets=test_bundle.market_excess_returns,
+                    positive_probabilities=1.0 / (1.0 + np.exp(-scratch_outputs["positive_return_logits"])),
+                    risk_free_outperformance_probabilities=1.0
+                    / (1.0 + np.exp(-scratch_outputs["risk_free_outperformance_logits"])),
+                    market_outperformance_probabilities=1.0
+                    / (1.0 + np.exp(-scratch_outputs["market_outperformance_logits"])),
                     quantiles=scratch_outputs["return_quantiles"],
                     expert_weights=scratch_outputs["expert_weights"],
                     asset_mask=test_bundle.asset_mask,
@@ -416,29 +655,28 @@ def walk_forward_validate_bundle(
     candidate = _aggregate_fold_reports(candidate_reports, horizons=bundle.horizons)
     scratch = _aggregate_fold_reports(scratch_reports, horizons=bundle.horizons) if scratch_reports else {}
     baseline = _aggregate_fold_reports(baseline_reports, horizons=bundle.horizons)
-    primary_horizon = str(bundle.horizons[-1])
-    candidate_top = dict(candidate.get("horizons", {}).get(primary_horizon, {}) or {}).get("top_k_excess_return")
-    baseline_top = dict(baseline.get("horizons", {}).get(primary_horizon, {}) or {}).get("top_k_excess_return")
-    scratch_top = dict(scratch.get("horizons", {}).get(primary_horizon, {}) or {}).get("top_k_excess_return")
-    beats_baseline = candidate_top is not None and baseline_top is not None and candidate_top > baseline_top
-    pretraining_incremental = (
-        candidate_top is not None
-        and scratch_top is not None
-        and candidate_top > scratch_top
+    gate_report = evaluate_promotion_gates(
+        candidate=candidate,
+        baseline=baseline,
+        scratch=scratch,
+        primary_horizon=bundle.horizons[-1],
+        fold_count=len(folds),
     )
     return {
         "schema_version": 1,
-        "status": "PASS" if beats_baseline and not candidate["moe"]["collapsed"] else "REVIEW",
+        "status": gate_report["status"],
         "fold_count": len(folds),
         "horizons": list(bundle.horizons),
         "candidate": candidate,
         "scratch": scratch,
         "relative_strength_baseline": baseline,
         "governance": {
-            "beats_baseline_252d_top_k": beats_baseline,
-            "pretraining_incremental_252d_top_k": pretraining_incremental,
+            "beats_baseline_252d_top_k": gate_report["gates"]["beats_baseline_top_k"],
+            "pretraining_incremental_252d_top_k": gate_report["gates"]["pretraining_incremental"],
             "moe_collapsed": bool(candidate["moe"]["collapsed"]),
             "automatic_promotion": False,
+            "promotion_gates": gate_report["gates"],
+            "promotion_metrics": gate_report["metrics"],
         },
         "folds": folds,
     }

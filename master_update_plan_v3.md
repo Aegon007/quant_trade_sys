@@ -1,5 +1,10 @@
 # Quant Trade System Master Update Plan V3
 
+> 模型规范优先级：V3 定义系统架构和产品主线；
+> `multi_horizon_model_upgrade_plan.md` 定义当前神经模型的详细目标、
+> 标签、验证门槛和 checkpoint 晋升规则。模型专项文档更新时，V3
+> 必须同步记录不可违反的产品与治理约束。
+
 ## 0. 文档定位
 
 ### Previous System Version
@@ -566,6 +571,74 @@ V3 要让模型可替换，而不是让每个模型都把自己的输入、输�
 - warnings
 
 新模型必须先接入统一接口，再进入策略验证或周末研究。
+
+#### 4.3.7 神经量化模型目标与治理约束
+
+当前默认神经模型采用 `target schema v2`。模型的训练逻辑必须明确为：
+
+```text
+历史某个观察时点之前的行情与可用特征
+  -> 对应历史中后来真实发生的 63/126/252 日结果
+  -> 训练多周期概率预测模型
+  -> 输入当前最新历史窗口
+  -> 预测尚未发生的未来收益概率与区间
+```
+
+主训练目标：
+
+- 未来 `63/126/252` 日绝对收益分布
+- 未来收益大于零的概率
+- 未来跑赢短期美债总回报的概率与超额收益
+- P10 / P50 / P90 绝对收益区间
+- 由当前价格换算出的 P10 / P50 / P90 未来价格区间
+- 最大有利波动和最大不利波动
+
+机会成本基准：
+
+- 默认使用 `BIL` 作为短期美国国债总回报代理
+- 该标的必须可以在模型配置中替换，例如改为 `SGOV`
+- 短债基准用于判断承担股票风险是否值得，不是把长期国债 ETF
+  当作无风险资产
+
+辅助目标：
+
+- 跑赢 `SPY` 的概率
+- 相对 `SPY` 的超额收益
+- 同一观察日期下的横截面排序和 Top 3 选择
+
+辅助目标不能反过来替代绝对收益和短债机会成本预测。系统不允许仅凭
+横截面排名将模型描述为“预测未来上涨”。
+
+样本外验证至少包含：
+
+- purged chronological walk-forward，禁止随机打乱时间序列
+- 至少三个有效 folds
+- 绝对收益 P50 的 MAE
+- 上涨方向准确率和 Brier score
+- 跑赢短债方向准确率和 Brier score
+- Top 3 相对短债的实际超额收益
+- P10 / P50 / P90 empirical coverage
+- 辅助 Rank IC 和 Top 3 相对 SPY 超额收益
+- 预训练模型与同架构从零训练的 ablation
+- MoE expert collapse 检查
+
+模型治理：
+
+- 训练完成不等于投入生产
+- validation 未通过时，模型只能输出 `SHADOW` 预测
+- shadow 预测可以展示，但必须被生产闸门降级为 `HOLD/WATCH`
+- validation 通过后只进入 `ELIGIBLE_FOR_MANUAL_PROMOTION`
+- 用户必须在 `Research & Models` 手动晋升
+- 晋升与 checkpoint version 严格绑定
+- 每次重新训练产生新 version，并自动回到 `SHADOW`
+- 旧 target schema checkpoint 必须拒绝加载，不能兼容性沿用
+
+当前实施状态：
+
+- target schema v2、双基准训练头、价格区间和验证指标已完成
+- 旧相对排名 checkpoint 已失效
+- 下一次操作必须是重新训练并查看 walk-forward 结果
+- 只有验证通过并手动晋升后，夜间计划才能使用该版本的正式动作
 
 ---
 
@@ -1429,6 +1502,12 @@ V3 测试按能力分类，而不是按过细迁移阶段分类。三步推进�
 - model registry loads active models
 - model prediction output follows interface schema
 - model validation output follows interface schema
+- historical labels include absolute, short-Treasury-relative, and
+  SPY-relative outcomes without leakage
+- old target-schema checkpoints are rejected
+- unpromoted model actions are gated to HOLD / WATCH
+- promotion is bound to the exact checkpoint version
+- retraining returns the model to SHADOW
 - strategy review state enters Change Feed without automatic promotion
 
 ### 6.5 Market Monitor / Intraday Tactical

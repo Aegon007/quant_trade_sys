@@ -23,6 +23,8 @@ from quant_core.jobs import job_registry
 from quant_core.ledger import transactions
 from quant_core.notifications import notification_config
 from quant_core.models.multi_horizon import config as multi_horizon_config
+from quant_core.models.multi_horizon import governance as multi_horizon_governance
+from quant_core.models.multi_horizon import snapshot as multi_horizon_snapshot
 from quant_core.portfolio import actions as portfolio_actions
 from quant_core.snapshots import system_snapshot
 
@@ -180,7 +182,27 @@ def train_multi_horizon_model() -> dict:
         train=True,
         progress_callback=build_job_progress_callback("manual-multi-horizon-training"),
     )
-    return result if isinstance(result, dict) else {"message": "multi-horizon training completed", "result": result}
+    if not isinstance(result, dict):
+        return {"message": "multi-horizon training completed", "result": result}
+    if result.get("status") == "READY":
+        multi_horizon_governance.append_prediction_journal(result)
+    governance = multi_horizon_governance.refresh_model_governance(result)
+    gated = multi_horizon_governance.apply_production_gate(result, governance)
+    multi_horizon_snapshot.save_multi_horizon_snapshot(gated)
+    return gated
+
+
+def promote_multi_horizon_model() -> dict:
+    snapshot = multi_horizon_snapshot.load_multi_horizon_snapshot()
+    governance = multi_horizon_governance.load_model_governance_snapshot()
+    promoted = multi_horizon_governance.approve_model_for_production(snapshot, governance)
+    gated = multi_horizon_governance.apply_production_gate(snapshot, promoted)
+    multi_horizon_snapshot.save_multi_horizon_snapshot(gated)
+    return {
+        "message": "multi-horizon model promoted to production",
+        "model_version": promoted.get("approved_model_version"),
+        "governance": promoted,
+    }
 
 
 def import_robinhood_csv_text(csv_text: str, *, filename: str = "", replace_existing: bool = False) -> dict:

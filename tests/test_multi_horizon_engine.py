@@ -7,19 +7,31 @@ import pandas as pd
 
 
 class MultiHorizonDatasetTests(unittest.TestCase):
-    def test_forward_labels_are_benchmark_relative_and_tail_is_unknown(self):
+    def test_forward_labels_include_absolute_and_benchmark_relative_returns(self):
         from quant_core.models.multi_horizon.dataset import build_forward_labels
 
         index = pd.date_range("2024-01-01", periods=12, freq="D")
         asset = pd.DataFrame({"Close": np.arange(100.0, 112.0)}, index=index)
         benchmark = pd.DataFrame({"Close": np.arange(100.0, 106.0, 0.5)}, index=index)
+        treasury = pd.DataFrame({"Close": np.linspace(100.0, 101.1, len(index))}, index=index)
 
-        labels = build_forward_labels(asset, benchmark, horizons=(2, 4))
+        labels = build_forward_labels(asset, benchmark, treasury, horizons=(2, 4))
 
         expected_asset_return = 102.0 / 100.0 - 1.0
         expected_benchmark_return = 101.0 / 100.0 - 1.0
-        self.assertAlmostEqual(labels.loc[index[0], "excess_return_2d"], expected_asset_return - expected_benchmark_return)
-        self.assertTrue(labels["excess_return_4d"].tail(4).isna().all())
+        expected_treasury_return = 100.2 / 100.0 - 1.0
+        self.assertAlmostEqual(labels.loc[index[0], "forward_return_2d"], expected_asset_return)
+        self.assertAlmostEqual(
+            labels.loc[index[0], "market_excess_return_2d"],
+            expected_asset_return - expected_benchmark_return,
+        )
+        self.assertAlmostEqual(
+            labels.loc[index[0], "risk_free_excess_return_2d"],
+            expected_asset_return - expected_treasury_return,
+        )
+        self.assertTrue(labels["forward_return_4d"].tail(4).isna().all())
+        self.assertTrue(labels["market_excess_return_4d"].tail(4).isna().all())
+        self.assertTrue(labels["risk_free_excess_return_4d"].tail(4).isna().all())
         self.assertTrue(labels["max_adverse_4d"].tail(4).isna().all())
 
     def test_panel_builder_uses_only_features_available_at_observation_date(self):
@@ -38,7 +50,9 @@ class MultiHorizonDatasetTests(unittest.TestCase):
         )
         asset = benchmark.copy()
         asset["Close"] = np.linspace(50, 90, len(index))
-        histories = {"AAA": asset, "SPY": benchmark}
+        treasury = benchmark.copy()
+        treasury["Close"] = np.linspace(100, 104, len(index))
+        histories = {"AAA": asset, "SPY": benchmark, "BIL": treasury}
 
         panel = build_panel_frame(
             histories,
@@ -49,7 +63,8 @@ class MultiHorizonDatasetTests(unittest.TestCase):
         )
 
         self.assertFalse(panel.empty)
-        self.assertIn("excess_return_63d", panel.columns)
+        self.assertIn("market_excess_return_63d", panel.columns)
+        self.assertIn("risk_free_excess_return_63d", panel.columns)
         self.assertIn("relative_strength_126d", panel.columns)
         comparable = panel.dropna(subset=["return_63d", "relative_strength_63d"])
         first_date = pd.Timestamp(comparable.iloc[0]["observation_date"])
@@ -97,7 +112,9 @@ class MultiAssetTransformerTests(unittest.TestCase):
         )
 
         self.assertEqual(tuple(outputs["rank_scores"].shape), (2, 6, 3))
-        self.assertEqual(tuple(outputs["outperformance_logits"].shape), (2, 6, 3))
+        self.assertEqual(tuple(outputs["positive_return_logits"].shape), (2, 6, 3))
+        self.assertEqual(tuple(outputs["risk_free_outperformance_logits"].shape), (2, 6, 3))
+        self.assertEqual(tuple(outputs["market_outperformance_logits"].shape), (2, 6, 3))
         self.assertEqual(tuple(outputs["return_quantiles"].shape), (2, 6, 3, 3))
         self.assertEqual(tuple(outputs["adverse_excursion"].shape), (2, 6, 3))
         self.assertEqual(tuple(outputs["timing_logits"].shape), (2, 6, 5))
@@ -116,7 +133,7 @@ class MultiAssetTransformerTests(unittest.TestCase):
 
         index = pd.date_range("2022-01-03", periods=360, freq="B")
         histories = {}
-        for offset, symbol in enumerate(("AAA", "BBB", "CCC", "SPY")):
+        for offset, symbol in enumerate(("AAA", "BBB", "CCC", "SPY", "BIL")):
             close = np.linspace(80 + offset * 5, 125 + offset * 7, len(index))
             close += np.sin(np.arange(len(index)) / (11 + offset)) * (1 + offset * 0.2)
             histories[symbol] = pd.DataFrame(
@@ -139,7 +156,9 @@ class MultiAssetTransformerTests(unittest.TestCase):
         )
         self.assertGreater(bundle.sequences.shape[0], 2)
         self.assertEqual(bundle.sequences.shape[1:], (3, 80, len(bundle.feature_columns)))
-        self.assertEqual(bundle.excess_returns.shape[-1], 2)
+        self.assertEqual(bundle.market_excess_returns.shape[-1], 2)
+        self.assertEqual(bundle.absolute_returns.shape, bundle.market_excess_returns.shape)
+        self.assertEqual(bundle.risk_free_excess_returns.shape, bundle.absolute_returns.shape)
 
         config = MultiAssetTransformerConfig(
             feature_count=len(bundle.feature_columns),
@@ -185,7 +204,7 @@ class MultiAssetTransformerTests(unittest.TestCase):
 
         index = pd.date_range("2022-01-03", periods=260, freq="B")
         histories = {}
-        for offset, symbol in enumerate(("AAA", "BBB", "SPY")):
+        for offset, symbol in enumerate(("AAA", "BBB", "SPY", "BIL")):
             close = np.linspace(80 + offset, 115 + offset * 2, len(index))
             histories[symbol] = pd.DataFrame(
                 {
@@ -281,7 +300,9 @@ class MultiHorizonFusionTests(unittest.TestCase):
 
         outputs = {
             "rank_scores": torch.tensor([[[0.2, 0.8, 1.2], [1.0, 0.1, -0.2]]]),
-            "outperformance_logits": torch.tensor([[[0.5, 1.0, 1.5], [0.1, -0.5, -1.0]]]),
+            "positive_return_logits": torch.tensor([[[1.0, 1.4, 1.8], [-0.2, -0.8, -1.2]]]),
+            "risk_free_outperformance_logits": torch.tensor([[[0.8, 1.2, 1.6], [-0.1, -0.7, -1.1]]]),
+            "market_outperformance_logits": torch.tensor([[[0.5, 1.0, 1.5], [0.1, -0.5, -1.0]]]),
             "return_quantiles": torch.tensor(
                 [[
                     [[-0.05, 0.08, 0.20], [-0.08, 0.12, 0.30], [-0.12, 0.18, 0.42]],
@@ -298,12 +319,19 @@ class MultiHorizonFusionTests(unittest.TestCase):
             symbols=["MSFT", "XYZ"],
             horizons=[63, 126, 252],
             current_weights_pct={"MSFT": 5.0, "XYZ": 2.0},
+            current_prices={"MSFT": 400.0, "XYZ": 100.0},
             risk_regime="NORMAL",
             model_metadata={"model_id": "finance_multi_asset_transformer", "trained_at": "2026-06-18"},
         )
 
         self.assertEqual(snapshot["symbols"][0]["symbol"], "MSFT")
         self.assertEqual(snapshot["symbols"][0]["long_horizon"]["state"], "ATTRACTIVE")
+        self.assertGreater(snapshot["symbols"][0]["long_horizon"]["horizons"]["252"]["positive_return_probability"], 0.8)
+        self.assertGreater(snapshot["symbols"][0]["long_horizon"]["horizons"]["252"]["risk_free_outperformance_probability"], 0.8)
+        self.assertAlmostEqual(
+            snapshot["symbols"][0]["long_horizon"]["horizons"]["252"]["price_range"]["p50"],
+            472.0,
+        )
         self.assertIn(snapshot["symbols"][0]["decision"]["action"], {"ACCUMULATE", "HOLD"})
         self.assertEqual(snapshot["symbols"][1]["timing"]["state"], "DETERIORATING")
         self.assertEqual(snapshot["summary"]["symbol_count"], 2)
@@ -355,10 +383,40 @@ class MultiHorizonValidationTests(unittest.TestCase):
                     [[0.2], [0.8], [0.4]],
                 ]
             ),
-            targets=np.array(
+            market_excess_targets=np.array(
                 [
                     [[0.12], [0.04], [-0.03]],
                     [[-0.02], [0.11], [0.03]],
+                ]
+            ),
+            risk_free_excess_targets=np.array(
+                [
+                    [[0.14], [0.06], [-0.02]],
+                    [[0.00], [0.13], [0.05]],
+                ]
+            ),
+            absolute_targets=np.array(
+                [
+                    [[0.15], [0.07], [-0.01]],
+                    [[0.01], [0.14], [0.06]],
+                ]
+            ),
+            positive_probabilities=np.array(
+                [
+                    [[0.85], [0.70], [0.35]],
+                    [[0.60], [0.90], [0.75]],
+                ]
+            ),
+            risk_free_outperformance_probabilities=np.array(
+                [
+                    [[0.82], [0.68], [0.32]],
+                    [[0.50], [0.88], [0.72]],
+                ]
+            ),
+            market_outperformance_probabilities=np.array(
+                [
+                    [[0.80], [0.65], [0.30]],
+                    [[0.45], [0.85], [0.70]],
                 ]
             ),
             quantiles=np.array(
@@ -380,6 +438,11 @@ class MultiHorizonValidationTests(unittest.TestCase):
 
         self.assertGreater(report["horizons"]["63"]["rank_ic"], 0.9)
         self.assertGreater(report["horizons"]["63"]["top_k_excess_return"], 0.1)
+        self.assertGreater(report["horizons"]["63"]["directional_accuracy"], 0.8)
+        self.assertLess(report["horizons"]["63"]["brier_score"], 0.2)
+        self.assertGreater(report["horizons"]["63"]["risk_free_directional_accuracy"], 0.8)
+        self.assertLess(report["horizons"]["63"]["risk_free_brier_score"], 0.2)
+        self.assertLess(report["horizons"]["63"]["median_return_mae"], 0.08)
         self.assertGreater(report["quantile_coverage"]["p90"], report["quantile_coverage"]["p10"])
         self.assertFalse(report["moe"]["collapsed"])
 
@@ -432,6 +495,114 @@ class MultiHorizonValidationTests(unittest.TestCase):
         self.assertGreater(report["horizons"]["2"]["rank_ic"], 0.9)
         self.assertGreater(report["horizons"]["2"]["top_k_excess_return"], 0.09)
 
+    def test_validation_gate_requires_economic_and_model_quality_checks(self):
+        from quant_core.models.multi_horizon.validation import evaluate_promotion_gates
+
+        passed = evaluate_promotion_gates(
+            candidate={
+                "horizons": {
+                    "252": {
+                        "rank_ic": 0.08,
+                        "top_k_excess_return": 0.12,
+                        "top_k_risk_free_excess_return": 0.14,
+                        "directional_accuracy": 0.62,
+                        "brier_score": 0.21,
+                        "risk_free_directional_accuracy": 0.64,
+                        "risk_free_brier_score": 0.20,
+                        "median_return_mae": 0.12,
+                    }
+                },
+                "moe": {"collapsed": False},
+            },
+            baseline={"horizons": {"252": {"top_k_excess_return": 0.04}}},
+            scratch={
+                "horizons": {
+                    "252": {
+                        "top_k_excess_return": 0.07,
+                        "top_k_risk_free_excess_return": 0.08,
+                    }
+                }
+            },
+            primary_horizon=252,
+            fold_count=3,
+        )
+        failed = evaluate_promotion_gates(
+            candidate={
+                "horizons": {
+                    "252": {
+                        "rank_ic": -0.01,
+                        "top_k_excess_return": 0.03,
+                        "top_k_risk_free_excess_return": -0.01,
+                        "directional_accuracy": 0.48,
+                        "brier_score": 0.27,
+                        "risk_free_directional_accuracy": 0.47,
+                        "risk_free_brier_score": 0.28,
+                        "median_return_mae": 0.24,
+                    }
+                },
+                "moe": {"collapsed": False},
+            },
+            baseline={"horizons": {"252": {"top_k_excess_return": 0.04}}},
+            scratch={
+                "horizons": {
+                    "252": {
+                        "top_k_excess_return": 0.02,
+                        "top_k_risk_free_excess_return": 0.01,
+                    }
+                }
+            },
+            primary_horizon=252,
+            fold_count=2,
+        )
+
+        self.assertEqual(passed["status"], "PASS")
+        self.assertTrue(all(passed["gates"].values()))
+        self.assertEqual(failed["status"], "REVIEW")
+        self.assertFalse(failed["gates"]["minimum_walk_forward_folds"])
+        self.assertFalse(failed["gates"]["risk_free_direction_better_than_chance"])
+        self.assertFalse(failed["gates"]["positive_rank_ic"])
+        self.assertFalse(failed["gates"]["beats_baseline_top_k"])
+
+    def test_unapproved_model_is_shadow_only_until_manual_promotion(self):
+        from quant_core.models.multi_horizon.governance import (
+            apply_production_gate,
+            approve_model_for_production,
+            build_model_governance_snapshot,
+        )
+
+        prediction = {
+            "status": "READY",
+            "model": {"model_id": "finance_multi_asset_transformer", "version": "v1"},
+            "symbols": [
+                {"symbol": "MSFT", "list_type": "holding", "decision": {"action": "ACCUMULATE"}},
+                {"symbol": "NVDA", "list_type": "candidate_pool", "decision": {"action": "PROBE"}},
+            ],
+        }
+        validation = {"status": "PASS", "governance": {"moe_collapsed": False}}
+        governance = build_model_governance_snapshot(
+            prediction_snapshot=prediction,
+            validation_snapshot=validation,
+        )
+        shadow = apply_production_gate(prediction, governance)
+
+        self.assertEqual(governance["status"], "ELIGIBLE_FOR_MANUAL_PROMOTION")
+        self.assertFalse(shadow["production_authorized"])
+        self.assertEqual(shadow["symbols"][0]["decision"]["action"], "HOLD")
+        self.assertEqual(shadow["symbols"][1]["decision"]["action"], "WATCH")
+        self.assertEqual(shadow["symbols"][0]["shadow_decision"]["action"], "ACCUMULATE")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = str(Path(temp_dir) / "governance.json")
+            promoted = approve_model_for_production(
+                prediction,
+                governance,
+                path=path,
+            )
+        production = apply_production_gate(shadow, promoted)
+        self.assertEqual(promoted["status"], "PRODUCTION")
+        self.assertTrue(production["production_authorized"])
+        self.assertEqual(production["symbols"][0]["decision"]["action"], "ACCUMULATE")
+
 
 class MultiHorizonConfigTests(unittest.TestCase):
     def test_config_cannot_auto_promote_or_enable_traditional_ml_by_accident(self):
@@ -440,12 +611,14 @@ class MultiHorizonConfigTests(unittest.TestCase):
         config = normalize_multi_horizon_config(
             {
                 "horizons": [252, 63, 63],
+                "risk_free_benchmark": "sgov",
                 "promotion": {"automatic": True},
                 "traditional_ml_policy": {"production_enabled": True},
             }
         )
 
         self.assertEqual(config["horizons"], [63, 252])
+        self.assertEqual(config["risk_free_benchmark"], "SGOV")
         self.assertFalse(config["promotion"]["automatic"])
         self.assertFalse(config["traditional_ml_policy"]["production_enabled"])
 
@@ -464,6 +637,23 @@ class MultiHorizonConfigTests(unittest.TestCase):
 
         self.assertEqual(symbols[:3], ["MSFT", "IAU", "BABA"])
         self.assertEqual(len(symbols), 4)
+
+    def test_history_loader_includes_market_and_configured_treasury_benchmarks(self):
+        from quant_core.models.multi_horizon.pipeline import load_histories
+
+        calls = []
+        index = pd.date_range("2025-01-01", periods=3, freq="B")
+        frame = pd.DataFrame({"Close": [100.0, 101.0, 102.0]}, index=index)
+        histories, failures = load_histories(
+            ["MSFT"],
+            history_period="2y",
+            risk_free_symbol="SGOV",
+            load_history_fn=lambda symbol, period: calls.append((symbol, period)) or frame,
+        )
+
+        self.assertEqual(set(histories), {"MSFT", "SPY", "SGOV"})
+        self.assertFalse(failures)
+        self.assertEqual({symbol for symbol, _ in calls}, {"MSFT", "SPY", "SGOV"})
 
     def test_missing_checkpoint_produces_explicit_not_ready_snapshot(self):
         from quant_core.models.multi_horizon.pipeline import run_multi_horizon_job
