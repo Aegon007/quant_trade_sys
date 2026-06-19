@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { postApi } from "../api";
 import { DecisionTable } from "../components/DecisionTable";
 import { Facts, MetricStrip, Panel, SnapshotFrame, Status } from "../components/Primitives";
@@ -13,6 +13,7 @@ function horizonRows(section: Dict): unknown[] {
 
 export default function ResearchModels() {
   const { data, error, loading, reload } = useSnapshot<Dict>("/api/research-models");
+  const jobs = useSnapshot<Dict>("/api/job-status");
   const payload = asDict(data?.payload);
   const snapshot = asDict(payload.multi_horizon_snapshot);
   const validation = asDict(payload.validation);
@@ -22,19 +23,34 @@ export default function ResearchModels() {
   const governance = asDict(validation.governance);
   const lifecycle = asDict(payload.governance);
   const registry = asDict(payload.model_registry);
-  const [busy, setBusy] = useState(false);
+  const trainingJob = asDict(
+    asDict(asDict(jobs.data?.payload).jobs)["manual-multi-horizon-training"],
+  );
+  const jobState = text(trainingJob.state, "").toLowerCase();
+  const isTraining = ["started", "running"].includes(jobState);
+  const [launching, setLaunching] = useState(false);
   const [result, setResult] = useState("");
 
+  useEffect(() => {
+    const timer = window.setInterval(jobs.reload, isTraining ? 2000 : 5000);
+    return () => window.clearInterval(timer);
+  }, [isTraining]);
+
+  useEffect(() => {
+    if (jobState === "completed") reload();
+  }, [jobState]);
+
   async function trainModel() {
-    setBusy(true);
+    setLaunching(true);
     setResult("");
     try {
       const response = await postApi<Dict>("/api/actions/train-multi-horizon");
-      setResult(text(response.message, "Training accepted. Track progress in Operations."));
+      setResult(text(response.message, "Training accepted."));
+      jobs.reload();
     } catch (exc) {
       setResult((exc as Error).message);
     } finally {
-      setBusy(false);
+      setLaunching(false);
     }
   }
 
@@ -50,14 +66,32 @@ export default function ResearchModels() {
       <Panel
         title="Finance multi-asset Transformer"
         subtitle="Patch temporal encoder, cross-asset attention, sparse regime experts, and multi-horizon quantile heads."
-        action={<button disabled={busy} onClick={trainModel}>{busy ? "Starting..." : "Train and validate model"}</button>}
+        action={
+          <button disabled={launching || isTraining} onClick={trainModel}>
+            {launching ? "Starting..." : isTraining ? "Training in progress..." : "Train and validate model"}
+          </button>
+        }
       >
+        <div className="training-progress">
+          <div>
+            <Status value={jobState || "IDLE"} />
+            <strong>{text(trainingJob.detail, "No active training job")}</strong>
+            <span>
+              {text(trainingJob.stage, "idle")}
+              {trainingJob.device ? ` · ${text(trainingJob.device)}` : ""}
+              {trainingJob.epoch ? ` · epoch ${text(trainingJob.epoch)}/${text(trainingJob.epochs)}` : ""}
+              {trainingJob.loss !== undefined ? ` · loss ${Number(trainingJob.loss).toFixed(4)}` : ""}
+            </span>
+          </div>
+          <progress max="100" value={Number(trainingJob.progress_pct ?? 0)} />
+          <b>{Number(trainingJob.progress_pct ?? 0).toFixed(0)}%</b>
+        </div>
         <Facts rows={[
           ["Model ID", text(asDict(snapshot.model).model_id, "finance_multi_asset_transformer")],
           ["Horizons", text(snapshot.horizons ?? asDict(payload.config).horizons, "63, 126, 252")],
           ["Symbols", text(asDict(snapshot.summary).symbol_count, "0")],
           ["Pretraining", text(asDict(asDict(snapshot.training).pretraining).checkpoint_path, "Not run")],
-          ["Result", result || "Training runs in the background and may take a long time on a large universe."],
+          ["Result", result || text(trainingJob.detail, "Ready to train")],
         ]} />
       </Panel>
 

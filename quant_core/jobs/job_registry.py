@@ -80,6 +80,7 @@ def build_job_entry(
     detail: str = "",
     pid: Optional[int] = None,
     command: Optional[object] = None,
+    metadata: Optional[Mapping] = None,
     now: Optional[datetime] = None,
 ) -> dict:
     entry = {
@@ -92,6 +93,9 @@ def build_job_entry(
         entry["pid"] = int(pid)
     if command is not None:
         entry["command"] = command
+    for key, value in dict(metadata or {}).items():
+        if key not in {"name", "state", "detail", "updated_at", "pid", "command"}:
+            entry[str(key)] = value
     return entry
 
 
@@ -102,6 +106,7 @@ def update_job_status(
     detail: str = "",
     pid: Optional[int] = None,
     command: Optional[object] = None,
+    metadata: Optional[Mapping] = None,
     path: str = DEFAULT_JOB_STATUS_FILE,
     now: Optional[datetime] = None,
 ) -> dict:
@@ -116,6 +121,7 @@ def update_job_status(
         detail=detail,
         pid=pid,
         command=command,
+        metadata=metadata,
         now=now,
     )
     save_job_status(payload, path=path)

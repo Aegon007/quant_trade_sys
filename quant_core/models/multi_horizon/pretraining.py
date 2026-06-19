@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
+from typing import Callable, Mapping
 
 import numpy as np
 import torch
@@ -61,6 +62,7 @@ def pretrain_temporal_encoder(
     device: str = "auto",
     checkpoint_path: str = "trained_models/finance_multi_asset_transformer_pretrain.pt",
     seed: int = 17,
+    progress_callback: Callable[[Mapping], None] | None = None,
 ) -> dict:
     resolved_device = _resolve_device(device)
     sequences = np.asarray(bundle.sequences, dtype=np.float32)
@@ -86,7 +88,8 @@ def pretrain_temporal_encoder(
     total_masked = 0
     final_loss = 0.0
     model.train()
-    for _ in range(max(int(epochs), 1)):
+    epoch_count = max(int(epochs), 1)
+    for epoch_index in range(epoch_count):
         loss_total = 0.0
         batch_count = 0
         for sequence, asset_mask in loader:
@@ -123,6 +126,18 @@ def pretrain_temporal_encoder(
             loss_total += float(loss.detach().cpu())
             batch_count += 1
         final_loss = loss_total / max(batch_count, 1)
+        if progress_callback is not None:
+            progress_callback(
+                {
+                    "stage": "pretraining",
+                    "detail": f"Pretraining epoch {epoch_index + 1}/{epoch_count}",
+                    "progress_pct": round((epoch_index + 1) / epoch_count * 100.0, 1),
+                    "epoch": epoch_index + 1,
+                    "epochs": epoch_count,
+                    "loss": round(float(final_loss), 6),
+                    "device": str(resolved_device),
+                }
+            )
 
     target_path = Path(checkpoint_path)
     target_path.parent.mkdir(parents=True, exist_ok=True)

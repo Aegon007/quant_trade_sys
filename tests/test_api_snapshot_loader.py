@@ -96,6 +96,7 @@ class ApiSnapshotLoaderTests(unittest.TestCase):
                 state="started",
                 detail="python -m jobs.api_server",
                 pid=1234,
+                metadata={"stage": "startup", "progress_pct": 25},
                 path=str(path),
                 now=datetime.fromisoformat("2026-06-11T12:00:00"),
             )
@@ -103,6 +104,8 @@ class ApiSnapshotLoaderTests(unittest.TestCase):
 
         self.assertEqual(payload["jobs"]["api-server"]["state"], "started")
         self.assertEqual(loaded["jobs"]["api-server"]["pid"], 1234)
+        self.assertEqual(loaded["jobs"]["api-server"]["stage"], "startup")
+        self.assertEqual(loaded["jobs"]["api-server"]["progress_pct"], 25)
 
     def test_load_portfolio_response_includes_holdings_transactions_and_reviews(self):
         original_load_portfolio_payload = self.loader._load_portfolio_payload

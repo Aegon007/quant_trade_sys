@@ -202,6 +202,39 @@ def _save_json(payload: Mapping, path: str) -> str:
     return str(target)
 
 
+def _emit_progress(callback, *, stage: str, detail: str, progress_pct: float, **metadata) -> None:
+    if callback is None:
+        return
+    callback(
+        {
+            "stage": stage,
+            "detail": detail,
+            "progress_pct": round(float(progress_pct), 1),
+            **metadata,
+        }
+    )
+
+
+def _scaled_progress(callback, *, start: float, end: float, stage: str):
+    if callback is None:
+        return None
+
+    def _report(event: Mapping) -> None:
+        payload = dict(event or {})
+        local = float(payload.pop("progress_pct", 0.0) or 0.0)
+        detail = str(payload.pop("detail", "") or stage)
+        payload.pop("stage", None)
+        _emit_progress(
+            callback,
+            stage=stage,
+            detail=detail,
+            progress_pct=start + (end - start) * min(max(local, 0.0), 100.0) / 100.0,
+            **payload,
+        )
+
+    return _report
+
+
 def _model_config(config: Mapping) -> MultiAssetTransformerConfig:
     architecture = dict(config.get("architecture", {}) or {})
     return MultiAssetTransformerConfig(
@@ -230,8 +263,15 @@ def run_multi_horizon_job(
     load_history_fn: Callable = qa.get_historical_data,
     risk_regime: str = "NORMAL",
     now: datetime | None = None,
+    progress_callback: Callable[[Mapping], None] | None = None,
 ) -> dict:
     now = now or datetime.now()
+    _emit_progress(
+        progress_callback,
+        stage="preparing",
+        detail="Reading model configuration and building the training universe",
+        progress_pct=1,
+    )
     normalized = normalize_multi_horizon_config(config) if config is not None else load_multi_horizon_config()
     artifacts = dict(normalized.get("artifacts", {}) or {})
     checkpoint_path = _artifact_path(str(artifacts["checkpoint_path"]))
@@ -244,6 +284,12 @@ def run_multi_horizon_job(
             reason="Multi-horizon model is disabled.",
         )
         save_multi_horizon_snapshot(snapshot, path=snapshot_path)
+        _emit_progress(
+            progress_callback,
+            stage="disabled",
+            detail="Multi-horizon model is disabled",
+            progress_pct=100,
+        )
         return snapshot
 
     data = dict(data or data_storage.load_data())
@@ -257,6 +303,13 @@ def run_multi_horizon_job(
         satellite_universe=dict(satellite_universe or {}),
         maximum_symbols=int(normalized["maximum_training_symbols"]),
     )
+    _emit_progress(
+        progress_callback,
+        stage="universe_ready",
+        detail=f"Training universe contains {len(symbols)} symbols",
+        progress_pct=5,
+        symbol_count=len(symbols),
+    )
     if not train and not Path(checkpoint_path).exists():
         snapshot = _not_ready_snapshot(
             symbols=symbols,
@@ -265,14 +318,35 @@ def run_multi_horizon_job(
             reason="No trained multi-horizon checkpoint. Run model training from Research & Models.",
         )
         save_multi_horizon_snapshot(snapshot, path=snapshot_path)
+        _emit_progress(
+            progress_callback,
+            stage="not_ready",
+            detail="No trained checkpoint is available",
+            progress_pct=100,
+        )
         return snapshot
 
+    _emit_progress(
+        progress_callback,
+        stage="loading_history",
+        detail=f"Loading {normalized['history_period']} of history for {len(symbols)} symbols",
+        progress_pct=7,
+        symbol_count=len(symbols),
+    )
     histories, failures = load_histories(
         symbols,
         history_period=str(normalized["history_period"]),
         load_history_fn=load_history_fn,
     )
     usable_symbols = [symbol for symbol in symbols if symbol in histories]
+    _emit_progress(
+        progress_callback,
+        stage="history_ready",
+        detail=f"Loaded {len(usable_symbols)} symbols; {len(failures)} failed",
+        progress_pct=15,
+        usable_symbol_count=len(usable_symbols),
+        failed_symbol_count=len(failures),
+    )
     benchmark_map = build_benchmark_map(usable_symbols)
     if len(usable_symbols) < 2 or "SPY" not in histories:
         snapshot = _not_ready_snapshot(
@@ -283,10 +357,22 @@ def run_multi_horizon_job(
         )
         snapshot["data_failures"] = failures
         save_multi_horizon_snapshot(snapshot, path=snapshot_path)
+        _emit_progress(
+            progress_callback,
+            stage="not_ready",
+            detail="Insufficient usable history for multi-asset training",
+            progress_pct=100,
+        )
         return snapshot
 
     training_result = None
     if train:
+        _emit_progress(
+            progress_callback,
+            stage="building_panel",
+            detail="Building leakage-safe weekly panel and forward labels",
+            progress_pct=17,
+        )
         panel = build_panel_frame(
             histories,
             benchmark_map=benchmark_map,
@@ -295,6 +381,13 @@ def run_multi_horizon_job(
             observation_frequency=str(normalized["observation_frequency"]),
         )
         panel_path = _save_panel(panel, _artifact_path(str(artifacts["panel_path"])))
+        _emit_progress(
+            progress_callback,
+            stage="building_tensors",
+            detail=f"Panel ready with {len(panel)} rows; building model tensors",
+            progress_pct=21,
+            panel_rows=len(panel),
+        )
         bundle = build_multi_asset_tensor_bundle(
             histories,
             symbols=usable_symbols,
@@ -302,6 +395,14 @@ def run_multi_horizon_job(
             horizons=normalized["horizons"],
             lookback=int(normalized["lookback"]),
             observation_frequency=str(normalized["observation_frequency"]),
+        )
+        _emit_progress(
+            progress_callback,
+            stage="validating",
+            detail=f"Tensor bundle ready with {len(bundle.observation_dates)} observations",
+            progress_pct=25,
+            sample_count=len(bundle.observation_dates),
+            device=str(dict(normalized.get("training", {}) or {}).get("device", "auto")),
         )
         network_config = _model_config(normalized)
         training = dict(normalized.get("training", {}) or {})
@@ -323,11 +424,23 @@ def run_multi_horizon_job(
             top_k=3,
             max_folds=3,
             compare_pretraining=True,
+            progress_callback=_scaled_progress(
+                progress_callback,
+                start=25,
+                end=65,
+                stage="walk_forward_validation",
+            ),
         )
         validation_result["generated_at"] = now.isoformat()
         validation_result["model_id"] = normalized["model_id"]
         validation_path = _save_json(validation_result, _artifact_path(str(artifacts["validation_path"])))
         pretraining_path = _artifact_path(str(artifacts["pretraining_checkpoint_path"]))
+        _emit_progress(
+            progress_callback,
+            stage="pretraining",
+            detail="Starting full-universe masked-patch pretraining",
+            progress_pct=67,
+        )
         pretraining_result = pretrain_temporal_encoder(
             bundle,
             config=network_config,
@@ -336,6 +449,19 @@ def run_multi_horizon_job(
             learning_rate=float(training["learning_rate"]),
             device=str(training["device"]),
             checkpoint_path=pretraining_path,
+            progress_callback=_scaled_progress(
+                progress_callback,
+                start=67,
+                end=76,
+                stage="pretraining",
+            ),
+        )
+        _emit_progress(
+            progress_callback,
+            stage="supervised_training",
+            detail="Starting final multi-horizon supervised training",
+            progress_pct=78,
+            device=pretraining_result.get("device"),
         )
         training_result = train_multi_asset_model(
             bundle,
@@ -347,12 +473,24 @@ def run_multi_horizon_job(
             device=str(training["device"]),
             checkpoint_path=checkpoint_path,
             pretrained_checkpoint_path=pretraining_path,
+            progress_callback=_scaled_progress(
+                progress_callback,
+                start=78,
+                end=96,
+                stage="supervised_training",
+            ),
         )
         training_result["pretraining"] = pretraining_result
         training_result["panel_path"] = panel_path
         training_result["validation_path"] = validation_path
         training_result["validation_status"] = validation_result["status"]
 
+    _emit_progress(
+        progress_callback,
+        stage="inference",
+        detail="Generating the latest portfolio and candidate predictions",
+        progress_pct=97,
+    )
     snapshot = run_multi_horizon_inference(
         histories,
         symbols=usable_symbols,
@@ -447,4 +585,12 @@ def run_multi_horizon_job(
     if training_result:
         snapshot["training"] = training_result
     save_multi_horizon_snapshot(snapshot, path=snapshot_path)
+    _emit_progress(
+        progress_callback,
+        stage="completed",
+        detail=f"Training and inference complete for {len(usable_symbols)} symbols",
+        progress_pct=100,
+        symbol_count=len(usable_symbols),
+        checkpoint_path=checkpoint_path,
+    )
     return snapshot

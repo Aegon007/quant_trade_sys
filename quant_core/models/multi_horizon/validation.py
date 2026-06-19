@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Iterable
+from typing import Callable, Iterable, Mapping
 
 import numpy as np
 import pandas as pd
@@ -254,6 +254,7 @@ def walk_forward_validate_bundle(
     top_k: int = 3,
     max_folds: int = 3,
     compare_pretraining: bool = True,
+    progress_callback: Callable[[Mapping], None] | None = None,
 ) -> dict:
     import tempfile
     from pathlib import Path
@@ -274,6 +275,48 @@ def walk_forward_validate_bundle(
     scratch_reports = []
     baseline_reports = []
     folds = []
+    work_per_fold = 3 if compare_pretraining else 1
+    total_work = max(len(splits) * work_per_fold, 1)
+    completed_work = 0
+
+    def report(detail: str, *, fold: int, phase: str):
+        if progress_callback is None:
+            return
+        progress_callback(
+            {
+                "stage": "walk_forward_validation",
+                "detail": detail,
+                "progress_pct": round(completed_work / total_work * 100.0, 1),
+                "fold": fold,
+                "folds": len(splits),
+                "phase": phase,
+            }
+        )
+
+    def child_progress(*, fold: int, phase: str):
+        if progress_callback is None:
+            return None
+
+        def _report(event: Mapping):
+            payload = dict(event or {})
+            local = min(max(float(payload.get("progress_pct", 0.0) or 0.0), 0.0), 100.0)
+            progress_callback(
+                {
+                    "stage": "walk_forward_validation",
+                    "detail": f"Fold {fold}/{len(splits)} {payload.get('detail') or phase}",
+                    "progress_pct": round((completed_work + local / 100.0) / total_work * 100.0, 1),
+                    "fold": fold,
+                    "folds": len(splits),
+                    "phase": phase,
+                    "epoch": payload.get("epoch"),
+                    "epochs": payload.get("epochs"),
+                    "loss": payload.get("loss"),
+                    "device": payload.get("device"),
+                }
+            )
+
+        return _report
+
     with tempfile.TemporaryDirectory() as temp_dir:
         for fold_index, (train_indices, test_indices) in enumerate(splits, start=1):
             train_bundle = _subset_bundle(bundle, train_indices)
@@ -281,6 +324,7 @@ def walk_forward_validate_bundle(
             pretrained_path = None
             pretrain_result = {}
             if compare_pretraining:
+                report(f"Fold {fold_index}/{len(splits)} pretraining", fold=fold_index, phase="pretraining")
                 pretrained_path = str(Path(temp_dir) / f"fold-{fold_index}-pretrain.pt")
                 pretrain_result = pretrain_temporal_encoder(
                     train_bundle,
@@ -291,8 +335,12 @@ def walk_forward_validate_bundle(
                     device=device,
                     checkpoint_path=pretrained_path,
                     seed=100 + fold_index,
+                    progress_callback=child_progress(fold=fold_index, phase="pretraining"),
                 )
+                completed_work += 1
+                report(f"Fold {fold_index}/{len(splits)} pretrained", fold=fold_index, phase="pretraining")
             candidate_path = str(Path(temp_dir) / f"fold-{fold_index}-candidate.pt")
+            report(f"Fold {fold_index}/{len(splits)} candidate training", fold=fold_index, phase="candidate")
             train_multi_asset_model(
                 train_bundle,
                 config=config,
@@ -303,7 +351,10 @@ def walk_forward_validate_bundle(
                 device=device,
                 checkpoint_path=candidate_path,
                 pretrained_checkpoint_path=pretrained_path,
+                progress_callback=child_progress(fold=fold_index, phase="candidate"),
             )
+            completed_work += 1
+            report(f"Fold {fold_index}/{len(splits)} candidate evaluated", fold=fold_index, phase="candidate")
             candidate_model, candidate_metadata = load_model_checkpoint(candidate_path, device=device)
             candidate_outputs = _predict_bundle(candidate_model, test_bundle, candidate_metadata, device=device)
             candidate_report = evaluate_prediction_arrays(
@@ -319,6 +370,7 @@ def walk_forward_validate_bundle(
 
             scratch_report = None
             if compare_pretraining:
+                report(f"Fold {fold_index}/{len(splits)} scratch control", fold=fold_index, phase="scratch")
                 scratch_path = str(Path(temp_dir) / f"fold-{fold_index}-scratch.pt")
                 train_multi_asset_model(
                     train_bundle,
@@ -329,6 +381,7 @@ def walk_forward_validate_bundle(
                     weight_decay=weight_decay,
                     device=device,
                     checkpoint_path=scratch_path,
+                    progress_callback=child_progress(fold=fold_index, phase="scratch"),
                 )
                 scratch_model, scratch_metadata = load_model_checkpoint(scratch_path, device=device)
                 scratch_outputs = _predict_bundle(scratch_model, test_bundle, scratch_metadata, device=device)
@@ -342,6 +395,8 @@ def walk_forward_validate_bundle(
                     top_k=top_k,
                 )
                 scratch_reports.append(scratch_report)
+                completed_work += 1
+                report(f"Fold {fold_index}/{len(splits)} complete", fold=fold_index, phase="scratch")
             baseline_report = _baseline_report(bundle, test_indices, top_k=top_k)
             baseline_reports.append(baseline_report)
             folds.append(

@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Mapping, Sequence
+from typing import Callable, Mapping, Sequence
 
 import numpy as np
 import pandas as pd
@@ -310,6 +310,7 @@ def train_multi_asset_model(
     device: str = "auto",
     checkpoint_path: str = DEFAULT_CHECKPOINT_FILE,
     pretrained_checkpoint_path: str | None = None,
+    progress_callback: Callable[[Mapping], None] | None = None,
 ) -> dict:
     resolved_device = _resolve_device(device)
     sequences = np.asarray(bundle.sequences, dtype=np.float32)
@@ -342,7 +343,8 @@ def train_multi_asset_model(
     optimizer = torch.optim.AdamW(model.parameters(), lr=float(learning_rate), weight_decay=float(weight_decay))
     epoch_metrics = {}
     model.train()
-    for _ in range(max(int(epochs), 1)):
+    epoch_count = max(int(epochs), 1)
+    for epoch_index in range(epoch_count):
         totals = {}
         batch_count = 0
         for batch in loader:
@@ -360,6 +362,18 @@ def train_multi_asset_model(
                 totals[name] = totals.get(name, 0.0) + float(value.detach().cpu())
             batch_count += 1
         epoch_metrics = {name: value / max(batch_count, 1) for name, value in totals.items()}
+        if progress_callback is not None:
+            progress_callback(
+                {
+                    "stage": "supervised_training",
+                    "detail": f"Epoch {epoch_index + 1}/{epoch_count}",
+                    "progress_pct": round((epoch_index + 1) / epoch_count * 100.0, 1),
+                    "epoch": epoch_index + 1,
+                    "epochs": epoch_count,
+                    "loss": round(float(epoch_metrics.get("loss", 0.0)), 6),
+                    "device": str(resolved_device),
+                }
+            )
 
     target = Path(checkpoint_path)
     target.parent.mkdir(parents=True, exist_ok=True)

@@ -493,6 +493,35 @@ class MultiHorizonConfigTests(unittest.TestCase):
         self.assertEqual(result["status"], "MODEL_NOT_READY")
         self.assertEqual(snapshot["status"], "MODEL_NOT_READY")
 
+    def test_pipeline_reports_progress_before_missing_checkpoint_exit(self):
+        from quant_core.models.multi_horizon.pipeline import run_multi_horizon_job
+
+        events = []
+        with tempfile.TemporaryDirectory() as temp_dir:
+            run_multi_horizon_job(
+                config={
+                    "enabled": True,
+                    "history_period": "10y",
+                    "maximum_training_symbols": 10,
+                    "artifacts": {
+                        "checkpoint_path": str(Path(temp_dir) / "missing.pt"),
+                        "pretraining_checkpoint_path": str(Path(temp_dir) / "pretrain.pt"),
+                        "snapshot_path": str(Path(temp_dir) / "snapshot.json"),
+                        "validation_path": str(Path(temp_dir) / "validation.json"),
+                        "panel_path": str(Path(temp_dir) / "panel.parquet"),
+                    },
+                },
+                data={"holdings": [{"symbol": "MSFT"}], "watchlist": [{"symbol": "NVDA"}]},
+                core_universe={"etfs": []},
+                satellite_universe={"manual_include": []},
+                train=False,
+                progress_callback=events.append,
+            )
+
+        self.assertEqual(events[0]["stage"], "preparing")
+        self.assertEqual(events[-1]["stage"], "not_ready")
+        self.assertEqual(events[-1]["progress_pct"], 100)
+
     def test_default_registry_contains_only_multi_horizon_production_model(self):
         from quant_core.models.registry import default_model_registry
 

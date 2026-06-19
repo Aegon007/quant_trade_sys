@@ -48,6 +48,34 @@ class ApiActionsTests(unittest.TestCase):
         self.assertEqual(updates[0], ("manual-test", "started", "manual trigger accepted"))
         self.assertEqual(updates[1], ("manual-test", "failed", "RuntimeError: boom"))
 
+    def test_training_progress_updates_job_registry_and_console_logger(self):
+        updates = []
+        messages = []
+        self.actions.job_registry.update_job_status = (
+            lambda name, **kwargs: updates.append((name, kwargs)) or {}
+        )
+
+        callback = self.actions.build_job_progress_callback(
+            "manual-multi-horizon-training",
+            logger=messages.append,
+        )
+        callback(
+            {
+                "stage": "supervised_training",
+                "detail": "Epoch 3/30",
+                "progress_pct": 72,
+                "epoch": 3,
+                "epochs": 30,
+                "loss": 0.1234,
+                "device": "mps",
+            }
+        )
+
+        self.assertEqual(updates[0][0], "manual-multi-horizon-training")
+        self.assertEqual(updates[0][1]["state"], "running")
+        self.assertEqual(updates[0][1]["metadata"]["progress_pct"], 72)
+        self.assertIn("Epoch 3/30", messages[0])
+
     def test_api_server_exposes_daily_workflow_routes(self):
         server = reload_module("jobs.api_server")
         app = server.create_app()

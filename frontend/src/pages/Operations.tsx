@@ -41,6 +41,8 @@ export default function Operations() {
   }
 
   const jobRows = Object.values(asDict(asDict(jobs.data?.payload).jobs));
+  const modelJob = asDict(asDict(asDict(jobs.data?.payload).jobs)["manual-multi-horizon-training"]);
+  const modelRunning = ["started", "running"].includes(text(modelJob.state, "").toLowerCase());
   const healthRows = asArray(asDict(health.data?.payload).symbols);
   return (
     <>
@@ -50,7 +52,9 @@ export default function Operations() {
             <button disabled={!!busy} onClick={() => run("refresh", "/api/actions/refresh-market", { force_source_refresh: true })}>Force market refresh</button>
             <button disabled={!!busy} onClick={() => run("nightly", "/api/actions/run-nightly-once")}>Run full nightly pipeline</button>
             <button disabled={!!busy} onClick={() => run("weekend", "/api/actions/run-weekend-research-once")}>Run weekend research</button>
-            <button disabled={!!busy} onClick={() => run("model", "/api/actions/train-multi-horizon")}>Train neural model</button>
+            <button disabled={!!busy || modelRunning} onClick={() => run("model", "/api/actions/train-multi-horizon")}>
+              {modelRunning ? `Training ${Number(modelJob.progress_pct ?? 0).toFixed(0)}%` : "Train neural model"}
+            </button>
           </div>
         </Panel>
         <Panel title="Robinhood ledger import" subtitle="Append mode deduplicates. Rebuild mode backs up and replaces the local ledger.">
@@ -68,6 +72,8 @@ export default function Operations() {
         <DecisionTable rows={jobRows} columns={[
           { label: "Job", render: (row) => text(row.name) },
           { label: "State", render: (row) => <Status value={row.state} /> },
+          { label: "Stage", render: (row) => text(row.stage) },
+          { label: "Progress", render: (row) => row.progress_pct === undefined ? "-" : `${Number(row.progress_pct).toFixed(0)}%` },
           { label: "Detail", render: (row) => text(row.detail) },
           { label: "Updated", render: (row) => formatDate(row.updated_at) },
         ]} />

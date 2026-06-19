@@ -33,6 +33,36 @@ def _safe_detail(payload) -> str:
     return "completed"
 
 
+def build_job_progress_callback(
+    job_name: str,
+    *,
+    logger: Callable[[str], object] | None = None,
+    now_func: Callable[[], datetime] = datetime.now,
+) -> Callable[[Mapping], None]:
+    normalized_name = str(job_name or "").strip() or "manual-job"
+
+    def _report(event: Mapping) -> None:
+        payload = dict(event or {})
+        detail = str(payload.pop("detail", "") or payload.get("stage") or "working")
+        stage = str(payload.get("stage") or "running")
+        progress = payload.get("progress_pct")
+        progress_text = f" {float(progress):.0f}%" if progress is not None else ""
+        message = f"[{normalized_name}] {stage}{progress_text} - {detail}"
+        if logger is None:
+            print(message, flush=True)
+        else:
+            logger(message)
+        job_registry.update_job_status(
+            normalized_name,
+            state="running",
+            detail=detail,
+            metadata=payload,
+            now=now_func(),
+        )
+
+    return _report
+
+
 def run_with_job_status(
     job_name: str,
     runner: Callable[[], object],
@@ -51,6 +81,7 @@ def run_with_job_status(
                 normalized_name,
                 state="completed",
                 detail=_safe_detail(result),
+                metadata={"stage": "completed", "progress_pct": 100},
                 now=now_func(),
             )
             return result
@@ -59,14 +90,18 @@ def run_with_job_status(
                 normalized_name,
                 state="failed",
                 detail=f"{type(exc).__name__}: {exc}",
+                metadata={"stage": "failed"},
                 now=now_func(),
             )
+            if run_async:
+                traceback.print_exc()
             raise
 
     job_registry.update_job_status(
         normalized_name,
         state="started",
         detail="manual trigger accepted",
+        metadata={"stage": "queued", "progress_pct": 0},
         now=now_func(),
     )
     if run_async:
@@ -141,7 +176,10 @@ def run_weekend_research_once() -> dict:
 def train_multi_horizon_model() -> dict:
     from quant_core.models.multi_horizon.pipeline import run_multi_horizon_job
 
-    result = run_multi_horizon_job(train=True)
+    result = run_multi_horizon_job(
+        train=True,
+        progress_callback=build_job_progress_callback("manual-multi-horizon-training"),
+    )
     return result if isinstance(result, dict) else {"message": "multi-horizon training completed", "result": result}
 
 
