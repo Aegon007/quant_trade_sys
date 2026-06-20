@@ -320,6 +320,63 @@ nav button span { font-size: 0.68rem; opacity: .7; }
 .training-phases li.active span { background: var(--amber); }
 .training-phases li.complete { color: var(--forest); }
 .training-phases li.complete span { background: var(--forest); }
+.training-runtime-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1px;
+  margin: -4px 0 14px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  background: var(--line);
+}
+.training-runtime-grid > div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 12px 14px;
+  background: rgba(255, 253, 246, .78);
+}
+.training-runtime-grid small {
+  color: var(--muted);
+  font-size: .64rem;
+  font-weight: 950;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+.training-runtime-grid strong, .training-runtime-grid span { overflow-wrap: anywhere; }
+.training-runtime-grid span { color: var(--muted); font-size: .78rem; }
+.training-log {
+  margin-bottom: 16px;
+  border: 1px solid #28332c;
+  background: #17201b;
+  color: #dbe8df;
+  font-family: "SFMono-Regular", "Cascadia Code", "Liberation Mono", monospace;
+}
+.training-log-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 12px;
+  border-bottom: 1px solid #344239;
+  background: #202b24;
+}
+.training-log-header strong { color: #f4f0df; font-family: inherit; font-size: .78rem; }
+.training-log-header span { color: #94aa9a; font-size: .68rem; }
+.training-log-row {
+  display: grid;
+  grid-template-columns: 5.5rem 5.5rem minmax(0, 1fr) 3rem;
+  gap: 10px;
+  align-items: center;
+  padding: 7px 12px;
+  border-bottom: 1px solid rgba(151, 177, 158, .12);
+  font-size: .72rem;
+}
+.training-log-row:last-child { border-bottom: 0; }
+.training-log-row time { color: #88a091; }
+.training-log-row > span:not(.status) { min-width: 0; overflow-wrap: anywhere; }
+.training-log-row b { color: #dfb66f; text-align: right; font-variant-numeric: tabular-nums; }
+.training-log .status { justify-self: start; }
+.training-log > p { margin: 0; padding: 14px 12px; color: #94aa9a; font-size: .74rem; }
 .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-bottom: 12px; }
 .form-grid label { display: grid; gap: 6px; color: var(--muted); font-size: .78rem; font-weight: 900; }
 .form-result, .editor-footer span { color: var(--muted); font-size: .82rem; }
@@ -379,6 +436,9 @@ nav button span { font-size: 0.68rem; opacity: .7; }
   .training-progress { grid-template-columns: 1fr 3rem; }
   .training-progress-copy { grid-column: 1 / -1; }
   .training-phases { grid-template-columns: repeat(3, 1fr); }
+  .training-runtime-grid { grid-template-columns: 1fr; }
+  .training-log-row { grid-template-columns: 4.8rem 5rem minmax(0, 1fr); }
+  .training-log-row b { display: none; }
 }
 
 @media (max-width: 540px) {

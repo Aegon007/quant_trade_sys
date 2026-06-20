@@ -12,9 +12,9 @@ export default function Operations() {
   const [replaceLedger, setReplaceLedger] = useState(false);
 
   useEffect(() => {
-    const timer = window.setInterval(jobs.reload, 5000);
+    const timer = window.setInterval(() => jobs.reload(true), 5000);
     return () => window.clearInterval(timer);
-  }, []);
+  }, [jobs.reload]);
 
   async function run(name: string, path: string, payload?: unknown) {
     setBusy(name);

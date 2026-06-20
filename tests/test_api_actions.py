@@ -76,6 +76,17 @@ class ApiActionsTests(unittest.TestCase):
         self.assertEqual(updates[0][1]["metadata"]["progress_pct"], 72)
         self.assertIn("Epoch 3/30", messages[0])
 
+    def test_training_progress_marks_terminal_event_completed(self):
+        updates = []
+        self.actions.job_registry.update_job_status = (
+            lambda name, **kwargs: updates.append((name, kwargs)) or {}
+        )
+        callback = self.actions.build_job_progress_callback("training")
+
+        callback({"stage": "completed", "detail": "Training complete", "progress_pct": 100})
+
+        self.assertEqual(updates[0][1]["state"], "completed")
+
     def test_api_server_exposes_daily_workflow_routes(self):
         server = reload_module("jobs.api_server")
         app = server.create_app()

@@ -265,6 +265,7 @@ journalctl --user -u quant-trade-system.service -f
 
 - `finance_multi_asset_transformer` 是当前默认决策模型。
 - bootstrap checkpoint 只提供冷启动推理和影子观察，不代表模型已通过生产晋升。
+- Research & Models 页面在训练期间每秒刷新任务状态，显示 CPU/CUDA/MPS 设备、epoch、loss、耗时、样本规模和最近训练日志。
 - 传统规则策略仍保留，主要用于做对照、解释和回测基线。
 - LightGBM、CatBoost、XGBoost 及其生产依赖已经删除；除非未来消融实验证明有稳定的增量经济价值，否则不会重新加入生产。
 - 长周期训练默认排除杠杆、反向与波动率战术产品；它们继续由盘中战术模块处理，不和普通股票、核心 ETF 共用长期 Top 3 排名。

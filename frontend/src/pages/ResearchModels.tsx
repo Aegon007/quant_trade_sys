@@ -11,6 +11,16 @@ function horizonRows(section: Dict): unknown[] {
   }));
 }
 
+function formatElapsed(value: unknown): string {
+  const seconds = Math.max(Number(value ?? 0), 0);
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const remainder = Math.floor(seconds % 60);
+  return hours > 0
+    ? `${hours}h ${minutes}m ${remainder}s`
+    : `${minutes}m ${remainder}s`;
+}
+
 const TRAINING_PHASES = [
   ["Data", 15],
   ["Panel", 25],
@@ -44,15 +54,22 @@ export default function ResearchModels() {
   const [launching, setLaunching] = useState(false);
   const [promoting, setPromoting] = useState(false);
   const [result, setResult] = useState("");
+  const [, setClockTick] = useState(0);
 
   useEffect(() => {
-    const timer = window.setInterval(jobs.reload, isTraining ? 2000 : 5000);
+    const timer = window.setInterval(() => jobs.reload(true), isTraining ? 1000 : 5000);
     return () => window.clearInterval(timer);
-  }, [isTraining]);
+  }, [isTraining, jobs.reload]);
 
   useEffect(() => {
     if (jobState === "completed") reload();
-  }, [jobState]);
+  }, [jobState, reload]);
+
+  useEffect(() => {
+    if (!isTraining) return;
+    const timer = window.setInterval(() => setClockTick((value) => value + 1), 1000);
+    return () => window.clearInterval(timer);
+  }, [isTraining]);
 
   async function trainModel() {
     setLaunching(true);
@@ -86,6 +103,13 @@ export default function ResearchModels() {
   }
 
   const progress = Number(trainingJob.progress_pct ?? 0);
+  const trainingEvents = asArray(trainingJob.events).map(asDict).slice(-14).reverse();
+  const updatedAt = new Date(text(trainingJob.updated_at, "")).getTime();
+  const liveElapsed = Number(trainingJob.elapsed_seconds ?? 0) + (
+    isTraining && Number.isFinite(updatedAt)
+      ? Math.max((Date.now() - updatedAt) / 1000, 0)
+      : 0
+  );
   const canPromote = text(lifecycle.status, "").toUpperCase() === "ELIGIBLE_FOR_MANUAL_PROMOTION";
   const isProduction = Boolean(lifecycle.production_authorized);
 
@@ -113,9 +137,10 @@ export default function ResearchModels() {
             <strong>{text(trainingJob.detail, "No active training job")}</strong>
             <span>
               {text(trainingJob.stage, "idle")}
-              {trainingJob.device ? ` · ${text(trainingJob.device)}` : ""}
+              {trainingJob.device_label ? ` · ${text(trainingJob.device_label)}` : ""}
               {trainingJob.epoch ? ` · epoch ${text(trainingJob.epoch)}/${text(trainingJob.epochs)}` : ""}
               {trainingJob.loss !== undefined ? ` · loss ${Number(trainingJob.loss).toFixed(4)}` : ""}
+              {trainingJob.elapsed_seconds !== undefined ? ` · elapsed ${formatElapsed(liveElapsed)}` : ""}
             </span>
           </div>
           <div className="training-track" aria-label={`Training progress ${progress.toFixed(0)}%`}>
@@ -130,6 +155,37 @@ export default function ResearchModels() {
               </li>
             ))}
           </ol>
+        </div>
+        <div className="training-runtime-grid">
+          <div>
+            <small>Compute</small>
+            <strong>{text(trainingJob.device_label, "Not detected")}</strong>
+            <span>{text(trainingJob.accelerator, "—")} · {text(trainingJob.device, "—")}</span>
+          </div>
+          <div>
+            <small>Dataset</small>
+            <strong>{text(trainingJob.usable_symbol_count ?? trainingJob.symbol_count, "—")} symbols</strong>
+            <span>{text(trainingJob.panel_rows, "—")} panel rows · {text(trainingJob.sample_count, "—")} samples</span>
+          </div>
+          <div>
+            <small>Validation</small>
+            <strong>{trainingJob.fold ? `Fold ${text(trainingJob.fold)}/${text(trainingJob.folds)}` : text(trainingJob.stage, "Idle")}</strong>
+            <span>{text(trainingJob.phase, "—")}</span>
+          </div>
+        </div>
+        <div className="training-log" aria-live="polite">
+          <div className="training-log-header">
+            <strong>Live training log</strong>
+            <span>Newest first · refreshes every {isTraining ? "1 second" : "5 seconds"}</span>
+          </div>
+          {trainingEvents.length ? trainingEvents.map((event, index) => (
+            <div className="training-log-row" key={`${text(event.timestamp)}-${index}`}>
+              <time>{new Date(text(event.timestamp)).toLocaleTimeString()}</time>
+              <Status value={text(event.state, "running")} />
+              <span>{text(event.detail, text(event.stage, "working"))}</span>
+              <b>{event.progress_pct === undefined ? "" : `${Number(event.progress_pct).toFixed(0)}%`}</b>
+            </div>
+          )) : <p>No training events yet. Start a training run to see live output.</p>}
         </div>
         <Facts rows={[
           ["Model ID", text(asDict(snapshot.model).model_id, "finance_multi_asset_transformer")],

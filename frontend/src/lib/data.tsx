@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { fetchApi, type ApiEnvelope } from "../api";
 
 export type Dict = Record<string, unknown>;
@@ -92,18 +92,18 @@ export function useSnapshot<TPayload = Dict>(path: string) {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
 
-  const reload = () => {
-    setLoading(true);
+  const reload = useCallback((silent = false) => {
+    if (!silent) setLoading(true);
     setError("");
     fetchApi<TPayload>(path)
       .then(setData)
       .catch((exc: Error) => setError(exc.message))
       .finally(() => setLoading(false));
-  };
+  }, [path]);
 
   useEffect(() => {
     reload();
-  }, [path]);
+  }, [reload]);
 
   return { data, error, loading, reload };
 }

@@ -17,6 +17,8 @@ from quant_core import paths as qpaths
 
 
 DEFAULT_JOB_STATUS_FILE = qpaths.JOB_STATUS_FILE
+MAX_JOB_EVENTS = 80
+DEFAULT_STALE_AFTER_SECONDS = 30 * 60
 
 
 def _now_iso(now: Optional[datetime] = None) -> str:
@@ -69,6 +71,34 @@ def load_job_status(*, path: str = DEFAULT_JOB_STATUS_FILE) -> dict:
     return payload
 
 
+def mark_stale_jobs(
+    payload: Mapping,
+    *,
+    now: Optional[datetime] = None,
+    stale_after_seconds: int = DEFAULT_STALE_AFTER_SECONDS,
+) -> dict:
+    normalized = dict(payload or {})
+    normalized["jobs"] = {
+        str(name): dict(entry or {})
+        for name, entry in dict(normalized.get("jobs", {}) or {}).items()
+    }
+    current = now or datetime.now()
+    for entry in normalized["jobs"].values():
+        if str(entry.get("state") or "").lower() not in {"started", "running"}:
+            continue
+        try:
+            updated_at = datetime.fromisoformat(str(entry.get("updated_at") or ""))
+            age_seconds = (current - updated_at).total_seconds()
+        except (TypeError, ValueError):
+            continue
+        if age_seconds <= max(int(stale_after_seconds), 1):
+            continue
+        entry["state"] = "stale"
+        entry["stale_since_seconds"] = round(age_seconds, 1)
+        entry["detail"] = f"{entry.get('detail') or 'job'} (no heartbeat; process may have stopped)"
+    return normalized
+
+
 def save_job_status(payload: Mapping, *, path: str = DEFAULT_JOB_STATUS_FILE) -> str:
     return _atomic_write_json(path, dict(payload or empty_job_status()))
 
@@ -115,7 +145,8 @@ def update_job_status(
     payload["updated_at"] = timestamp
     payload.setdefault("generated_at", timestamp)
     payload.setdefault("jobs", {})
-    payload["jobs"][str(name)] = build_job_entry(
+    previous = dict(payload["jobs"].get(str(name), {}) or {})
+    entry = build_job_entry(
         name=str(name),
         state=state,
         detail=detail,
@@ -124,6 +155,60 @@ def update_job_status(
         metadata=metadata,
         now=now,
     )
+    started_at = (
+        timestamp
+        if str(state or "").lower() in {"started", "queued"}
+        else str(previous.get("started_at") or timestamp)
+    )
+    entry["started_at"] = started_at
+    for key in (
+        "device",
+        "accelerator",
+        "device_label",
+        "symbol_count",
+        "usable_symbol_count",
+        "failed_symbol_count",
+        "panel_rows",
+        "sample_count",
+        "folds",
+    ):
+        if key not in entry and previous.get(key) is not None:
+            entry[key] = previous[key]
+    try:
+        start_dt = datetime.fromisoformat(started_at)
+        current_dt = now or datetime.now()
+        entry["elapsed_seconds"] = max((current_dt - start_dt).total_seconds(), 0.0)
+    except (TypeError, ValueError):
+        entry["elapsed_seconds"] = 0.0
+    event = {
+        "timestamp": timestamp,
+        "state": entry["state"],
+        "detail": entry["detail"],
+    }
+    for key in (
+        "stage",
+        "progress_pct",
+        "epoch",
+        "epochs",
+        "loss",
+        "device",
+        "accelerator",
+        "device_label",
+        "symbol_count",
+        "usable_symbol_count",
+        "failed_symbol_count",
+        "panel_rows",
+        "sample_count",
+        "fold",
+        "folds",
+        "phase",
+    ):
+        if key in entry and entry[key] is not None:
+            event[key] = entry[key]
+    events = list(previous.get("events", []) or [])
+    events.append(event)
+    entry["events"] = events[-MAX_JOB_EVENTS:]
+    payload["jobs"][str(name)] = entry
     save_job_status(payload, path=path)
     return payload
 

@@ -17,7 +17,7 @@ from .network import MultiAssetTransformerConfig
 from .pretraining import pretrain_temporal_encoder
 from .runtime import run_multi_horizon_inference
 from .snapshot import save_multi_horizon_snapshot
-from .training import build_multi_asset_tensor_bundle, train_multi_asset_model
+from .training import build_multi_asset_tensor_bundle, describe_compute_device, train_multi_asset_model
 from .validation import walk_forward_validate_bundle
 
 
@@ -347,6 +347,18 @@ def run_multi_horizon_job(
         progress_pct=1,
     )
     normalized = normalize_multi_horizon_config(config) if config is not None else load_multi_horizon_config()
+    device_info = describe_compute_device(
+        str(dict(normalized.get("training", {}) or {}).get("device", "auto"))
+    )
+    _emit_progress(
+        progress_callback,
+        stage="runtime_ready",
+        detail=f"Compute device: {device_info['label']}",
+        progress_pct=2,
+        device=device_info["device"],
+        accelerator=device_info["accelerator"],
+        device_label=device_info["label"],
+    )
     risk_free_symbol = str(normalized.get("risk_free_benchmark") or "BIL").strip().upper()
     artifacts = dict(normalized.get("artifacts", {}) or {})
     checkpoint_path = _artifact_path(str(artifacts["checkpoint_path"]))

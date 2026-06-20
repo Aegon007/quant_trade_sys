@@ -17,7 +17,7 @@ export type ApiEnvelope<TPayload = unknown> = {
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://127.0.0.1:8710";
 
 export async function fetchApi<TPayload>(path: string): Promise<ApiEnvelope<TPayload>> {
-  const response = await fetch(`${API_BASE_URL}${path}`);
+  const response = await fetch(`${API_BASE_URL}${path}`, { cache: "no-store" });
   if (!response.ok) {
     throw new Error(`API ${path} failed with ${response.status}`);
   }

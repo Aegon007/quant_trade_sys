@@ -252,6 +252,29 @@ def _resolve_device(preferred: str):
     return torch.device("cpu")
 
 
+def describe_compute_device(preferred: str = "auto") -> dict:
+    device = _resolve_device(preferred)
+    if device.type == "cuda":
+        index = device.index if device.index is not None else torch.cuda.current_device()
+        name = torch.cuda.get_device_name(index)
+        return {
+            "device": str(device),
+            "accelerator": "CUDA",
+            "label": f"NVIDIA {name}",
+        }
+    if device.type == "mps":
+        return {
+            "device": "mps",
+            "accelerator": "MPS",
+            "label": "Apple Metal / MPS",
+        }
+    return {
+        "device": "cpu",
+        "accelerator": "CPU",
+        "label": "CPU",
+    }
+
+
 def _masked_mean(values, mask):
     mask = mask.to(values.dtype)
     while mask.ndim < values.ndim:

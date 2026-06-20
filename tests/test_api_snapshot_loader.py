@@ -107,6 +107,55 @@ class ApiSnapshotLoaderTests(unittest.TestCase):
         self.assertEqual(loaded["jobs"]["api-server"]["stage"], "startup")
         self.assertEqual(loaded["jobs"]["api-server"]["progress_pct"], 25)
 
+    def test_job_registry_preserves_start_time_and_recent_events(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "job_status.json"
+            self.registry.update_job_status(
+                "training",
+                state="started",
+                detail="queued",
+                metadata={"stage": "queued", "progress_pct": 0},
+                path=str(path),
+                now=datetime.fromisoformat("2026-06-20T10:00:00"),
+            )
+            self.registry.update_job_status(
+                "training",
+                state="running",
+                detail="Epoch 2/30",
+                metadata={"stage": "supervised_training", "progress_pct": 81, "device": "mps"},
+                path=str(path),
+                now=datetime.fromisoformat("2026-06-20T10:02:30"),
+            )
+            loaded = self.registry.load_job_status(path=str(path))
+
+        job = loaded["jobs"]["training"]
+        self.assertEqual(job["started_at"], "2026-06-20T10:00:00")
+        self.assertEqual(job["elapsed_seconds"], 150.0)
+        self.assertEqual(len(job["events"]), 2)
+        self.assertEqual(job["events"][-1]["detail"], "Epoch 2/30")
+        self.assertEqual(job["events"][-1]["device"], "mps")
+
+    def test_job_registry_marks_abandoned_running_job_stale(self):
+        payload = {
+            "jobs": {
+                "training": {
+                    "name": "training",
+                    "state": "running",
+                    "detail": "Epoch 4/30",
+                    "updated_at": "2026-06-20T09:00:00",
+                }
+            }
+        }
+
+        normalized = self.registry.mark_stale_jobs(
+            payload,
+            now=datetime.fromisoformat("2026-06-20T10:00:00"),
+            stale_after_seconds=1800,
+        )
+
+        self.assertEqual(normalized["jobs"]["training"]["state"], "stale")
+        self.assertIn("no heartbeat", normalized["jobs"]["training"]["detail"])
+
     def test_load_portfolio_response_includes_holdings_transactions_and_reviews(self):
         original_load_portfolio_payload = self.loader._load_portfolio_payload
         original_load_transactions = self.loader.tx.load_transactions

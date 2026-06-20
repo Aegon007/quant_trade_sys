@@ -56,7 +56,7 @@ def build_job_progress_callback(
             logger(message)
         job_registry.update_job_status(
             normalized_name,
-            state="running",
+            state="completed" if stage == "completed" else "failed" if stage == "failed" else "running",
             detail=detail,
             metadata=payload,
             now=now_func(),

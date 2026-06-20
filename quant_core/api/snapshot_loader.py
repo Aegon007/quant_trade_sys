@@ -646,7 +646,7 @@ def load_research_models_response(*, now: Optional[datetime] = None) -> dict:
 
 
 def load_job_status_response(*, now: Optional[datetime] = None) -> dict:
-    payload = job_registry.load_job_status()
+    payload = job_registry.mark_stale_jobs(job_registry.load_job_status(), now=now)
     jobs = dict(payload.get("jobs", {}) or {})
     return build_api_response(
         name="job-status",

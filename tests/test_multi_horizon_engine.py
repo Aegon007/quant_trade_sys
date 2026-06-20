@@ -676,6 +676,15 @@ class MultiHorizonValidationTests(unittest.TestCase):
 
 
 class MultiHorizonConfigTests(unittest.TestCase):
+    def test_compute_device_info_is_explicit(self):
+        from quant_core.models.multi_horizon.training import describe_compute_device
+
+        info = describe_compute_device("cpu")
+
+        self.assertEqual(info["device"], "cpu")
+        self.assertEqual(info["accelerator"], "CPU")
+        self.assertIn("label", info)
+
     def test_config_cannot_auto_promote_or_enable_traditional_ml_by_accident(self):
         from quant_core.models.multi_horizon.config import normalize_multi_horizon_config
 
@@ -854,6 +863,9 @@ class MultiHorizonConfigTests(unittest.TestCase):
             )
 
         self.assertEqual(events[0]["stage"], "preparing")
+        runtime_event = next(event for event in events if event["stage"] == "runtime_ready")
+        self.assertIn(runtime_event["accelerator"], {"CPU", "CUDA", "MPS"})
+        self.assertTrue(runtime_event["device_label"])
         self.assertEqual(events[-1]["stage"], "not_ready")
         self.assertEqual(events[-1]["progress_pct"], 100)
 
