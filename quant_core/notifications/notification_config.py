@@ -7,6 +7,13 @@ from quant_core import paths as qpaths
 qpaths.bootstrap_storage_paths()
 
 NOTIFICATION_CONFIG_FILE = qpaths.NOTIFICATION_CONFIG_FILE
+NOTIFICATION_SECRETS_FILE = qpaths.NOTIFICATION_SECRETS_FILE
+SECRET_FIELDS = (
+    ("slack", "webhook_url"),
+    ("email", "password"),
+    ("llm", "api_key"),
+    ("local_slm", "api_key"),
+)
 DEFAULT_LLM_TIMEOUT_SECONDS = 30
 DEFAULT_LLM_MAX_TOKENS = 300
 DEFAULT_LLM_TEMPERATURE = 0.2
@@ -257,22 +264,81 @@ def normalize_notification_config(config):
     return normalized
 
 
+def _secret_path_for(path):
+    path = os.fspath(path)
+    if os.path.abspath(path) == os.path.abspath(NOTIFICATION_CONFIG_FILE):
+        return NOTIFICATION_SECRETS_FILE
+    return os.path.join(os.path.dirname(path), "notification_secrets.local.json")
+
+
+def _read_json_file(path):
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _split_secret_fields(config):
+    public_config = deepcopy(config)
+    secrets = {}
+    for section, key in SECRET_FIELDS:
+        section_payload = public_config.setdefault(section, {})
+        value = str(section_payload.get(key) or "")
+        section_payload[key] = ""
+        if value:
+            secrets.setdefault(section, {})[key] = value
+    return public_config, secrets
+
+
+def _merge_secret_fields(config, secrets):
+    merged = deepcopy(config if isinstance(config, dict) else {})
+    for section, key in SECRET_FIELDS:
+        value = str(dict(secrets.get(section, {}) or {}).get(key) or "")
+        if value:
+            merged.setdefault(section, {})[key] = value
+    return merged
+
+
 def load_notification_config(path=NOTIFICATION_CONFIG_FILE):
     if not path or not os.path.exists(path):
         return deepcopy(DEFAULT_NOTIFICATION_CONFIG)
-    try:
-        with open(path, "r", encoding="utf-8") as handle:
-            config = json.load(handle)
-    except Exception:
-        return deepcopy(DEFAULT_NOTIFICATION_CONFIG)
-    return normalize_notification_config(config)
+    config = _read_json_file(path)
+    secrets = _read_json_file(_secret_path_for(path))
+    normalized = normalize_notification_config(_merge_secret_fields(config, secrets))
+    if any(str(dict(config.get(section, {}) or {}).get(key) or "") for section, key in SECRET_FIELDS):
+        save_notification_config(normalized, path)
+    return normalized
 
 
 def save_notification_config(config, path=NOTIFICATION_CONFIG_FILE):
     normalized = normalize_notification_config(config)
+    public_config, secrets = _split_secret_fields(normalized)
     with open(path, "w", encoding="utf-8") as handle:
-        json.dump(normalized, handle, ensure_ascii=False, indent=2)
+        json.dump(public_config, handle, ensure_ascii=False, indent=2)
+    secret_path = _secret_path_for(path)
+    with open(secret_path, "w", encoding="utf-8") as handle:
+        json.dump(secrets, handle, ensure_ascii=False, indent=2)
+    try:
+        os.chmod(secret_path, 0o600)
+    except OSError:
+        pass
     return normalized
+
+
+def preserve_unsubmitted_secrets(config, existing):
+    """Keep stored credentials when the settings UI submits an empty secret field."""
+    merged = deepcopy(config if isinstance(config, dict) else {})
+    current = normalize_notification_config(existing)
+    for section, key in SECRET_FIELDS:
+        incoming_section = merged.setdefault(section, {})
+        if not isinstance(incoming_section, dict):
+            incoming_section = {}
+            merged[section] = incoming_section
+        if not str(incoming_section.get(key) or ""):
+            incoming_section[key] = current[section].get(key, "")
+    return merged
 
 
 def apply_outlook_smtp_preset(config):

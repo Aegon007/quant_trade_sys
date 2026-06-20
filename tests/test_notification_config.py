@@ -55,6 +55,14 @@ class NotificationConfigTests(unittest.TestCase):
         self.assertEqual(config["email"]["from_email"], "sender@outlook.com")
         self.assertEqual(config["email"]["to_emails"], ["a@gmail.com", "b@gmail.com"])
         self.assertEqual(config["slack"]["webhook_url"], "https://hooks.slack.com/services/test")
+        public_config = self.module._read_json_file(self.config_path)
+        secrets = self.module._read_json_file(
+            str(Path(self.temp_dir.name) / "notification_secrets.local.json")
+        )
+        self.assertEqual(public_config["slack"]["webhook_url"], "")
+        self.assertEqual(public_config["email"]["password"], "")
+        self.assertEqual(secrets["slack"]["webhook_url"], "https://hooks.slack.com/services/test")
+        self.assertEqual(secrets["email"]["password"], "secret")
 
     def test_apply_outlook_smtp_preset_preserves_credentials(self):
         config = self.module.apply_outlook_smtp_preset({
@@ -88,6 +96,50 @@ class NotificationConfigTests(unittest.TestCase):
         self.assertEqual(config["local_slm"]["base_url"], "http://127.0.0.1:8000/v1")
         self.assertEqual(config["local_slm"]["model"], "Qwen/Qwen3-0.6B")
         self.assertEqual(config["local_slm"]["api_key"], "EMPTY")
+
+    def test_preserve_unsubmitted_secrets_keeps_existing_credentials(self):
+        merged = self.module.preserve_unsubmitted_secrets(
+            {
+                "slack": {"enabled": True, "webhook_url": ""},
+                "email": {"password": ""},
+                "llm": {"api_key": "", "model": "new-model"},
+                "local_slm": {"api_key": ""},
+            },
+            {
+                "slack": {"webhook_url": "https://hooks.slack.com/secret"},
+                "email": {"password": "smtp-secret"},
+                "llm": {"api_key": "remote-secret"},
+                "local_slm": {"api_key": "EMPTY"},
+            },
+        )
+
+        self.assertEqual(merged["slack"]["webhook_url"], "https://hooks.slack.com/secret")
+        self.assertEqual(merged["email"]["password"], "smtp-secret")
+        self.assertEqual(merged["llm"]["api_key"], "remote-secret")
+        self.assertEqual(merged["local_slm"]["api_key"], "EMPTY")
+        self.assertEqual(merged["llm"]["model"], "new-model")
+
+    def test_load_migrates_inline_secrets_to_local_file(self):
+        Path(self.config_path).write_text(
+            """{
+  "llm": {
+    "enabled": true,
+    "api_key": "legacy-secret",
+    "model": "test-model"
+  }
+}""",
+            encoding="utf-8",
+        )
+
+        loaded = self.module.load_notification_config(self.config_path)
+
+        public_config = self.module._read_json_file(self.config_path)
+        secrets = self.module._read_json_file(
+            str(Path(self.temp_dir.name) / "notification_secrets.local.json")
+        )
+        self.assertEqual(loaded["llm"]["api_key"], "legacy-secret")
+        self.assertEqual(public_config["llm"]["api_key"], "")
+        self.assertEqual(secrets["llm"]["api_key"], "legacy-secret")
 
     def test_redact_secret_keeps_suffix_only(self):
         self.assertEqual(self.module.redact_secret("abcdef123456"), "********3456")

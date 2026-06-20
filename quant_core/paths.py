@@ -20,7 +20,8 @@ TRANSACTIONS_FILE = str(STATE_DIR / "transactions.json")
 MARKET_EVENTS_FILE = str(STATE_DIR / "market_events.json")
 ANALYST_CONSENSUS_CACHE_FILE = str(STATE_DIR / "analyst_consensus_cache.json")
 ALERT_STATE_FILE = str(STATE_DIR / "alert_state.json")
-NOTIFICATION_CONFIG_FILE = str(STATE_DIR / "notification_config.json")
+NOTIFICATION_CONFIG_FILE = str(CONFIG_DIR / "notification_config.json")
+NOTIFICATION_SECRETS_FILE = str(CONFIG_DIR / "notification_secrets.local.json")
 COMMAND_AUDIT_FILE = str(STATE_DIR / "command_audit.jsonl")
 NEXT_DAY_TRADE_PLAN_FILE = str(STATE_DIR / "next_day_trade_plan.json")
 POST_CLOSE_REVIEW_FILE = str(STATE_DIR / "post_close_review.json")
@@ -70,6 +71,7 @@ EVENT_SOURCES_CONFIG_FILE = str(PROJECT_ROOT / "config" / "event_sources.json")
 STRATEGY_CONFIG_FILE = str(PROJECT_ROOT / "config" / "strategies.json")
 
 LEGACY_TO_NEW_FILE_MAP = (
+    (str(STATE_DIR / "notification_config.json"), NOTIFICATION_CONFIG_FILE),
     ("portfolio_data.json", PORTFOLIO_DATA_FILE),
     ("portfolio_input.json", PORTFOLIO_INPUT_FILE),
     ("price_cache.json", PRICE_CACHE_FILE),

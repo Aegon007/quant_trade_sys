@@ -139,7 +139,8 @@ export default function ResearchModels() {
               {text(trainingJob.stage, "idle")}
               {trainingJob.device_label ? ` · ${text(trainingJob.device_label)}` : ""}
               {trainingJob.epoch ? ` · epoch ${text(trainingJob.epoch)}/${text(trainingJob.epochs)}` : ""}
-              {trainingJob.loss !== undefined ? ` · loss ${Number(trainingJob.loss).toFixed(4)}` : ""}
+              {trainingJob.training_loss !== undefined ? ` · train ${Number(trainingJob.training_loss).toFixed(4)}` : trainingJob.loss !== undefined ? ` · loss ${Number(trainingJob.loss).toFixed(4)}` : ""}
+              {trainingJob.validation_loss !== undefined ? ` · validation ${Number(trainingJob.validation_loss).toFixed(4)}` : ""}
               {trainingJob.elapsed_seconds !== undefined ? ` · elapsed ${formatElapsed(liveElapsed)}` : ""}
             </span>
           </div>
@@ -188,7 +189,10 @@ export default function ResearchModels() {
             <div className="training-log-row" key={`${text(event.timestamp)}-${index}`}>
               <time>{new Date(text(event.timestamp)).toLocaleTimeString()}</time>
               <Status value={text(event.state, "running")} />
-              <span>{text(event.detail, text(event.stage, "working"))}</span>
+              <span>
+                {text(event.detail, text(event.stage, "working"))}
+                {event.validation_loss !== undefined ? ` · best validation ${Number(event.best_validation_loss ?? event.validation_loss).toFixed(4)}` : ""}
+              </span>
               <b>{event.progress_pct === undefined ? "" : `${Number(event.progress_pct).toFixed(0)}%`}</b>
             </div>
           )) : <p>No training events yet. Start a training run to see live output.</p>}
@@ -199,6 +203,9 @@ export default function ResearchModels() {
           ["Symbols", text(asDict(snapshot.summary).symbol_count, "0")],
           ["Risk-free benchmark", text(asDict(snapshot.benchmarks).risk_free ?? asDict(payload.config).risk_free_benchmark, "BIL")],
           ["Pretraining", text(asDict(training.pretraining).checkpoint_path, "Not run")],
+          ["Pretraining best epoch", text(asDict(training.pretraining).best_epoch, "Not run")],
+          ["Pretraining validation loss", text(asDict(training.pretraining).validation_loss, "Not run")],
+          ["Pretraining early stop", asDict(training.pretraining).stopped_early ? "YES" : "NO"],
           ["Selected initialization", text(selection.initialization ?? training.final_initialization, "Not evaluated")],
           ["Selection criterion", text(selection.criterion, "Not evaluated")],
           ["Bootstrap lifecycle", text(bootstrap.lifecycle, "UNAVAILABLE")],

@@ -45,7 +45,11 @@ DEFAULT_CONFIG = {
         "learning_rate": 3e-4,
         "weight_decay": 1e-4,
         "device": "auto",
-        "pretraining_epochs": 5,
+        "pretraining_epochs": 20,
+        "pretraining_validation_fraction": 0.15,
+        "pretraining_minimum_epochs": 5,
+        "pretraining_early_stopping_patience": 4,
+        "pretraining_early_stopping_min_delta": 1e-4,
         "walk_forward_epochs": 5,
         "retrain_interval_days": 30,
     },
@@ -93,12 +97,22 @@ def normalize_multi_horizon_config(config: Mapping | None = None) -> dict:
     training = normalized["training"]
     for key, default in (
         ("epochs", 30),
-        ("pretraining_epochs", 5),
+        ("pretraining_epochs", 20),
+        ("pretraining_minimum_epochs", 5),
+        ("pretraining_early_stopping_patience", 4),
         ("walk_forward_epochs", 5),
         ("retrain_interval_days", 30),
         ("batch_size", 8),
     ):
         training[key] = max(int(training.get(key, default)), 1)
+    training["pretraining_validation_fraction"] = min(
+        max(float(training.get("pretraining_validation_fraction", 0.15)), 0.05),
+        0.40,
+    )
+    training["pretraining_early_stopping_min_delta"] = max(
+        float(training.get("pretraining_early_stopping_min_delta", 1e-4)),
+        0.0,
+    )
     normalized["promotion"]["automatic"] = False
     # Traditional models are offline controls only. Production admission
     # requires a future explicit governance change backed by ablation results.

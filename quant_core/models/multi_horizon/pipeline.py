@@ -576,6 +576,10 @@ def run_multi_horizon_job(
             epochs=int(training["pretraining_epochs"]),
             batch_size=int(training["batch_size"]),
             learning_rate=float(training["learning_rate"]),
+            validation_fraction=float(training["pretraining_validation_fraction"]),
+            minimum_epochs=int(training["pretraining_minimum_epochs"]),
+            early_stopping_patience=int(training["pretraining_early_stopping_patience"]),
+            early_stopping_min_delta=float(training["pretraining_early_stopping_min_delta"]),
             device=str(training["device"]),
             checkpoint_path=pretraining_path,
             progress_callback=_scaled_progress(

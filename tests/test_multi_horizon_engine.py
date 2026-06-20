@@ -262,6 +262,86 @@ class MultiAssetTransformerTests(unittest.TestCase):
         self.assertGreaterEqual(pretrain_result["masked_patch_count"], 1)
         self.assertTrue(train_result["pretraining_loaded"])
 
+    def test_pretraining_uses_time_ordered_validation_and_early_stopping(self):
+        import torch
+
+        from quant_core.models.multi_horizon.network import MultiAssetTransformerConfig
+        from quant_core.models.multi_horizon.pretraining import (
+            _time_ordered_split_indices,
+            pretrain_temporal_encoder,
+        )
+        from quant_core.models.multi_horizon.training import build_multi_asset_tensor_bundle
+
+        train_indices, validation_indices = _time_ordered_split_indices(10, validation_fraction=0.2)
+        self.assertEqual(train_indices.tolist(), list(range(8)))
+        self.assertEqual(validation_indices.tolist(), [8, 9])
+
+        index = pd.date_range("2022-01-03", periods=260, freq="B")
+        histories = {}
+        for offset, symbol in enumerate(("AAA", "BBB", "SPY", "BIL")):
+            close = np.linspace(80 + offset, 115 + offset * 2, len(index))
+            histories[symbol] = pd.DataFrame(
+                {
+                    "Open": close,
+                    "High": close * 1.01,
+                    "Low": close * 0.99,
+                    "Close": close,
+                    "Volume": np.linspace(800_000, 1_100_000, len(index)),
+                },
+                index=index,
+            )
+        bundle = build_multi_asset_tensor_bundle(
+            histories,
+            symbols=["AAA", "BBB"],
+            benchmark_map={"AAA": "SPY", "BBB": "SPY"},
+            horizons=(21,),
+            lookback=60,
+        )
+        config = MultiAssetTransformerConfig(
+            feature_count=len(bundle.feature_columns),
+            horizon_count=1,
+            d_model=12,
+            temporal_layers=1,
+            cross_asset_layers=1,
+            attention_heads=3,
+            patch_size=10,
+            patch_stride=10,
+            expert_count=2,
+            top_k_experts=1,
+        )
+        events = []
+        with tempfile.TemporaryDirectory() as temp_dir:
+            checkpoint = str(Path(temp_dir) / "pretrain.pt")
+            result = pretrain_temporal_encoder(
+                bundle,
+                config=config,
+                epochs=8,
+                minimum_epochs=1,
+                early_stopping_patience=1,
+                early_stopping_min_delta=1e9,
+                validation_fraction=0.2,
+                batch_size=4,
+                device="cpu",
+                checkpoint_path=checkpoint,
+                seed=7,
+                progress_callback=events.append,
+            )
+            payload = torch.load(checkpoint, map_location="cpu")
+
+        self.assertTrue(result["stopped_early"])
+        self.assertEqual(result["epochs_completed"], 2)
+        self.assertEqual(result["best_epoch"], 1)
+        self.assertEqual(len(result["epoch_history"]), 2)
+        self.assertIn("training_loss", result["epoch_history"][0])
+        self.assertIn("validation_loss", result["epoch_history"][0])
+        self.assertEqual(payload["metadata"]["best_epoch"], 1)
+        self.assertGreater(payload["metadata"]["validation_sample_count"], 0)
+        self.assertEqual(
+            payload["metadata"]["training_sample_count"] + payload["metadata"]["validation_sample_count"],
+            len(bundle.observation_dates),
+        )
+        self.assertIn("validation_loss", events[-1])
+
 
 class MultiHorizonFusionTests(unittest.TestCase):
     def test_long_term_attractive_short_term_weak_does_not_sell(self):

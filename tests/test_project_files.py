@@ -87,6 +87,7 @@ class ProjectFilesTests(unittest.TestCase):
             "storage/state/analyst_consensus_cache.json",
             "storage/state/alert_state.json",
             "storage/state/notification_config.json",
+            "storage/config/*.local.json",
             "storage/state/market_events.json",
             "storage/state/command_audit.jsonl",
         ]:

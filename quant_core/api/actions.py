@@ -292,10 +292,12 @@ def save_runtime_schedule(schedule: Mapping) -> dict:
 
 
 def save_notification_settings(config: Mapping) -> dict:
-    saved = notification_config.save_notification_config(dict(config or {}))
+    existing = notification_config.load_notification_config()
+    merged = notification_config.preserve_unsubmitted_secrets(dict(config or {}), existing)
+    saved = notification_config.save_notification_config(merged)
     return {
         "message": "notification config saved",
-        "notification_config": saved,
+        "notification_config": snapshot_loader._sanitize_notification_config(saved),
     }
 
 

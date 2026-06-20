@@ -543,24 +543,44 @@ def _sanitize_notification_config(payload) -> dict:
     return {
         "slack": {
             "enabled": bool(slack.get("enabled")),
+            "webhook_url": "",
             "webhook_configured": bool(str(slack.get("webhook_url") or "").strip()),
         },
         "email": {
             "enabled": bool(email.get("enabled")),
+            "smtp_host": email.get("smtp_host"),
+            "smtp_port": email.get("smtp_port"),
+            "use_starttls": bool(email.get("use_starttls")),
+            "username": email.get("username"),
+            "password": "",
+            "from_email": email.get("from_email"),
             "to_emails": list(email.get("to_emails", []) or []),
             "smtp_host_configured": bool(str(email.get("smtp_host") or "").strip()),
             "password_configured": bool(str(email.get("password") or "").strip()),
         },
         "llm": {
             "enabled": bool(llm.get("enabled")),
+            "provider": llm.get("provider"),
             "base_url": llm.get("base_url"),
+            "api_key": "",
             "model": llm.get("model"),
+            "temperature": llm.get("temperature"),
+            "max_tokens": llm.get("max_tokens"),
+            "timeout_seconds": llm.get("timeout_seconds"),
+            "site_url": llm.get("site_url"),
+            "app_name": llm.get("app_name"),
             "api_key_configured": bool(str(llm.get("api_key") or "").strip()),
         },
         "local_slm": {
             "enabled": bool(local_slm.get("enabled")),
+            "provider": local_slm.get("provider"),
             "base_url": local_slm.get("base_url"),
+            "api_key": "",
             "model": local_slm.get("model"),
+            "temperature": local_slm.get("temperature"),
+            "max_tokens": local_slm.get("max_tokens"),
+            "timeout_seconds": local_slm.get("timeout_seconds"),
+            "api_key_configured": bool(str(local_slm.get("api_key") or "").strip()),
         },
         "alert_settings": dict(payload.get("alert_settings", {}) or {}),
     }
@@ -568,9 +588,7 @@ def _sanitize_notification_config(payload) -> dict:
 
 def load_settings_response(*, now: Optional[datetime] = None) -> dict:
     schedule = load_runtime_schedule()
-    notification_config, _ = safe_read_json(qpaths.CONFIG_DIR / "notification_config.json")
-    if not notification_config:
-        notification_config, _ = safe_read_json(qpaths.NOTIFICATION_CONFIG_FILE)
+    notification_config = ncfg.load_notification_config()
     model_registry, _ = safe_read_json(qpaths.MODEL_REGISTRY_CONFIG_FILE)
     multi_horizon_config, _ = safe_read_json(qpaths.MULTI_HORIZON_MODEL_CONFIG_FILE)
     settings_payload = {

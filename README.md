@@ -260,7 +260,8 @@ journalctl --user -u quant-trade-system.service -f
 - `storage/state/price_cache.json`：行情缓存文件，减少短时间内重复请求。
 - `storage/state/analyst_consensus_cache.json`：夜间生成的分析师共识缓存文件，用于增强关注列表买入提示，也会保存 ETF 的持仓加权代理意见。
 - `storage/state/alert_state.json`：告警去重状态文件，记录已发送过的强信号和风险告警。
-- `storage/state/notification_config.json`：本地通知连接配置，保存 Slack webhook 和 SMTP 参数，不提交到 Git。
+- `storage/config/notification_config.json`：本地通知、LLM 和发送策略的非敏感配置，不提交到 Git。
+- `storage/config/notification_secrets.local.json`：只保存 Slack webhook、SMTP 密码及 LLM API key；不提交到 Git，并尽量使用仅当前用户可读写的文件权限。
 - `storage/state/market_events.json`：手工维护事件输入文件（可选）。
 - `config/event_sources.json`：事件源配置，定义本地 mock 与自动抓取源（如 yfinance 新闻）。
 - `storage/state/transactions.json`：买入/卖出交易记录与组合动作事件记录（如转到关注、转到持仓等）。
@@ -314,7 +315,8 @@ journalctl --user -u quant-trade-system.service -f
 - 预测目标：`63/126/252` 交易日
 - lookback：`252` 交易日
 - 监督训练轮数：`30`
-- masked-patch 预训练轮数：`5`
+- masked-patch 预训练最多：`20` 轮
+- 预训练验证：按时间顺序保留尾部 `15%`，最少训练 `5` 轮，验证损失连续 `4` 轮无有效改善则提前停止
 - 设备：`auto`
 - 夜间模式：只推理
 - 周末模式：到期后重训并验证

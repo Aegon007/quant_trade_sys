@@ -642,6 +642,10 @@ def walk_forward_validate_bundle(
                     "epoch": payload.get("epoch"),
                     "epochs": payload.get("epochs"),
                     "loss": payload.get("loss"),
+                    "training_loss": payload.get("training_loss"),
+                    "validation_loss": payload.get("validation_loss"),
+                    "best_validation_loss": payload.get("best_validation_loss"),
+                    "best_epoch": payload.get("best_epoch"),
                     "device": payload.get("device"),
                 }
             )

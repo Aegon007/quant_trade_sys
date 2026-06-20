@@ -86,6 +86,10 @@ class ApiSnapshotLoaderTests(unittest.TestCase):
         self.assertTrue(sanitized["alert_settings"]["enable_weekend_research"])
         self.assertEqual(sanitized["alert_settings"]["weekend_research_day_local"], "saturday")
         self.assertEqual(sanitized["alert_settings"]["weekend_research_hour_local"], 10)
+        self.assertEqual(sanitized["email"]["smtp_host"], "smtp-mail.outlook.com")
+        self.assertEqual(sanitized["llm"]["provider"], "openai")
+        self.assertEqual(sanitized["llm"]["api_key"], "")
+        self.assertFalse(sanitized["llm"]["api_key_configured"])
 
     def test_job_registry_updates_status_file(self):
         with tempfile.TemporaryDirectory() as temp_dir:
