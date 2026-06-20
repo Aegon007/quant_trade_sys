@@ -50,6 +50,7 @@ class ProjectFilesTests(unittest.TestCase):
         self.assertIsInstance(core_etf["etfs"], list)
         self.assertGreaterEqual(len(core_etf["etfs"]), 3)
         self.assertGreaterEqual(len(satellite_universe.get("manual_include", [])), 10)
+        self.assertIn("GELYY", satellite_universe.get("manual_exclude", []))
         self.assertIn("core_etf_weight_ranges", engine_policy)
         self.assertIn("models", model_registry)
         self.assertTrue((ROOT / "storage" / "config" / "runtime_schedule.json").exists())

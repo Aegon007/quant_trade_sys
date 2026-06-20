@@ -49,7 +49,9 @@
     "UBER",
     "VRT"
   ],
-  "manual_exclude": [],
+  "manual_exclude": [
+    "GELYY"
+  ],
   "max_candidate_pool_size": 100,
   "max_deep_analysis_size": 20,
   "max_recommendations": 3,
