@@ -44,6 +44,24 @@ pip install -r requirements.txt
 cd frontend && npm ci && cd ..
 ```
 
+#### Jetson PyTorch
+
+Jetson 使用 NVIDIA JetPack 自带 CUDA，不能依赖 PyPI 的通用 PyTorch wheel。`requirements.txt`
+会在 `aarch64` 上跳过 PyTorch，避免覆盖 NVIDIA 专用构建。请先按照
+[NVIDIA Installing PyTorch for Jetson Platform](https://docs.nvidia.com/deeplearning/frameworks/install-pytorch-jetson-platform/index.html)
+安装与当前 JetPack 版本匹配的 PyTorch，再安装本项目依赖。
+
+在启动系统前可以这样确认后端环境确实看到了 GPU：
+
+```bash
+source ~/venv/bin/activate
+python -c "import sys, torch; print(sys.executable); print(torch.__version__); print(torch.version.cuda); print(torch.cuda.is_available()); print(torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CUDA unavailable')"
+```
+
+如果 `torch.version.cuda` 是 `None`，当前安装的是 CPU-only PyTorch；如果它有版本号但
+`torch.cuda.is_available()` 仍为 `False`，则需要检查 JetPack/CUDA 兼容性或容器的
+NVIDIA runtime。不要在 Jetson 上再次运行 `pip install torch==...` 覆盖 NVIDIA wheel。
+
 ### 2. 启动应用
 
 ```bash
@@ -301,11 +319,14 @@ journalctl --user -u quant-trade-system.service -f
 - 夜间模式：只推理
 - 周末模式：到期后重训并验证
 
-如果当前环境没有安装 PyTorch，系统不会崩溃，深度学习策略会返回 `HOLD` 并提示依赖缺失。安装方式：
+如果当前环境没有安装 PyTorch，系统不会崩溃，深度学习策略会返回 `HOLD` 并提示依赖缺失。
+macOS 和普通 x86 Linux 的安装方式：
 
 ```bash
 pip install "torch>=2.2.0"
 ```
+
+Jetson 请使用前文所述的 NVIDIA JetPack 对应构建，不要使用这条通用安装命令。
 
 如需启用 FinBERT（自动新闻情绪）：
 

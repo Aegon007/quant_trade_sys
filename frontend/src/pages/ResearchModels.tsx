@@ -161,6 +161,12 @@ export default function ResearchModels() {
             <small>Compute</small>
             <strong>{text(trainingJob.device_label, "Not detected")}</strong>
             <span>{text(trainingJob.accelerator, "—")} · {text(trainingJob.device, "—")}</span>
+            <span>
+              PyTorch {text(trainingJob.torch_version, "—")} · CUDA build {text(trainingJob.torch_cuda_version, "none")}
+            </span>
+            {trainingJob.fallback_reason ? (
+              <span className="training-runtime-warning">{text(trainingJob.fallback_reason)}</span>
+            ) : null}
           </div>
           <div>
             <small>Dataset</small>

@@ -254,6 +254,13 @@ def _resolve_device(preferred: str):
 
 def describe_compute_device(preferred: str = "auto") -> dict:
     device = _resolve_device(preferred)
+    cuda_available = bool(torch.cuda.is_available())
+    cuda_version = str(torch.version.cuda or "")
+    common = {
+        "torch_version": str(torch.__version__),
+        "torch_cuda_version": cuda_version or None,
+        "cuda_available": cuda_available,
+    }
     if device.type == "cuda":
         index = device.index if device.index is not None else torch.cuda.current_device()
         name = torch.cuda.get_device_name(index)
@@ -261,17 +268,30 @@ def describe_compute_device(preferred: str = "auto") -> dict:
             "device": str(device),
             "accelerator": "CUDA",
             "label": f"NVIDIA {name}",
+            "fallback_reason": None,
+            **common,
         }
     if device.type == "mps":
         return {
             "device": "mps",
             "accelerator": "MPS",
             "label": "Apple Metal / MPS",
+            "fallback_reason": None,
+            **common,
         }
+    preferred = str(preferred or "auto").strip().lower()
+    if preferred in {"auto", "cuda"} and not cuda_version:
+        fallback_reason = "This PyTorch build has no CUDA support"
+    elif preferred in {"auto", "cuda"} and not cuda_available:
+        fallback_reason = "CUDA runtime is unavailable to this Python process"
+    else:
+        fallback_reason = None
     return {
         "device": "cpu",
         "accelerator": "CPU",
         "label": "CPU",
+        "fallback_reason": fallback_reason,
+        **common,
     }
 
 

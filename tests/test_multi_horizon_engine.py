@@ -684,6 +684,10 @@ class MultiHorizonConfigTests(unittest.TestCase):
         self.assertEqual(info["device"], "cpu")
         self.assertEqual(info["accelerator"], "CPU")
         self.assertIn("label", info)
+        self.assertIn("torch_version", info)
+        self.assertIn("torch_cuda_version", info)
+        self.assertIn("cuda_available", info)
+        self.assertIn("fallback_reason", info)
 
     def test_config_cannot_auto_promote_or_enable_traditional_ml_by_accident(self):
         from quant_core.models.multi_horizon.config import normalize_multi_horizon_config
@@ -866,6 +870,8 @@ class MultiHorizonConfigTests(unittest.TestCase):
         runtime_event = next(event for event in events if event["stage"] == "runtime_ready")
         self.assertIn(runtime_event["accelerator"], {"CPU", "CUDA", "MPS"})
         self.assertTrue(runtime_event["device_label"])
+        self.assertIn("torch_version", runtime_event)
+        self.assertIn("cuda_available", runtime_event)
         self.assertEqual(events[-1]["stage"], "not_ready")
         self.assertEqual(events[-1]["progress_pct"], 100)
 

@@ -358,6 +358,10 @@ def run_multi_horizon_job(
         device=device_info["device"],
         accelerator=device_info["accelerator"],
         device_label=device_info["label"],
+        torch_version=device_info["torch_version"],
+        torch_cuda_version=device_info["torch_cuda_version"],
+        cuda_available=device_info["cuda_available"],
+        fallback_reason=device_info["fallback_reason"],
     )
     risk_free_symbol = str(normalized.get("risk_free_benchmark") or "BIL").strip().upper()
     artifacts = dict(normalized.get("artifacts", {}) or {})
