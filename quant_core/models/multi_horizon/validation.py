@@ -14,7 +14,7 @@ def purged_walk_forward_splits(
     embargo_periods: int,
     step_periods: int | None = None,
 ):
-    unique_dates = pd.Index(pd.to_datetime(list(dates))).drop_duplicates().sort_values()
+    unique_dates = pd.Index(pd.to_datetime(list(dates), utc=True)).drop_duplicates().sort_values()
     train_periods = max(int(train_periods), 1)
     test_periods = max(int(test_periods), 1)
     embargo_periods = max(int(embargo_periods), 0)
@@ -61,6 +61,7 @@ def evaluate_prediction_arrays(
     asset_mask,
     horizons,
     top_k: int = 3,
+    asset_groups=None,
 ) -> dict:
     rank_scores = np.asarray(rank_scores, dtype=float)
     absolute_targets = np.asarray(absolute_targets, dtype=float)
@@ -219,7 +220,7 @@ def evaluate_prediction_arrays(
             or int((expert_usage >= 0.05).sum()) <= 1
         )
     )
-    return {
+    result = {
         "horizons": horizon_reports,
         "quantile_coverage": {
             "p10": float(np.mean(observed <= p10)) if len(observed) else None,
@@ -232,6 +233,33 @@ def evaluate_prediction_arrays(
             "collapsed": collapsed,
         },
     }
+    normalized_groups = tuple(
+        str(value or "unclassified").strip().lower()
+        for value in list(asset_groups or [])
+    )
+    if normalized_groups and len(normalized_groups) == asset_mask.shape[1]:
+        group_reports = {}
+        for group in sorted(set(normalized_groups)):
+            positions = np.asarray([value == group for value in normalized_groups], dtype=bool)
+            group_mask = asset_mask & positions.reshape(1, -1)
+            group_report = evaluate_prediction_arrays(
+                rank_scores=rank_scores,
+                absolute_targets=absolute_targets,
+                risk_free_excess_targets=risk_free_excess_targets,
+                market_excess_targets=market_excess_targets,
+                positive_probabilities=positive_probabilities,
+                risk_free_outperformance_probabilities=risk_free_outperformance_probabilities,
+                market_outperformance_probabilities=market_outperformance_probabilities,
+                quantiles=quantiles,
+                expert_weights=expert_weights,
+                asset_mask=group_mask,
+                horizons=horizons,
+                top_k=top_k,
+            )
+            group_report["asset_count"] = int(positions.sum())
+            group_reports[group] = group_report
+        result["asset_groups"] = group_reports
+    return result
 
 
 def _subset_bundle(bundle, indices):
@@ -327,6 +355,26 @@ def _aggregate_fold_reports(fold_reports, *, horizons):
         "expert_usage": [float(value) for value in mean_usage],
         "collapsed": any(bool(dict(report.get("moe", {}) or {}).get("collapsed")) for report in fold_reports),
     }
+    group_names = sorted(
+        {
+            str(group)
+            for report in fold_reports
+            for group in dict(report.get("asset_groups", {}) or {})
+        }
+    )
+    if group_names:
+        result["asset_groups"] = {}
+        for group in group_names:
+            rows = [
+                dict(dict(report.get("asset_groups", {}) or {}).get(group, {}) or {})
+                for report in fold_reports
+                if group in dict(report.get("asset_groups", {}) or {})
+            ]
+            aggregated = _aggregate_fold_reports(rows, horizons=horizons)
+            aggregated["asset_count"] = max(
+                [int(row.get("asset_count", 0) or 0) for row in rows] or [0]
+            )
+            result["asset_groups"][group] = aggregated
     return result
 
 
@@ -342,6 +390,56 @@ def _finite_mean(values):
     return float(np.mean(finite)) if finite else None
 
 
+def initialization_quality_score(report, *, primary_horizon: int) -> float:
+    row = dict(
+        dict(report or {}).get("horizons", {}).get(str(int(primary_horizon)), {}) or {}
+    )
+
+    def value(key, default=0.0):
+        try:
+            parsed = float(row.get(key))
+        except (TypeError, ValueError):
+            return float(default)
+        return parsed if np.isfinite(parsed) else float(default)
+
+    directional = value("directional_accuracy", 0.0)
+    risk_free_directional = value("risk_free_directional_accuracy", 0.0)
+    brier = value("brier_score", 1.0)
+    risk_free_brier = value("risk_free_brier_score", 1.0)
+    return_error = min(max(value("median_return_mae", 2.0), 0.0), 2.0)
+    rank_ic = min(max(value("rank_ic", -1.0), -1.0), 1.0)
+    top_market = min(max(value("top_k_excess_return", -1.0), -1.0), 1.0)
+    top_risk_free = min(max(value("top_k_risk_free_excess_return", -1.0), -1.0), 1.0)
+    return float(
+        directional
+        + risk_free_directional
+        - brier
+        - risk_free_brier
+        - return_error
+        + rank_ic
+        + 0.1 * top_market
+        + 0.1 * top_risk_free
+    )
+
+
+def select_initialization(candidate, scratch, *, primary_horizon: int) -> dict:
+    candidate_score = initialization_quality_score(
+        candidate,
+        primary_horizon=primary_horizon,
+    )
+    scratch_score = initialization_quality_score(
+        scratch,
+        primary_horizon=primary_horizon,
+    )
+    initialization = "scratch" if scratch and scratch_score > candidate_score else "pretrained"
+    return {
+        "initialization": initialization,
+        "criterion": f"{int(primary_horizon)}d_composite_validation_quality",
+        "candidate_score": candidate_score,
+        "scratch_score": scratch_score,
+    }
+
+
 def evaluate_promotion_gates(
     *,
     candidate,
@@ -350,9 +448,12 @@ def evaluate_promotion_gates(
     primary_horizon: int,
     fold_count: int,
     minimum_folds: int = 3,
+    selected_initialization: str = "pretrained",
 ) -> dict:
     horizon = str(int(primary_horizon))
-    candidate_row = dict(dict(candidate or {}).get("horizons", {}).get(horizon, {}) or {})
+    use_scratch = str(selected_initialization or "").strip().lower() == "scratch"
+    selected_report = scratch if use_scratch else candidate
+    candidate_row = dict(dict(selected_report or {}).get("horizons", {}).get(horizon, {}) or {})
     baseline_row = dict(dict(baseline or {}).get("horizons", {}).get(horizon, {}) or {})
     scratch_row = dict(dict(scratch or {}).get("horizons", {}).get(horizon, {}) or {})
     candidate_rank_ic = candidate_row.get("rank_ic")
@@ -399,15 +500,13 @@ def evaluate_promotion_gates(
         "positive_rank_ic": positive(candidate_rank_ic),
         "positive_top_k_excess_return": positive(candidate_top),
         "beats_baseline_top_k": greater(candidate_top, baseline_top),
-        "pretraining_incremental": greater(
-            candidate_risk_free_top,
-            scratch_risk_free_top,
-        ),
-        "moe_stable": not bool(dict(candidate or {}).get("moe", {}).get("collapsed")),
+        "initialization_ablation_complete": bool(candidate) and bool(scratch),
+        "moe_stable": not bool(dict(selected_report or {}).get("moe", {}).get("collapsed")),
     }
     return {
         "status": "PASS" if all(gates.values()) else "REVIEW",
         "primary_horizon": int(primary_horizon),
+        "selected_initialization": "scratch" if use_scratch else "pretrained",
         "gates": gates,
         "metrics": {
             "candidate_rank_ic": candidate_rank_ic,
@@ -421,6 +520,12 @@ def evaluate_promotion_gates(
             "baseline_top_k_excess_return": baseline_top,
             "scratch_top_k_excess_return": scratch_top,
             "scratch_top_k_risk_free_excess_return": scratch_risk_free_top,
+            "pretraining_incremental": greater(
+                dict(dict(candidate or {}).get("horizons", {}).get(horizon, {}) or {}).get(
+                    "top_k_risk_free_excess_return"
+                ),
+                scratch_risk_free_top,
+            ),
         },
     }
 
@@ -479,6 +584,7 @@ def walk_forward_validate_bundle(
     top_k: int = 3,
     max_folds: int = 3,
     compare_pretraining: bool = True,
+    asset_groups: Mapping[str, str] | None = None,
     progress_callback: Callable[[Mapping], None] | None = None,
 ) -> dict:
     import tempfile
@@ -597,6 +703,10 @@ def walk_forward_validate_bundle(
                 asset_mask=test_bundle.asset_mask,
                 horizons=bundle.horizons,
                 top_k=top_k,
+                asset_groups=tuple(
+                    str(dict(asset_groups or {}).get(symbol) or "unclassified")
+                    for symbol in test_bundle.symbols
+                ),
             )
             candidate_reports.append(candidate_report)
 
@@ -632,6 +742,10 @@ def walk_forward_validate_bundle(
                     asset_mask=test_bundle.asset_mask,
                     horizons=bundle.horizons,
                     top_k=top_k,
+                    asset_groups=tuple(
+                        str(dict(asset_groups or {}).get(symbol) or "unclassified")
+                        for symbol in test_bundle.symbols
+                    ),
                 )
                 scratch_reports.append(scratch_report)
                 completed_work += 1
@@ -655,12 +769,20 @@ def walk_forward_validate_bundle(
     candidate = _aggregate_fold_reports(candidate_reports, horizons=bundle.horizons)
     scratch = _aggregate_fold_reports(scratch_reports, horizons=bundle.horizons) if scratch_reports else {}
     baseline = _aggregate_fold_reports(baseline_reports, horizons=bundle.horizons)
+    primary_horizon = bundle.horizons[-1]
+    selection = select_initialization(
+        candidate,
+        scratch,
+        primary_horizon=primary_horizon,
+    )
+    selected_initialization = selection["initialization"]
     gate_report = evaluate_promotion_gates(
         candidate=candidate,
         baseline=baseline,
         scratch=scratch,
-        primary_horizon=bundle.horizons[-1],
+        primary_horizon=primary_horizon,
         fold_count=len(folds),
+        selected_initialization=selected_initialization,
     )
     return {
         "schema_version": 1,
@@ -670,9 +792,17 @@ def walk_forward_validate_bundle(
         "candidate": candidate,
         "scratch": scratch,
         "relative_strength_baseline": baseline,
+        "selection": {
+            **selection,
+            "pretraining_incremental": bool(
+                gate_report["metrics"].get("pretraining_incremental")
+            ),
+        },
         "governance": {
             "beats_baseline_252d_top_k": gate_report["gates"]["beats_baseline_top_k"],
-            "pretraining_incremental_252d_top_k": gate_report["gates"]["pretraining_incremental"],
+            "pretraining_incremental_252d_top_k": bool(
+                gate_report["metrics"].get("pretraining_incremental")
+            ),
             "moe_collapsed": bool(candidate["moe"]["collapsed"]),
             "automatic_promotion": False,
             "promotion_gates": gate_report["gates"],

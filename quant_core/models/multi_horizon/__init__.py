@@ -6,6 +6,7 @@ from .dataset import (
     build_panel_frame,
 )
 from .config import load_multi_horizon_config, save_multi_horizon_config
+from .bootstrap import install_bootstrap_checkpoint, load_bootstrap_manifest
 from .fusion import FusedDecision, fuse_multi_horizon_decision
 from .governance import (
     apply_production_gate,
@@ -19,6 +20,7 @@ from .network import FinanceMultiAssetTransformer, MultiAssetTransformerConfig
 from .prediction import build_prediction_snapshot
 from .pipeline import (
     build_model_universe,
+    build_model_universe_report,
     build_satellite_snapshot_from_model,
     model_training_due,
     run_multi_horizon_job,
@@ -28,7 +30,9 @@ from .runtime import run_multi_horizon_inference
 from .snapshot import load_multi_horizon_snapshot, save_multi_horizon_snapshot
 from .validation import (
     evaluate_prediction_arrays,
+    initialization_quality_score,
     purged_walk_forward_splits,
+    select_initialization,
     walk_forward_validate_bundle,
 )
 
@@ -44,14 +48,19 @@ __all__ = [
     "build_panel_frame",
     "build_prediction_snapshot",
     "build_model_universe",
+    "build_model_universe_report",
     "build_satellite_snapshot_from_model",
     "append_prediction_journal",
     "evaluate_prediction_arrays",
+    "initialization_quality_score",
     "load_multi_horizon_config",
+    "install_bootstrap_checkpoint",
+    "load_bootstrap_manifest",
     "fuse_multi_horizon_decision",
     "load_multi_horizon_snapshot",
     "model_training_due",
     "purged_walk_forward_splits",
+    "select_initialization",
     "refresh_model_governance",
     "pretrain_temporal_encoder",
     "run_multi_horizon_inference",

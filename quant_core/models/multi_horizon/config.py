@@ -20,6 +20,13 @@ DEFAULT_CONFIG = {
     "lookback": 252,
     "observation_frequency": "W-FRI",
     "maximum_training_symbols": 100,
+    "universe_policy": {
+        "exclude_tactical_products_from_long_horizon": True,
+        "tactical_product_symbols": [
+            "BITI", "CHAU", "CWEB", "NVD", "NVDL", "NVDS", "SDOW", "SETH", "SH",
+            "SOXL", "SPXS", "SQQQ", "TQQQ", "TSLS", "TSLZ", "UVIX", "YANG", "YINN",
+        ],
+    },
     "architecture": {
         "d_model": 64,
         "temporal_layers": 2,
@@ -44,6 +51,8 @@ DEFAULT_CONFIG = {
     },
     "artifacts": {
         "checkpoint_path": qpaths.MULTI_HORIZON_CHECKPOINT_FILE,
+        "bootstrap_checkpoint_path": qpaths.MULTI_HORIZON_BOOTSTRAP_CHECKPOINT_FILE,
+        "bootstrap_manifest_path": qpaths.MULTI_HORIZON_BOOTSTRAP_MANIFEST_FILE,
         "pretraining_checkpoint_path": qpaths.MULTI_HORIZON_PRETRAIN_CHECKPOINT_FILE,
         "snapshot_path": qpaths.MULTI_HORIZON_SNAPSHOT_FILE,
         "validation_path": qpaths.MULTI_HORIZON_VALIDATION_FILE,
@@ -70,6 +79,17 @@ def normalize_multi_horizon_config(config: Mapping | None = None) -> dict:
         normalized.get("risk_free_benchmark") or "BIL"
     ).strip().upper()
     normalized["maximum_training_symbols"] = max(int(normalized.get("maximum_training_symbols", 100)), 2)
+    policy = normalized["universe_policy"]
+    policy["exclude_tactical_products_from_long_horizon"] = bool(
+        policy.get("exclude_tactical_products_from_long_horizon", True)
+    )
+    policy["tactical_product_symbols"] = sorted(
+        {
+            str(symbol or "").strip().upper()
+            for symbol in list(policy.get("tactical_product_symbols", []) or [])
+            if str(symbol or "").strip()
+        }
+    )
     training = normalized["training"]
     for key, default in (
         ("epochs", 30),

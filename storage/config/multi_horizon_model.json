@@ -13,6 +13,29 @@
   "lookback": 252,
   "observation_frequency": "W-FRI",
   "maximum_training_symbols": 100,
+  "universe_policy": {
+    "exclude_tactical_products_from_long_horizon": true,
+    "tactical_product_symbols": [
+      "BITI",
+      "CHAU",
+      "CWEB",
+      "NVD",
+      "NVDL",
+      "NVDS",
+      "SDOW",
+      "SETH",
+      "SH",
+      "SOXL",
+      "SPXS",
+      "SQQQ",
+      "TQQQ",
+      "TSLS",
+      "TSLZ",
+      "UVIX",
+      "YANG",
+      "YINN"
+    ]
+  },
   "architecture": {
     "d_model": 64,
     "temporal_layers": 2,
@@ -37,6 +60,8 @@
   },
   "artifacts": {
     "checkpoint_path": "trained_models/finance_multi_asset_transformer.pt",
+    "bootstrap_checkpoint_path": "model_artifacts/bootstrap/finance_multi_asset_transformer.pt",
+    "bootstrap_manifest_path": "model_artifacts/bootstrap/manifest.json",
     "pretraining_checkpoint_path": "trained_models/finance_multi_asset_transformer_pretrain.pt",
     "snapshot_path": "storage/state/multi_horizon_snapshot.json",
     "validation_path": "storage/state/multi_horizon_validation.json",

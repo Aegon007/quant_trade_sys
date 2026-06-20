@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "model_id": "finance_multi_asset_transformer",
+  "model_version": "2026-06-20T09:12:45.242990",
+  "lifecycle": "SHADOW",
+  "validation_status": "REVIEW",
+  "production_authorized": false,
+  "purpose": "Portable cold-start checkpoint for inference and shadow observation only.",
+  "artifact": {
+    "filename": "finance_multi_asset_transformer.pt",
+    "sha256": "e35416d89d17cd0a8db0e0aa089d8e5cdc7c7558664f5d558abbd394858a7ed2",
+    "size_bytes": 1210067,
+    "target_schema_version": 2,
+    "risk_free_benchmark": "BIL",
+    "horizons": [
+      63,
+      126,
+      252
+    ]
+  }
+}

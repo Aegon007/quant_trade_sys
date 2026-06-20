@@ -30,7 +30,9 @@ export default function ResearchModels() {
   const baseline = asDict(validation.relative_strength_baseline);
   const scratch = asDict(validation.scratch);
   const governance = asDict(validation.governance);
+  const selection = asDict(validation.selection);
   const lifecycle = asDict(payload.governance);
+  const bootstrap = asDict(payload.bootstrap_manifest);
   const promotionGates = asDict(governance.promotion_gates);
   const registry = asDict(payload.model_registry);
   const training = asDict(snapshot.training);
@@ -135,6 +137,10 @@ export default function ResearchModels() {
           ["Symbols", text(asDict(snapshot.summary).symbol_count, "0")],
           ["Risk-free benchmark", text(asDict(snapshot.benchmarks).risk_free ?? asDict(payload.config).risk_free_benchmark, "BIL")],
           ["Pretraining", text(asDict(training.pretraining).checkpoint_path, "Not run")],
+          ["Selected initialization", text(selection.initialization ?? training.final_initialization, "Not evaluated")],
+          ["Selection criterion", text(selection.criterion, "Not evaluated")],
+          ["Bootstrap lifecycle", text(bootstrap.lifecycle, "UNAVAILABLE")],
+          ["Bootstrap version", text(bootstrap.model_version, "UNAVAILABLE")],
           ["Final fit loss", text(training.loss, "Not trained")],
           ["Return quantile loss", text(training.quantile_loss, "Not trained")],
           ["Upside probability loss", text(training.positive_return_loss, "Not trained")],
@@ -171,6 +177,21 @@ export default function ResearchModels() {
         </Panel>
       </div>
 
+      <Panel title="Asset-group attribution" subtitle="The same walk-forward test separated into core ETFs and satellite candidates.">
+        <DecisionTable rows={Object.entries(asDict(candidate.asset_groups)).map(([group, report]) => ({
+          group,
+          ...asDict(asDict(asDict(report).horizons)["252"]),
+          asset_count: asDict(report).asset_count,
+        }))} columns={[
+          { label: "Group", render: (row) => text(row.group) },
+          { label: "Assets", render: (row) => text(row.asset_count, "0") },
+          { label: "Up accuracy", render: (row) => formatPercent(row.directional_accuracy) },
+          { label: "Return MAE", render: (row) => formatPercent(row.median_return_mae) },
+          { label: "Top 3 vs BIL", render: (row) => formatPercent(row.top_k_risk_free_excess_return) },
+          { label: "Rank IC", render: (row) => formatPercent(row.rank_ic) },
+        ]} />
+      </Panel>
+
       <div className="split-layout">
         <Panel
           title="Validation & promotion"
@@ -192,7 +213,7 @@ export default function ResearchModels() {
             ["Positive 252d Rank IC", <Status value={promotionGates.positive_rank_ic ? "PASS" : "REVIEW"} />],
             ["Positive Top 3 vs SPY", <Status value={promotionGates.positive_top_k_excess_return ? "PASS" : "REVIEW"} />],
             ["Beats SPY-relative baseline", <Status value={promotionGates.beats_baseline_top_k ? "PASS" : "REVIEW"} />],
-            ["Pretraining incremental", <Status value={promotionGates.pretraining_incremental ? "PASS" : "REVIEW"} />],
+            ["Initialization ablation complete", <Status value={promotionGates.initialization_ablation_complete ? "PASS" : "REVIEW"} />],
             ["MoE stable", <Status value={promotionGates.moe_stable ? "PASS" : "REVIEW"} />],
             ["Automatic promotion", <Status value="DISABLED" />],
             ["Decision authority", <Status value={isProduction ? "PRODUCTION" : "SHADOW ONLY"} />],

@@ -665,6 +665,20 @@ Stage exit:
 
 Run the new engine in shadow mode for an agreed observation period.
 
+Current implementation status:
+
+- A portable, SHA-256-verified `SHADOW` bootstrap checkpoint is distributed in
+  `model_artifacts/bootstrap/` so a new computer can infer without cold
+  training.
+- Leveraged, inverse, and volatility tactical products are excluded from the
+  long-horizon training universe and remain owned by the intraday tactical
+  overlay.
+- Validation now reports core-ETF and satellite metrics separately.
+- Walk-forward validation selects scratch initialization for final training
+  when masked-patch pretraining fails to add out-of-sample value.
+- The current candidate remains `REVIEW`, not production-authorized. Bootstrap
+  availability is an operational feature, not evidence of model quality.
+
 Deliver:
 
 - Production-versus-candidate attribution.

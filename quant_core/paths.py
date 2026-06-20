@@ -10,6 +10,8 @@ STATE_DIR = STORAGE_DIR / "state"
 CONFIG_DIR = STORAGE_DIR / "config"
 JOURNALS_DIR = STORAGE_DIR / "journals"
 TRAINED_MODELS_DIR = PROJECT_ROOT / "trained_models"
+MODEL_ARTIFACTS_DIR = PROJECT_ROOT / "model_artifacts"
+BOOTSTRAP_MODELS_DIR = MODEL_ARTIFACTS_DIR / "bootstrap"
 
 PORTFOLIO_DATA_FILE = str(STATE_DIR / "portfolio_data.json")
 PORTFOLIO_INPUT_FILE = str(STATE_DIR / "portfolio_input.json")
@@ -60,6 +62,8 @@ MODEL_REGISTRY_CONFIG_FILE = str(CONFIG_DIR / "model_registry.json")
 MULTI_HORIZON_MODEL_CONFIG_FILE = str(CONFIG_DIR / "multi_horizon_model.json")
 MULTI_HORIZON_CHECKPOINT_FILE = str(TRAINED_MODELS_DIR / "finance_multi_asset_transformer.pt")
 MULTI_HORIZON_PRETRAIN_CHECKPOINT_FILE = str(TRAINED_MODELS_DIR / "finance_multi_asset_transformer_pretrain.pt")
+MULTI_HORIZON_BOOTSTRAP_CHECKPOINT_FILE = str(BOOTSTRAP_MODELS_DIR / "finance_multi_asset_transformer.pt")
+MULTI_HORIZON_BOOTSTRAP_MANIFEST_FILE = str(BOOTSTRAP_MODELS_DIR / "manifest.json")
 JOB_STATUS_FILE = str(STATE_DIR / "job_status.json")
 
 EVENT_SOURCES_CONFIG_FILE = str(PROJECT_ROOT / "config" / "event_sources.json")

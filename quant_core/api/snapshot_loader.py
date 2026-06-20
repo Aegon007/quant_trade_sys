@@ -600,13 +600,22 @@ def load_research_models_response(*, now: Optional[datetime] = None) -> dict:
     registry, registry_errors = safe_read_json(qpaths.MODEL_REGISTRY_CONFIG_FILE)
     config, config_errors = safe_read_json(qpaths.MULTI_HORIZON_MODEL_CONFIG_FILE)
     governance, governance_errors = safe_read_json(qpaths.MULTI_HORIZON_GOVERNANCE_FILE)
+    bootstrap_manifest, bootstrap_errors = safe_read_json(qpaths.MULTI_HORIZON_BOOTSTRAP_MANIFEST_FILE)
     snapshot = snapshot if isinstance(snapshot, dict) else {}
     validation = validation if isinstance(validation, dict) else {}
     registry = registry if isinstance(registry, dict) else {}
     config = config if isinstance(config, dict) else {}
     governance = governance if isinstance(governance, dict) else {}
+    bootstrap_manifest = bootstrap_manifest if isinstance(bootstrap_manifest, dict) else {}
     snapshot = mh_governance.apply_production_gate(snapshot, governance)
-    errors = [*snapshot_errors, *validation_errors, *registry_errors, *config_errors, *governance_errors]
+    errors = [
+        *snapshot_errors,
+        *validation_errors,
+        *registry_errors,
+        *config_errors,
+        *governance_errors,
+        *bootstrap_errors,
+    ]
     model_age = _age_seconds(snapshot.get("generated_at"), now=now)
     model_stale = bool(model_age is not None and model_age > DEFAULT_SNAPSHOT_MAX_AGE_SECONDS)
     return build_api_response(
@@ -630,6 +639,7 @@ def load_research_models_response(*, now: Optional[datetime] = None) -> dict:
             "model_registry": registry,
             "config": config,
             "governance": governance,
+            "bootstrap_manifest": bootstrap_manifest,
         },
         generated_at=snapshot.get("generated_at") or validation.get("generated_at") or now_iso(now),
     )

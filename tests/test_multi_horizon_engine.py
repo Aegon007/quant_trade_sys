@@ -1,5 +1,7 @@
 import tempfile
 import unittest
+import json
+import hashlib
 from pathlib import Path
 
 import numpy as np
@@ -446,6 +448,36 @@ class MultiHorizonValidationTests(unittest.TestCase):
         self.assertGreater(report["quantile_coverage"]["p90"], report["quantile_coverage"]["p10"])
         self.assertFalse(report["moe"]["collapsed"])
 
+    def test_validation_report_breaks_out_asset_groups(self):
+        from quant_core.models.multi_horizon.validation import evaluate_prediction_arrays
+
+        shape = (1, 3, 1)
+        report = evaluate_prediction_arrays(
+            rank_scores=np.array([[[0.9], [0.5], [0.1]]]),
+            absolute_targets=np.array([[[0.12], [0.04], [-0.03]]]),
+            risk_free_excess_targets=np.array([[[0.10], [0.02], [-0.05]]]),
+            market_excess_targets=np.array([[[0.08], [0.01], [-0.04]]]),
+            positive_probabilities=np.full(shape, 0.6),
+            risk_free_outperformance_probabilities=np.full(shape, 0.6),
+            market_outperformance_probabilities=np.full(shape, 0.6),
+            quantiles=np.array(
+                [[
+                    [[-0.05, 0.08, 0.20]],
+                    [[-0.05, 0.03, 0.15]],
+                    [[-0.12, -0.02, 0.08]],
+                ]]
+            ),
+            expert_weights=np.array([[[0.6, 0.4], [0.5, 0.5], [0.4, 0.6]]]),
+            asset_mask=np.ones((1, 3), dtype=bool),
+            asset_groups=("core_etf", "satellite", "satellite"),
+            horizons=(63,),
+            top_k=1,
+        )
+
+        self.assertEqual(set(report["asset_groups"]), {"core_etf", "satellite"})
+        self.assertEqual(report["asset_groups"]["core_etf"]["asset_count"], 1)
+        self.assertEqual(report["asset_groups"]["satellite"]["asset_count"], 2)
+
     def test_prediction_journal_is_compact_and_shadow_outcomes_are_scored(self):
         from quant_core.models.multi_horizon.governance import (
             append_prediction_journal,
@@ -525,6 +557,7 @@ class MultiHorizonValidationTests(unittest.TestCase):
             },
             primary_horizon=252,
             fold_count=3,
+            selected_initialization="pretrained",
         )
         failed = evaluate_promotion_gates(
             candidate={
@@ -553,6 +586,7 @@ class MultiHorizonValidationTests(unittest.TestCase):
             },
             primary_horizon=252,
             fold_count=2,
+            selected_initialization="pretrained",
         )
 
         self.assertEqual(passed["status"], "PASS")
@@ -562,6 +596,43 @@ class MultiHorizonValidationTests(unittest.TestCase):
         self.assertFalse(failed["gates"]["risk_free_direction_better_than_chance"])
         self.assertFalse(failed["gates"]["positive_rank_ic"])
         self.assertFalse(failed["gates"]["beats_baseline_top_k"])
+
+    def test_initialization_selection_uses_composite_quality_not_one_top_k_metric(self):
+        from quant_core.models.multi_horizon.validation import select_initialization
+
+        candidate = {
+            "horizons": {
+                "252": {
+                    "rank_ic": 0.02,
+                    "top_k_excess_return": 0.70,
+                    "top_k_risk_free_excess_return": 0.96,
+                    "directional_accuracy": 0.55,
+                    "risk_free_directional_accuracy": 0.54,
+                    "brier_score": 0.24,
+                    "risk_free_brier_score": 0.24,
+                    "median_return_mae": 0.18,
+                }
+            }
+        }
+        scratch = {
+            "horizons": {
+                "252": {
+                    "rank_ic": -0.10,
+                    "top_k_excess_return": 0.72,
+                    "top_k_risk_free_excess_return": 0.98,
+                    "directional_accuracy": 0.35,
+                    "risk_free_directional_accuracy": 0.34,
+                    "brier_score": 0.36,
+                    "risk_free_brier_score": 0.38,
+                    "median_return_mae": 0.64,
+                }
+            }
+        }
+
+        selection = select_initialization(candidate, scratch, primary_horizon=252)
+
+        self.assertEqual(selection["initialization"], "pretrained")
+        self.assertGreater(selection["candidate_score"], selection["scratch_score"])
 
     def test_unapproved_model_is_shadow_only_until_manual_promotion(self):
         from quant_core.models.multi_horizon.governance import (
@@ -638,6 +709,76 @@ class MultiHorizonConfigTests(unittest.TestCase):
         self.assertEqual(symbols[:3], ["MSFT", "IAU", "BABA"])
         self.assertEqual(len(symbols), 4)
 
+    def test_long_horizon_universe_excludes_tactical_products(self):
+        from quant_core.models.multi_horizon.pipeline import build_model_universe_report
+
+        report = build_model_universe_report(
+            {
+                "holdings": [{"symbol": "MSFT"}, {"symbol": "SQQQ"}],
+                "watchlist": [{"symbol": "UVIX"}, {"symbol": "NVDA"}],
+            },
+            core_universe={"etfs": [{"symbol": "VOO", "enabled": True}]},
+            satellite_universe={"manual_include": ["TQQQ", "AMD"]},
+            universe_policy={
+                "tactical_product_symbols": ["SQQQ", "TQQQ", "UVIX"],
+                "exclude_tactical_products_from_long_horizon": True,
+            },
+            maximum_symbols=10,
+        )
+
+        self.assertEqual(report["symbols"], ["MSFT", "NVDA", "VOO", "AMD"])
+        self.assertEqual(
+            {row["symbol"] for row in report["excluded"]},
+            {"SQQQ", "TQQQ", "UVIX"},
+        )
+        self.assertEqual(report["asset_groups"]["VOO"], "core_etf")
+
+    def test_bootstrap_checkpoint_installs_only_after_hash_verification(self):
+        from quant_core.models.multi_horizon.bootstrap import install_bootstrap_checkpoint
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            bootstrap = root / "bootstrap.pt"
+            runtime = root / "runtime" / "model.pt"
+            manifest = root / "manifest.json"
+            bootstrap.write_bytes(b"portable-shadow-checkpoint")
+            digest = hashlib.sha256(bootstrap.read_bytes()).hexdigest()
+            manifest.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "artifact": {
+                            "filename": bootstrap.name,
+                            "sha256": digest,
+                            "size_bytes": bootstrap.stat().st_size,
+                            "target_schema_version": 2,
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            result = install_bootstrap_checkpoint(
+                runtime_path=str(runtime),
+                bootstrap_path=str(bootstrap),
+                manifest_path=str(manifest),
+            )
+
+            self.assertEqual(result["status"], "INSTALLED")
+            self.assertEqual(runtime.read_bytes(), bootstrap.read_bytes())
+
+            runtime.unlink()
+            manifest.write_text(
+                json.dumps({"artifact": {"sha256": "0" * 64}}),
+                encoding="utf-8",
+            )
+            with self.assertRaises(ValueError):
+                install_bootstrap_checkpoint(
+                    runtime_path=str(runtime),
+                    bootstrap_path=str(bootstrap),
+                    manifest_path=str(manifest),
+                )
+
     def test_history_loader_includes_market_and_configured_treasury_benchmarks(self):
         from quant_core.models.multi_horizon.pipeline import load_histories
 
@@ -666,6 +807,8 @@ class MultiHorizonConfigTests(unittest.TestCase):
                     "maximum_training_symbols": 10,
                     "artifacts": {
                         "checkpoint_path": str(Path(temp_dir) / "missing.pt"),
+                        "bootstrap_checkpoint_path": str(Path(temp_dir) / "missing-bootstrap.pt"),
+                        "bootstrap_manifest_path": str(Path(temp_dir) / "missing-manifest.json"),
                         "pretraining_checkpoint_path": str(Path(temp_dir) / "pretrain.pt"),
                         "snapshot_path": str(Path(temp_dir) / "snapshot.json"),
                         "validation_path": str(Path(temp_dir) / "validation.json"),
@@ -695,6 +838,8 @@ class MultiHorizonConfigTests(unittest.TestCase):
                     "maximum_training_symbols": 10,
                     "artifacts": {
                         "checkpoint_path": str(Path(temp_dir) / "missing.pt"),
+                        "bootstrap_checkpoint_path": str(Path(temp_dir) / "missing-bootstrap.pt"),
+                        "bootstrap_manifest_path": str(Path(temp_dir) / "missing-manifest.json"),
                         "pretraining_checkpoint_path": str(Path(temp_dir) / "pretrain.pt"),
                         "snapshot_path": str(Path(temp_dir) / "snapshot.json"),
                         "validation_path": str(Path(temp_dir) / "validation.json"),

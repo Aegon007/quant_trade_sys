@@ -485,7 +485,11 @@ def train_multi_asset_model(
         "epoch_history": epoch_history,
         "pretraining": {
             "loaded": pretraining_loaded,
-            "checkpoint_path": pretrained_checkpoint_path,
+            "checkpoint_path": (
+                Path(pretrained_checkpoint_path).name
+                if pretrained_checkpoint_path
+                else None
+            ),
             "metadata": pretraining_metadata,
         },
     }

@@ -11,6 +11,7 @@ from quant_core.analytics import quant_analysis as qa
 from quant_core.data import storage as data_storage
 
 from .config import load_multi_horizon_config, normalize_multi_horizon_config
+from .bootstrap import install_bootstrap_checkpoint
 from .dataset import build_panel_frame
 from .network import MultiAssetTransformerConfig
 from .pretraining import pretrain_temporal_encoder
@@ -44,8 +45,26 @@ def build_model_universe(
     *,
     core_universe: Mapping,
     satellite_universe: Mapping,
+    universe_policy: Mapping | None = None,
     maximum_symbols: int = 100,
 ) -> list[str]:
+    return build_model_universe_report(
+        data,
+        core_universe=core_universe,
+        satellite_universe=satellite_universe,
+        universe_policy=universe_policy,
+        maximum_symbols=maximum_symbols,
+    )["symbols"]
+
+
+def build_model_universe_report(
+    data: Mapping,
+    *,
+    core_universe: Mapping,
+    satellite_universe: Mapping,
+    universe_policy: Mapping | None = None,
+    maximum_symbols: int = 100,
+) -> dict:
     priority_symbols = [
         row.get("symbol")
         for row in list(dict(data or {}).get("holdings", []) or [])
@@ -64,11 +83,37 @@ def build_model_universe(
         str(symbol or "").strip().upper()
         for symbol in list(dict(satellite_universe or {}).get("manual_exclude", []) or [])
     }
-    return [
-        symbol
-        for symbol in _unique_symbols(priority_symbols)
-        if symbol not in excluded
-    ][: max(int(maximum_symbols), 2)]
+    policy = dict(universe_policy or {})
+    tactical_symbols = {
+        str(symbol or "").strip().upper()
+        for symbol in list(policy.get("tactical_product_symbols", []) or [])
+        if str(symbol or "").strip()
+    }
+    exclude_tactical = bool(policy.get("exclude_tactical_products_from_long_horizon", True))
+    core_symbols = {
+        str(dict(row or {}).get("symbol") or "").strip().upper()
+        for row in list(dict(core_universe or {}).get("etfs", []) or [])
+        if bool(dict(row or {}).get("enabled", True))
+    }
+    selected = []
+    excluded_rows = []
+    asset_groups = {}
+    for symbol in _unique_symbols(priority_symbols):
+        if symbol in excluded:
+            excluded_rows.append({"symbol": symbol, "reason": "manual_exclude"})
+            continue
+        if exclude_tactical and symbol in tactical_symbols:
+            excluded_rows.append({"symbol": symbol, "reason": "tactical_product"})
+            continue
+        selected.append(symbol)
+        asset_groups[symbol] = "core_etf" if symbol in core_symbols else "satellite"
+    selected = selected[: max(int(maximum_symbols), 2)]
+    return {
+        "symbols": selected,
+        "asset_groups": {symbol: asset_groups[symbol] for symbol in selected},
+        "excluded": excluded_rows,
+        "requested_symbol_count": len(_unique_symbols(priority_symbols)),
+    }
 
 
 def build_benchmark_map(symbols: Sequence[str]) -> dict[str, str]:
@@ -99,6 +144,27 @@ def load_histories(
     return histories, failures
 
 
+def summarize_history_failures(failures: Sequence[Mapping]) -> dict:
+    counts = {}
+    symbols = []
+    for row in list(failures or []):
+        item = dict(row or {})
+        error = str(item.get("error") or "unknown error").strip()
+        counts[error] = counts.get(error, 0) + 1
+        symbol = str(item.get("symbol") or "").strip().upper()
+        if symbol:
+            symbols.append(symbol)
+    grouped = [
+        {"error": error, "count": count}
+        for error, count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+    ]
+    return {
+        "failed_symbol_count": len(symbols),
+        "symbols": symbols,
+        "groups": grouped,
+    }
+
+
 def _load_default_universes():
     from quant_core.analytics import candidate_pool as candidate_pool
     from quant_core.analytics import core_etf_rotation
@@ -108,7 +174,14 @@ def _load_default_universes():
 
 def model_training_due(*, config: Mapping | None = None, now: datetime | None = None) -> bool:
     normalized = normalize_multi_horizon_config(config) if config is not None else load_multi_horizon_config()
-    checkpoint = Path(_artifact_path(str(dict(normalized.get("artifacts", {}) or {})["checkpoint_path"])))
+    artifacts = dict(normalized.get("artifacts", {}) or {})
+    checkpoint = Path(_artifact_path(str(artifacts["checkpoint_path"])))
+    if not checkpoint.exists():
+        install_bootstrap_checkpoint(
+            runtime_path=str(checkpoint),
+            bootstrap_path=_artifact_path(str(artifacts["bootstrap_checkpoint_path"])),
+            manifest_path=_artifact_path(str(artifacts["bootstrap_manifest_path"])),
+        )
     if not checkpoint.exists():
         return True
     interval_days = int(dict(normalized.get("training", {}) or {}).get("retrain_interval_days", 30))
@@ -299,12 +372,14 @@ def run_multi_horizon_job(
         default_core, default_satellite = _load_default_universes()
         core_universe = default_core if core_universe is None else core_universe
         satellite_universe = default_satellite if satellite_universe is None else satellite_universe
-    symbols = build_model_universe(
+    universe_report = build_model_universe_report(
         data,
         core_universe=dict(core_universe or {}),
         satellite_universe=dict(satellite_universe or {}),
+        universe_policy=dict(normalized.get("universe_policy", {}) or {}),
         maximum_symbols=int(normalized["maximum_training_symbols"]),
     )
+    symbols = list(universe_report["symbols"])
     _emit_progress(
         progress_callback,
         stage="universe_ready",
@@ -312,6 +387,24 @@ def run_multi_horizon_job(
         progress_pct=5,
         symbol_count=len(symbols),
     )
+    bootstrap_result = {"status": "SKIPPED"}
+    if not train and not Path(checkpoint_path).exists():
+        try:
+            bootstrap_result = install_bootstrap_checkpoint(
+                runtime_path=checkpoint_path,
+                bootstrap_path=_artifact_path(str(artifacts["bootstrap_checkpoint_path"])),
+                manifest_path=_artifact_path(str(artifacts["bootstrap_manifest_path"])),
+            )
+        except ValueError as exc:
+            snapshot = _not_ready_snapshot(
+                symbols=symbols,
+                checkpoint_path=checkpoint_path,
+                generated_at=now,
+                reason=str(exc),
+            )
+            snapshot["bootstrap"] = {"status": "INVALID", "error": str(exc)}
+            save_multi_horizon_snapshot(snapshot, path=snapshot_path)
+            return snapshot
     if not train and not Path(checkpoint_path).exists():
         snapshot = _not_ready_snapshot(
             symbols=symbols,
@@ -319,6 +412,7 @@ def run_multi_horizon_job(
             generated_at=now,
             reason="No trained multi-horizon checkpoint. Run model training from Research & Models.",
         )
+        snapshot["bootstrap"] = bootstrap_result
         save_multi_horizon_snapshot(snapshot, path=snapshot_path)
         _emit_progress(
             progress_callback,
@@ -432,6 +526,10 @@ def run_multi_horizon_job(
             top_k=3,
             max_folds=3,
             compare_pretraining=True,
+            asset_groups={
+                symbol: str(universe_report["asset_groups"].get(symbol) or "satellite")
+                for symbol in usable_symbols
+            },
             progress_callback=_scaled_progress(
                 progress_callback,
                 start=25,
@@ -441,6 +539,13 @@ def run_multi_horizon_job(
         )
         validation_result["generated_at"] = now.isoformat()
         validation_result["model_id"] = normalized["model_id"]
+        validation_result["universe"] = {
+            "asset_groups": {
+                symbol: universe_report["asset_groups"].get(symbol)
+                for symbol in usable_symbols
+            },
+            "excluded": list(universe_report["excluded"]),
+        }
         validation_path = _save_json(validation_result, _artifact_path(str(artifacts["validation_path"])))
         pretraining_path = _artifact_path(str(artifacts["pretraining_checkpoint_path"]))
         _emit_progress(
@@ -480,7 +585,12 @@ def run_multi_horizon_job(
             weight_decay=float(training["weight_decay"]),
             device=str(training["device"]),
             checkpoint_path=checkpoint_path,
-            pretrained_checkpoint_path=pretraining_path,
+            pretrained_checkpoint_path=(
+                pretraining_path
+                if str(dict(validation_result.get("selection", {}) or {}).get("initialization"))
+                == "pretrained"
+                else None
+            ),
             progress_callback=_scaled_progress(
                 progress_callback,
                 start=78,
@@ -489,6 +599,11 @@ def run_multi_horizon_job(
             ),
         )
         training_result["pretraining"] = pretraining_result
+        training_result["final_initialization"] = (
+            "pretrained"
+            if training_result.get("pretraining_loaded")
+            else "scratch_selected_by_walk_forward"
+        )
         training_result["panel_path"] = panel_path
         training_result["validation_path"] = validation_path
         training_result["validation_status"] = validation_result["status"]
@@ -602,7 +717,18 @@ def run_multi_horizon_job(
         "usable_symbol_count": len(usable_symbols),
         "failed_symbol_count": len(failures),
         "failures": failures,
+        "failure_summary": summarize_history_failures(failures),
+        "excluded_from_long_horizon": list(universe_report["excluded"]),
     }
+    snapshot["universe"] = {
+        "asset_groups": {
+            symbol: universe_report["asset_groups"].get(symbol)
+            for symbol in usable_symbols
+        },
+        "excluded": list(universe_report["excluded"]),
+    }
+    if not train:
+        snapshot["bootstrap"] = bootstrap_result
     if training_result:
         snapshot["training"] = training_result
     save_multi_horizon_snapshot(snapshot, path=snapshot_path)

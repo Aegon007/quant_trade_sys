@@ -250,6 +250,7 @@ journalctl --user -u quant-trade-system.service -f
 - `storage/state/multi_horizon_validation.json`：walk-forward 绝对收益误差、上涨/跑赢短债概率校准、Top 3 对短债及 SPY 超额收益、分位数覆盖和 MoE 路由验证结果。
 - `storage/journals/multi_horizon_predictions.jsonl`：紧凑预测日志，用于未来 63/126/252 日实际结果归因。
 - `storage/config/multi_horizon_model.json`：模型结构、训练周期、候选池上限和 artifact 路径配置。
+- `model_artifacts/bootstrap/`：随代码发布的 `SHADOW` 冷启动 checkpoint 与 SHA-256 manifest；新电脑首次推理时会自动安装到本地 `trained_models/`。
 
 ## 策略与回测
 
@@ -263,8 +264,10 @@ journalctl --user -u quant-trade-system.service -f
 说明：
 
 - `finance_multi_asset_transformer` 是当前默认决策模型。
+- bootstrap checkpoint 只提供冷启动推理和影子观察，不代表模型已通过生产晋升。
 - 传统规则策略仍保留，主要用于做对照、解释和回测基线。
 - LightGBM、CatBoost、XGBoost 及其生产依赖已经删除；除非未来消融实验证明有稳定的增量经济价值，否则不会重新加入生产。
+- 长周期训练默认排除杠杆、反向与波动率战术产品；它们继续由盘中战术模块处理，不和普通股票、核心 ETF 共用长期 Top 3 排名。
 
 离线基准只在周末研究任务中运行，用来回答“复杂模型是否真的优于简单规则”。它们不会生成日常生产信号，也不会阻塞多周期模型的训练、推理或页面读取。
 
