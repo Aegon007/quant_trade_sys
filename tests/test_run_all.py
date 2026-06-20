@@ -32,13 +32,31 @@ class RunAllTests(unittest.TestCase):
             ["npm", "run", "dev", "--", "--host", "127.0.0.1", "--port", "5173"],
         )
         self.assertEqual(specs[1].cwd, "/repo/frontend")
-        self.assertEqual(specs[1].env, {"VITE_API_BASE_URL": "http://127.0.0.1:8710"})
+        self.assertEqual(
+            specs[1].env,
+            {
+                "VITE_API_BASE_URL": "",
+                "VITE_API_PROXY_TARGET": "http://127.0.0.1:8710",
+            },
+        )
         self.assertEqual(specs[2].command, ["/opt/python", "-m", "integrations.slack.bot"])
 
     def test_build_service_specs_can_disable_everything(self):
         specs = self.module.build_service_specs(with_ui=False, with_slack=False)
 
         self.assertEqual(specs, [])
+
+    def test_build_service_specs_supports_lan_frontend_with_local_api_proxy(self):
+        specs = self.module.build_service_specs(
+            with_ui=True,
+            with_slack=False,
+            frontend_host="0.0.0.0",
+            api_host="127.0.0.1",
+            api_port=9010,
+        )
+
+        self.assertIn("0.0.0.0", specs[1].command)
+        self.assertEqual(specs[1].env["VITE_API_PROXY_TARGET"], "http://127.0.0.1:9010")
 
     def test_node_version_check_rejects_old_node(self):
         def fake_runner(*args, **kwargs):

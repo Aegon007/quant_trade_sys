@@ -6,7 +6,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=/home/YOUR_USER/work_dir/quant_trade_sys
-ExecStart=/home/YOUR_USER/venv/bin/python -m jobs.run_all --api-host 127.0.0.1 --frontend-host 127.0.0.1
+ExecStart=/home/YOUR_USER/venv/bin/python -m jobs.run_all --lan
 Environment=PYTHONUNBUFFERED=1
 Environment=PATH=/home/YOUR_USER/venv/bin:/usr/local/bin:/usr/bin:/bin
 Restart=always

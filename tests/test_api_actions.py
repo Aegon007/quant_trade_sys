@@ -122,6 +122,7 @@ class ApiActionsTests(unittest.TestCase):
             "/api/plan-quality",
             "/api/strategy-governance",
             "/api/research-models",
+            "/api/downloads/training-analysis-bundle",
             "/api/multi-horizon",
             "/api/reports/latest",
             "/api/actions/refresh-market",

@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import signal
+import socket
 import subprocess
 import sys
 import threading
@@ -132,7 +133,10 @@ def build_service_specs(
                     str(int(frontend_port)),
                 ],
                 cwd=str(project_root / "frontend"),
-                env={"VITE_API_BASE_URL": f"http://{api_host}:{int(api_port)}"},
+                env={
+                    "VITE_API_BASE_URL": "",
+                    "VITE_API_PROXY_TARGET": f"http://127.0.0.1:{int(api_port)}",
+                },
             )
         )
 
@@ -221,6 +225,18 @@ def emit_startup_summary(statuses, *, printer=print):
     printer("Startup status:")
     for status in statuses:
         printer(status.format_line())
+
+
+def discover_lan_ip() -> str:
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.connect(("8.8.8.8", 80))
+            return str(sock.getsockname()[0])
+    except OSError:
+        try:
+            return socket.gethostbyname(socket.gethostname())
+        except OSError:
+            return ""
 
 
 def maybe_run_nightly_alerts(
@@ -1216,6 +1232,11 @@ def run_supervisor(
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Start the Quant Trade UI/API, Slack bot, and schedulers together.")
     parser.add_argument("--no-ui", action="store_true", help="Do not start the UI/API frontend stack.")
+    parser.add_argument(
+        "--lan",
+        action="store_true",
+        help="Expose the React frontend to the trusted local network on port 5173.",
+    )
     parser.add_argument("--api-host", default=DEFAULT_API_HOST, help="FastAPI bind host.")
     parser.add_argument("--api-port", type=int, default=DEFAULT_API_PORT, help="FastAPI bind port.")
     parser.add_argument("--frontend-host", default=DEFAULT_FRONTEND_HOST, help="React/Vite bind host.")
@@ -1248,6 +1269,14 @@ def main(argv=None):
     )
 
     logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"), format="%(asctime)s %(levelname)s %(message)s")
+    frontend_host = "0.0.0.0" if args.lan else args.frontend_host
+    if args.lan:
+        lan_ip = discover_lan_ip()
+        logging.warning(
+            "LAN mode enabled without authentication. Open http://%s:%s only on a trusted network.",
+            lan_ip or "<server-lan-ip>",
+            args.frontend_port,
+        )
     result = run_supervisor(
         with_ui=not args.no_ui,
         with_slack=not args.no_slack,
@@ -1259,7 +1288,7 @@ def main(argv=None):
         market_refresh_interval_seconds=market_refresh_interval_seconds,
         api_host=args.api_host,
         api_port=args.api_port,
-        frontend_host=args.frontend_host,
+        frontend_host=frontend_host,
         frontend_port=args.frontend_port,
     )
     print(f"Supervisor exited. services={result['services']} launch_count={result['launch_count']}")

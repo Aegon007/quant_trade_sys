@@ -72,6 +72,32 @@ NVIDIA runtime。不要在 Jetson 上再次运行 `pip install torch==...` 覆�
 
 - FastAPI snapshot API: `http://127.0.0.1:8710`
 - React frontend: `http://127.0.0.1:5173`
+
+### 局域网访问
+
+在 Jetson 或服务器上使用：
+
+```bash
+source ~/venv/bin/activate
+cd ~/work_dir/quant_trade_sys
+python -m jobs.run_all --lan
+```
+
+然后在服务器上查询局域网 IP：
+
+```bash
+hostname -I
+```
+
+例如 IP 为 `192.168.1.50`，同一局域网内的电脑访问：
+
+```text
+http://192.168.1.50:5173
+```
+
+LAN 模式只暴露前端端口 `5173`，前端会在服务器内部代理 `/api` 到本机 FastAPI。
+系统目前没有用户认证，因此只应在可信家庭/私人局域网中启用，不要把 `5173`
+端口转发到公网。
 - Slack bot
 - nightly scheduler
 - market refresh worker
@@ -334,6 +360,16 @@ journalctl --user -u quant-trade-system.service -f
 Settings 页面中的 Remote LLM 和 Local SLM 状态在保存后只表示 `CONFIGURED`。
 点击对应的测试按钮并完成真实请求后，才会显示 `TESTED OK`；调用错误会直接显示
 `TEST FAILED` 和服务返回的错误原因。
+
+Research & Models 页面提供 `Download training analysis`。它会生成一个 ZIP，包含：
+
+- 训练特征与标签面板 `multi_horizon_panel.parquet`
+- walk-forward 验证、模型快照、治理状态和训练任务日志
+- 候选、预训练及存在时的生产模型 checkpoint
+- Python、PyTorch、CUDA 与 GPU 环境信息
+- 文件大小、SHA-256 和缺失文件清单
+
+该分析包不会包含持仓、交易流水、通知配置或任何 API key/密码。
 
 如果当前环境没有安装 PyTorch，系统不会崩溃，深度学习策略会返回 `HOLD` 并提示依赖缺失。
 macOS 和普通 x86 Linux 的安装方式：

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { postApi } from "../api";
+import { downloadApi, postApi } from "../api";
 import { DecisionTable } from "../components/DecisionTable";
 import { Facts, MetricStrip, Panel, SnapshotFrame, Status } from "../components/Primitives";
 import { asArray, asDict, formatPercent, text, useSnapshot, type Dict } from "../lib/data";
@@ -53,6 +53,7 @@ export default function ResearchModels() {
   const isTraining = ["started", "running"].includes(jobState);
   const [launching, setLaunching] = useState(false);
   const [promoting, setPromoting] = useState(false);
+  const [downloading, setDownloading] = useState(false);
   const [result, setResult] = useState("");
   const [, setClockTick] = useState(0);
 
@@ -110,6 +111,22 @@ export default function ResearchModels() {
     }
   }
 
+  async function downloadTrainingBundle() {
+    setDownloading(true);
+    setResult("");
+    try {
+      await downloadApi(
+        "/api/downloads/training-analysis-bundle",
+        "quant-training-analysis.zip",
+      );
+      setResult("Training analysis bundle downloaded.");
+    } catch (exc) {
+      setResult((exc as Error).message);
+    } finally {
+      setDownloading(false);
+    }
+  }
+
   const progress = Number(trainingJob.progress_pct ?? 0);
   const trainingEvents = asArray(trainingJob.events).map(asDict).slice(-14).reverse();
   const updatedAt = new Date(text(trainingJob.updated_at, "")).getTime();
@@ -138,9 +155,14 @@ export default function ResearchModels() {
         title="Finance multi-asset Transformer"
         subtitle="Patch temporal encoder, cross-asset attention, sparse regime experts, and multi-horizon quantile heads."
         action={
-          <button disabled={launching || isTraining} onClick={trainModel}>
-            {launching ? "Starting..." : isTraining ? "Training in progress..." : "Train and validate model"}
-          </button>
+          <div className="button-row">
+            <button className="quiet-button" disabled={downloading} onClick={downloadTrainingBundle}>
+              {downloading ? "Preparing ZIP..." : "Download training analysis"}
+            </button>
+            <button disabled={launching || isTraining} onClick={trainModel}>
+              {launching ? "Starting..." : isTraining ? "Training in progress..." : "Train and validate model"}
+            </button>
+          </div>
         }
       >
         <div className="training-progress">

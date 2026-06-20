@@ -14,7 +14,7 @@ export type ApiEnvelope<TPayload = unknown> = {
   payload: TPayload;
 };
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://127.0.0.1:8710";
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "";
 
 export async function fetchApi<TPayload>(path: string): Promise<ApiEnvelope<TPayload>> {
   const response = await fetch(`${API_BASE_URL}${path}`, { cache: "no-store" });
@@ -35,4 +35,22 @@ export async function postApi<TPayload = unknown>(path: string, payload?: unknow
     throw new Error(`API ${path} failed with ${response.status}${text ? `: ${text}` : ""}`);
   }
   return response.json() as Promise<TPayload>;
+}
+
+export async function downloadApi(path: string, fallbackFilename: string): Promise<void> {
+  const response = await fetch(`${API_BASE_URL}${path}`, { cache: "no-store" });
+  if (!response.ok) {
+    throw new Error(`API ${path} failed with ${response.status}`);
+  }
+  const disposition = response.headers.get("Content-Disposition") ?? "";
+  const match = disposition.match(/filename="([^"]+)"/);
+  const filename = match?.[1] || fallbackFilename;
+  const url = URL.createObjectURL(await response.blob());
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
 }

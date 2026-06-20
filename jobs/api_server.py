@@ -7,11 +7,13 @@ DTOs and never run heavy quant computation inside HTTP requests.
 from __future__ import annotations
 
 import argparse
+import io
 import sys
 from typing import Callable
 
 from quant_core.api import actions as api_actions
 from quant_core.api import snapshot_loader as loader
+from quant_core.models.multi_horizon.export import build_training_analysis_bundle
 
 
 API_TITLE = "Quant Trade System Local API"
@@ -127,6 +129,17 @@ def create_app():
     @app.get("/api/settings")
     def settings():
         return loader.load_settings_response()
+
+    @app.get("/api/downloads/training-analysis-bundle")
+    def training_analysis_bundle():
+        from fastapi.responses import StreamingResponse
+
+        filename = f"quant-training-analysis-{loader.now_iso()[:10]}.zip"
+        return StreamingResponse(
+            io.BytesIO(build_training_analysis_bundle()),
+            media_type="application/zip",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
 
     @app.post("/api/actions/refresh-market")
     def refresh_market(payload: dict | None = None):
