@@ -91,6 +91,55 @@ class ApiSnapshotLoaderTests(unittest.TestCase):
         self.assertEqual(sanitized["llm"]["api_key"], "")
         self.assertFalse(sanitized["llm"]["api_key_configured"])
 
+    def test_overlay_live_positions_replaces_stale_snapshot_weight(self):
+        rows = self.loader.overlay_live_positions(
+            [{"symbol": "QQQM", "current_weight_pct": 0.0}],
+            positions={
+                "QQQM": {
+                    "current_shares": 1.5,
+                    "current_price": 292.0,
+                    "current_value": 438.0,
+                    "current_weight_pct": 9.9,
+                }
+            },
+        )
+
+        self.assertTrue(rows[0]["is_held"])
+        self.assertEqual(rows[0]["current_shares"], 1.5)
+        self.assertEqual(rows[0]["current_weight_pct"], 9.9)
+
+    def test_load_risk_response_uses_live_portfolio_concentration(self):
+        original_load_portfolio = self.loader._load_portfolio_payload
+        original_safe_read_json = self.loader.safe_read_json
+        self.addCleanup(setattr, self.loader, "_load_portfolio_payload", original_load_portfolio)
+        self.addCleanup(setattr, self.loader, "safe_read_json", original_safe_read_json)
+        self.loader._load_portfolio_payload = lambda: {
+            "account": {
+                "cash_available": 100.0,
+                "max_single_position_pct": 0.20,
+                "max_total_exposure_pct": 1.0,
+            },
+            "holdings": [
+                {
+                    "symbol": "BYDDY",
+                    "shares": 100.0,
+                    "current_price": 10.0,
+                    "cost": 9.0,
+                }
+            ],
+        }
+        self.loader.safe_read_json = lambda path: (
+            {"regime": "LIGHT", "target_exposure_pct": 60.0},
+            [],
+        )
+
+        response = self.loader.load_risk_response()
+
+        self.assertEqual(response["payload"]["regime"], "LIGHT")
+        self.assertGreater(response["summary"]["actual_exposure_pct"], 90.0)
+        self.assertEqual(response["summary"]["concentration_alert_count"], 1)
+        self.assertEqual(response["payload"]["risk_items"][0]["symbol"], "BYDDY")
+
     def test_job_registry_updates_status_file(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "job_status.json"

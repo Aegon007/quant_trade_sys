@@ -19,6 +19,7 @@ from quant_core.api import snapshot_loader
 from quant_core.data import data_health
 from quant_core.data import market_data
 from quant_core.data import storage as data_storage
+from quant_core.analytics import core_etf_rotation
 from quant_core.execution import nightly_planner
 from quant_core.execution import plan_quality
 from quant_core.execution import post_close_review
@@ -354,6 +355,15 @@ def save_multi_horizon_settings(config: Mapping) -> dict:
         "message": "multi-horizon model config saved",
         "path": path,
         "multi_horizon_config": multi_horizon_config.load_multi_horizon_config(path=path),
+    }
+
+
+def save_core_etf_universe_settings(config: Mapping) -> dict:
+    path = core_etf_rotation.save_core_etf_universe(dict(config or {}))
+    return {
+        "message": "core ETF universe saved; rerun nightly analysis to refresh model outputs",
+        "path": path,
+        "core_etf_universe": core_etf_rotation.load_core_etf_universe(path=path),
     }
 
 

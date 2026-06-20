@@ -1,6 +1,6 @@
 import { DecisionTable, HorizonStrip, type DecisionColumn } from "../components/DecisionTable";
 import { Facts, MetricStrip, Panel, SnapshotFrame, Status } from "../components/Primitives";
-import { asArray, asDict, formatPercent, text, useSnapshot, type Dict } from "../lib/data";
+import { asArray, asDict, formatCurrency, formatPercent, text, useSnapshot, type Dict } from "../lib/data";
 
 const conflictColumns: DecisionColumn[] = [
   { label: "Symbol", className: "symbol-cell", render: (row) => text(row.symbol) },
@@ -23,15 +23,32 @@ export default function RiskDiscipline() {
     return longState === "ATTRACTIVE" && ["DETERIORATING", "FAILED"].includes(timingState);
   });
   const riskRows = asArray(payload.risk_items ?? payload.items ?? payload.alerts ?? payload.rules);
+  const account = asDict(payload.account);
+  const holdings = asArray(payload.holdings);
 
   return (
     <SnapshotFrame snapshot={risk.data} loading={risk.loading} error={risk.error} onReload={() => { risk.reload(); model.reload(); }}>
       <MetricStrip items={[
         { label: "Discipline", value: text(payload.regime ?? summary.regime, "UNKNOWN"), hint: "Heavy / normal / light / stop" },
         { label: "Risk regime", value: text(payload.risk_regime ?? summary.risk_regime, "UNKNOWN"), hint: "Final veto authority" },
-        { label: "Target exposure", value: formatPercent(payload.target_exposure_pct ?? summary.target_exposure_pct), hint: "Portfolio-level output" },
-        { label: "Model conflicts", value: conflicts.length, hint: "Long strong, timing weak" },
+        { label: "Actual exposure", value: formatPercent(account.exposure_pct ?? summary.actual_exposure_pct), hint: `Target ${formatPercent(payload.target_exposure_pct ?? summary.target_exposure_pct)}` },
+        { label: "Available cash", value: formatCurrency(account.cash_available, 2), hint: `Total capital ${formatCurrency(account.total_capital, 2)}` },
       ]} />
+      <Panel title="Live position concentration" subtitle="Calculated from the latest Portfolio holdings and current prices, not from a stale nightly copy.">
+        <DecisionTable
+          rows={holdings}
+          columns={[
+            { label: "Symbol", className: "symbol-cell", render: (row) => text(row.symbol) },
+            { label: "Shares", render: (row) => text(row.current_shares) },
+            { label: "Value", render: (row) => formatCurrency(row.current_value, 2) },
+            { label: "Account weight", render: (row) => formatPercent(row.current_weight_pct) },
+            { label: "Limit", render: () => formatPercent(account.max_single_position_pct) },
+            { label: "Status", render: (row) => <Status value={Number(row.current_weight_pct ?? 0) > Number(account.max_single_position_pct ?? 0) ? "OVER LIMIT" : "OK"} /> },
+          ]}
+          detail={() => <div className="decision-detail"><p>Position limits use total capital: available cash plus current market value.</p></div>}
+          emptyText="No current holdings are available."
+        />
+      </Panel>
       <Panel title="Signal conflicts" subtitle="A short-term deterioration does not independently liquidate a strong long-term asset.">
         <DecisionTable rows={conflicts} columns={conflictColumns} emptyText="No model conflicts in the latest snapshot." />
       </Panel>

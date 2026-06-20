@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { ActionStatus, DecisionTable, HorizonStrip, type DecisionColumn } from "../components/DecisionTable";
 import { MetricStrip, Panel, SnapshotFrame, Status } from "../components/Primitives";
-import { asArray, asDict, formatPercent, modelDecision, text, useSnapshot, type Dict } from "../lib/data";
+import { asArray, asDict, formatCurrency, formatPercent, modelDecision, text, useSnapshot, type Dict } from "../lib/data";
 
 const columns: DecisionColumn[] = [
   { label: "Rank", render: (row, index) => text(row.satellite_rank ?? index + 1) },
@@ -18,6 +18,7 @@ export default function SatelliteRadar() {
   const payload = asDict(data?.payload);
   const top = asArray(payload.top_recommendations);
   const pool = asArray(payload.candidate_pool);
+  const currentHoldings = asArray(payload.current_holdings);
   const [query, setQuery] = useState("");
   const filteredPool = useMemo(() => {
     const normalized = query.trim().toUpperCase();
@@ -32,8 +33,22 @@ export default function SatelliteRadar() {
         { label: "Top 3", value: top.map((row) => text(asDict(row).symbol, "")).filter(Boolean).join(", ") || "-", hint: "Maximum satellite shortlist" },
         { label: "Approved entries", value: approved.length, hint: "No strong signal means no trade" },
         { label: "Ranked pool", value: pool.length, hint: "Capped by model configuration" },
-        { label: "Ranking source", value: payload.model_ranked ? "Neural" : "Pending", hint: "Benchmark-relative multi-horizon score" },
+        { label: "Current non-core", value: currentHoldings.length, hint: "Existing positions tracked separately from new candidates" },
       ]} />
+      <Panel title="Current non-core holdings" subtitle="Existing positions are monitored here; they are intentionally excluded from the new-entry Top 3 competition.">
+        <DecisionTable
+          rows={currentHoldings}
+          columns={[
+            { label: "Symbol", className: "symbol-cell", render: (row) => text(row.symbol) },
+            { label: "Account weight", render: (row) => formatPercent(row.current_weight_pct) },
+            { label: "Value", render: (row) => formatCurrency(row.current_value, 2) },
+            { label: "Long score", render: (row) => formatPercent(asDict(row.long_horizon).blended_rank) },
+            { label: "Timing", render: (row) => <Status value={asDict(row.timing).state ?? row.timing_state} /> },
+            { label: "Action", render: (row) => <ActionStatus row={row} /> },
+          ]}
+          emptyText="No current holdings sit outside the configured Core ETF universe."
+        />
+      </Panel>
       <Panel title="Top 3 satellite candidates" subtitle="These are the only non-core candidates eligible for a new-entry action.">
         <DecisionTable rows={top} columns={columns} emptyText="No neural Top 3 yet. Train or run the multi-horizon model." />
       </Panel>

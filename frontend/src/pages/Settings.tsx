@@ -74,6 +74,7 @@ export default function Settings() {
   const payload = asDict(data?.payload);
   const schedule = asDict(payload.runtime_schedule);
   const modelConfig = asDict(payload.multi_horizon_config);
+  const coreEtfUniverse = asDict(payload.core_etf_universe);
   const notification = asDict(payload.notification_config);
   const registry = asDict(payload.model_registry);
   const [config, setConfig] = useState<Dict>({});
@@ -350,11 +351,19 @@ export default function Settings() {
 
       <div className="split-layout editors">
         <JsonEditor
+          title="Core ETF universe"
+          subtitle="Add QQQM, XLK, or another ETF here if it should be managed by the Core ETF engine. Rerun nightly analysis after saving."
+          value={coreEtfUniverse}
+          onSave={async (value) => { await postApi("/api/actions/save-core-etf-universe", value); reload(); }}
+        />
+        <JsonEditor
           title="Runtime schedule"
           subtitle="Advanced: market monitor, nightly, and weekend cadence."
           value={schedule}
           onSave={async (value) => { await postApi("/api/actions/save-runtime-schedule", value); reload(); }}
         />
+      </div>
+      <div className="split-layout editors">
         <JsonEditor
           title="Multi-horizon model"
           subtitle="Advanced: universe size, architecture, training cadence, and artifact paths."

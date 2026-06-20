@@ -20,6 +20,7 @@ from quant_core.jobs import job_registry
 from quant_core.ledger import transactions as tx
 from quant_core.notifications import notification_config as ncfg
 from quant_core.models.multi_horizon import governance as mh_governance
+from quant_core.portfolio import risk as portfolio_risk
 from quant_core.snapshots import system_snapshot as ss
 
 
@@ -85,6 +86,55 @@ def enrich_rows_with_multi_horizon(rows, snapshot: Mapping | None) -> list[dict]
                 "model_generated_at": generated_at,
             }
         )
+        result.append(row)
+    return result
+
+
+def _live_position_context(data: Mapping | None) -> tuple[dict, dict[str, dict]]:
+    data = dict(data or {})
+    account = ss.build_account_snapshot(data) if data else {}
+    total_capital = float(account.get("total_capital") or 0.0)
+    positions = {}
+    for raw_row in list(data.get("holdings", []) or []):
+        row = dict(raw_row or {})
+        symbol = str(row.get("symbol") or "").strip().upper()
+        if not symbol:
+            continue
+        shares = float(row.get("shares") or 0.0)
+        price = row.get("current_price")
+        price = float(price) if price is not None else None
+        current_value = shares * price if price is not None else None
+        positions[symbol] = {
+            **row,
+            "symbol": symbol,
+            "is_held": True,
+            "current_shares": shares,
+            "current_value": current_value,
+            "current_weight_pct": (
+                current_value / total_capital * 100.0
+                if current_value is not None and total_capital > 0
+                else 0.0
+            ),
+        }
+    return account, positions
+
+
+def overlay_live_positions(rows, *, positions: Mapping[str, Mapping]) -> list[dict]:
+    result = []
+    for raw_row in list(rows or []):
+        row = dict(raw_row or {})
+        symbol = str(row.get("symbol") or "").strip().upper()
+        position = dict(positions.get(symbol, {}) or {})
+        row.update(
+            {
+                "is_held": bool(position),
+                "current_shares": float(position.get("current_shares") or 0.0),
+                "current_value": position.get("current_value"),
+                "current_weight_pct": float(position.get("current_weight_pct") or 0.0),
+            }
+        )
+        if position.get("current_price") is not None:
+            row["current_price"] = position["current_price"]
         result.append(row)
     return result
 
@@ -217,6 +267,8 @@ def load_model_enriched_snapshot_response(
         now=now,
     )
     model_snapshot = _load_gated_multi_horizon_snapshot()
+    portfolio_data = _load_portfolio_payload()
+    account, positions = _live_position_context(portfolio_data)
     payload = dict(response.get("payload", {}) or {})
     for key in row_keys:
         if isinstance(payload.get(key), list):
@@ -235,10 +287,128 @@ def load_model_enriched_snapshot_response(
             for row in list(model_snapshot.get("core_etfs", []) or [])
         ]
         payload["model_ranked"] = True
+    for key in row_keys:
+        if isinstance(payload.get(key), list):
+            payload[key] = overlay_live_positions(payload[key], positions=positions)
+    payload["portfolio_context"] = account
+    if name == "core-etfs":
+        core_symbols = {
+            str(row.get("symbol") or "").strip().upper()
+            for row in list(payload.get("symbols", []) or [])
+        }
+        payload["unrepresented_holdings"] = [
+            dict(position)
+            for symbol, position in positions.items()
+            if symbol not in core_symbols
+        ]
+    if name == "satellite-radar":
+        core_config, _ = safe_read_json(qpaths.CORE_ETF_UNIVERSE_FILE)
+        core_symbols = {
+            str(row.get("symbol") or "").strip().upper()
+            for row in list(dict(core_config or {}).get("etfs", []) or [])
+            if bool(dict(row or {}).get("enabled", True))
+        }
+        model_index = _multi_horizon_index(model_snapshot)
+        payload["current_holdings"] = [
+            {
+                **dict(position),
+                **dict(model_index.get(symbol, {}) or {}),
+                **dict(position),
+            }
+            for symbol, position in positions.items()
+            if symbol not in core_symbols
+        ]
     response["payload"] = payload
     response["summary"] = _extract_summary(payload)
     response["items"] = _extract_items(payload)
     return response
+
+
+def load_risk_response(*, now: Optional[datetime] = None) -> dict:
+    data = _load_portfolio_payload()
+    account, positions = _live_position_context(data)
+    discipline, errors = safe_read_json(qpaths.DISCIPLINE_SNAPSHOT_FILE)
+    discipline = discipline if isinstance(discipline, dict) else {}
+    holdings = list(positions.values())
+    analyzed = portfolio_risk.analyze_portfolio_risk(holdings)
+    max_single = float(account.get("max_single_position_pct") or 0.0)
+    max_exposure = float(account.get("max_total_exposure_pct") or 0.0)
+    exposure = float(account.get("exposure_pct") or 0.0)
+    risk_items = []
+    for position in sorted(
+        holdings,
+        key=lambda row: float(row.get("current_weight_pct") or 0.0),
+        reverse=True,
+    ):
+        weight = float(position.get("current_weight_pct") or 0.0)
+        if max_single > 0 and weight > max_single:
+            risk_items.append(
+                {
+                    "level": "HIGH",
+                    "category": "POSITION_CONCENTRATION",
+                    "symbol": position.get("symbol"),
+                    "message": f"{position.get('symbol')} is {weight:.1f}% of total capital, above the {max_single:.1f}% limit.",
+                    "action": "TRIM_OR_HOLD",
+                }
+            )
+    if max_exposure > 0 and exposure > max_exposure:
+        risk_items.append(
+            {
+                "level": "HIGH",
+                "category": "TOTAL_EXPOSURE",
+                "message": f"Portfolio exposure is {exposure:.1f}%, above the {max_exposure:.1f}% limit.",
+                "action": "REDUCE_EXPOSURE",
+            }
+        )
+    risk_items.extend(
+        {
+            "level": "CAUTION",
+            "category": "PORTFOLIO_RISK",
+            "message": message,
+            "action": "REVIEW",
+        }
+        for message in analyzed.recommendations
+    )
+    payload = {
+        **discipline,
+        "account": account,
+        "holdings": holdings,
+        "portfolio_risk": {
+            "total_invested_value": analyzed.total_value,
+            "sector_exposures": [
+                {
+                    "sector": row.sector,
+                    "value": row.value,
+                    "weight_pct": row.weight_pct,
+                }
+                for row in analyzed.sector_exposures
+            ],
+            "unpriced_symbols": analyzed.unpriced_symbols,
+        },
+        "risk_items": risk_items,
+    }
+    return build_api_response(
+        name="risk",
+        source="composed:discipline+live_portfolio",
+        freshness_status="OK" if not errors else "PARTIAL",
+        is_stale=False,
+        summary={
+            "regime": discipline.get("regime"),
+            "risk_regime": discipline.get("risk_regime"),
+            "target_exposure_pct": discipline.get("target_exposure_pct"),
+            "actual_exposure_pct": account.get("exposure_pct"),
+            "cash_available": account.get("cash_available"),
+            "total_capital": account.get("total_capital"),
+            "concentration_alert_count": len([
+                row for row in risk_items if row.get("category") == "POSITION_CONCENTRATION"
+            ]),
+        },
+        items=risk_items,
+        warnings=errors,
+        data_quality={"status": "OK" if not errors else "PARTIAL"},
+        payload=payload,
+        generated_at=now_iso(now),
+    )
 
 
 def _load_portfolio_payload() -> dict:
@@ -591,11 +761,13 @@ def load_settings_response(*, now: Optional[datetime] = None) -> dict:
     notification_config = ncfg.load_notification_config()
     model_registry, _ = safe_read_json(qpaths.MODEL_REGISTRY_CONFIG_FILE)
     multi_horizon_config, _ = safe_read_json(qpaths.MULTI_HORIZON_MODEL_CONFIG_FILE)
+    core_etf_universe, _ = safe_read_json(qpaths.CORE_ETF_UNIVERSE_FILE)
     settings_payload = {
         "runtime_schedule": schedule,
         "notification_config": _sanitize_notification_config(notification_config if isinstance(notification_config, dict) else {}),
         "model_registry": model_registry if isinstance(model_registry, dict) else {},
         "multi_horizon_config": multi_horizon_config if isinstance(multi_horizon_config, dict) else {},
+        "core_etf_universe": core_etf_universe if isinstance(core_etf_universe, dict) else {},
     }
     return build_api_response(
         name="settings",

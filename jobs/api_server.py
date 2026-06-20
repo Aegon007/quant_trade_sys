@@ -84,7 +84,7 @@ def create_app():
 
     @app.get("/api/risk")
     def risk():
-        return loader.load_snapshot_response("risk", loader.SNAPSHOT_PATHS["risk"])
+        return loader.load_risk_response()
 
     @app.get("/api/market-monitor")
     def market_monitor():
@@ -230,6 +230,14 @@ def create_app():
         return api_actions.run_with_job_status(
             "settings-multi-horizon-config",
             lambda: api_actions.save_multi_horizon_settings(dict(payload or {})),
+            run_async=False,
+        )
+
+    @app.post("/api/actions/save-core-etf-universe")
+    def save_core_etf_universe(payload: dict):
+        return api_actions.run_with_job_status(
+            "settings-core-etf-universe",
+            lambda: api_actions.save_core_etf_universe_settings(dict(payload or {})),
             run_async=False,
         )
 

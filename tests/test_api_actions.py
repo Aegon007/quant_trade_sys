@@ -134,6 +134,7 @@ class ApiActionsTests(unittest.TestCase):
             "/api/actions/promote-multi-horizon",
             "/api/actions/test-llm",
             "/api/actions/save-multi-horizon-config",
+            "/api/actions/save-core-etf-universe",
         ]:
             self.assertIn(path, route_paths)
 
