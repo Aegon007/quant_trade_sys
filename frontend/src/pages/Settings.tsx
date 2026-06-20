@@ -120,7 +120,7 @@ export default function Settings() {
 
   function applyRemotePreset(provider: "openai" | "openrouter") {
     const preset = provider === "openrouter"
-      ? { provider, base_url: "https://openrouter.ai/api/v1", model: "openai/gpt-4.1-mini" }
+      ? { provider, base_url: "https://openrouter.ai/api/v1", model: "openrouter/free" }
       : { provider, base_url: "https://api.openai.com/v1", model: "gpt-5-mini" };
     setConfig((current) => ({
       ...current,
@@ -251,6 +251,9 @@ export default function Settings() {
             </Field>
             <Field label="Model">
               <input value={text(llm.model, "")} onChange={(event) => updateSection("llm", "model", event.target.value)} />
+              {text(llm.provider) === "openrouter" ? (
+                <small>Use openrouter/free, or copy the exact model slug including its :free suffix.</small>
+              ) : null}
             </Field>
             <Field label="Base URL">
               <input value={text(llm.base_url, "")} onChange={(event) => updateSection("llm", "base_url", event.target.value)} />

@@ -36,7 +36,7 @@ LLM_PRESETS = {
     "openrouter": {
         "provider": "openrouter",
         "base_url": "https://openrouter.ai/api/v1",
-        "model": "openai/gpt-4.1-mini",
+        "model": "openrouter/free",
         "site_url": "",
         "app_name": "quant-trade-system",
     },

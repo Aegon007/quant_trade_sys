@@ -451,8 +451,12 @@ export LLM_ENABLED=true
 export LLM_PROVIDER=openrouter
 export LLM_API_BASE_URL=https://openrouter.ai/api/v1
 export LLM_API_KEY=你的_openrouter_key
-export LLM_MODEL=openai/gpt-4.1-mini
+export LLM_MODEL=openrouter/free
 ```
+
+也可以填写某个具体免费模型的完整 slug，但必须包含 OpenRouter 页面显示的组织前缀和
+`:free` 后缀。Settings 测试失败时会显示 OpenRouter 返回的具体错误正文，而不再只显示
+笼统的 `HTTP 400`。
 
 LLM / SLM 只负责转述、解释和整理结构化证据，不会直接生成交易动作。
 

@@ -1,6 +1,7 @@
 import io
 import json
 import unittest
+import urllib.error
 
 
 class _FakeResponse:
@@ -98,6 +99,42 @@ class OpenAICompatibleLLMTests(unittest.TestCase):
         self.assertTrue(ok)
         self.assertEqual(captured["headers"].get("Http-referer"), "https://example.com")
         self.assertEqual(captured["headers"].get("X-title"), "quant-trade-system")
+
+    def test_call_openai_compatible_chat_surfaces_http_error_body(self):
+        def fake_urlopen(request, timeout=0):
+            raise urllib.error.HTTPError(
+                request.full_url,
+                400,
+                "Bad Request",
+                {},
+                io.BytesIO(
+                    json.dumps(
+                        {
+                            "error": {
+                                "message": "No endpoints found for model example/model:free",
+                                "code": 400,
+                                "metadata": {"provider_name": "Example"},
+                            }
+                        }
+                    ).encode("utf-8")
+                ),
+            )
+
+        ok, message = self.module.call_openai_compatible_chat(
+            [{"role": "user", "content": "hello"}],
+            {
+                "provider": "openrouter",
+                "base_url": "https://openrouter.ai/api/v1",
+                "api_key": "secret",
+                "model": "example/model:free",
+            },
+            urlopen=fake_urlopen,
+        )
+
+        self.assertFalse(ok)
+        self.assertIn("HTTP 400", message)
+        self.assertIn("No endpoints found", message)
+        self.assertIn("example/model:free", message)
 
     def test_inspect_openai_compatible_endpoint_detects_running_model(self):
         def fake_urlopen(request, timeout=0):

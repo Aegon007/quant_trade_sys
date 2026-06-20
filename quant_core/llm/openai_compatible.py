@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import urllib.error
 import urllib.request
 
 
@@ -46,6 +47,29 @@ def _extract_response_text(payload) -> str:
                     parts.append(text)
         return "\n".join(parts).strip()
     return ""
+
+
+def _extract_error_message(raw: str) -> str:
+    raw = str(raw or "").strip()
+    if not raw:
+        return ""
+    try:
+        payload = json.loads(raw)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return raw[:1000]
+    error = dict(payload.get("error", {}) or {}) if isinstance(payload, dict) else {}
+    message = str(error.get("message") or payload.get("message") or "").strip()
+    metadata = error.get("metadata")
+    if isinstance(metadata, dict):
+        provider_detail = str(
+            metadata.get("raw")
+            or metadata.get("provider_error")
+            or metadata.get("provider_name")
+            or ""
+        ).strip()
+        if provider_detail and provider_detail not in message:
+            message = f"{message} ({provider_detail})" if message else provider_detail
+    return message or raw[:1000]
 
 
 def call_openai_compatible_chat(
@@ -96,6 +120,13 @@ def call_openai_compatible_chat(
     try:
         with urlopen(request, timeout=timeout) as response:
             raw = response.read().decode("utf-8")
+    except urllib.error.HTTPError as exc:
+        try:
+            raw_error = exc.read().decode("utf-8", errors="replace")
+        except Exception:
+            raw_error = ""
+        detail = _extract_error_message(raw_error)
+        return False, f"LLM 调用失败: HTTP {exc.code}{f': {detail}' if detail else ''}"
     except Exception as exc:
         return False, f"LLM 调用失败: {exc}"
 

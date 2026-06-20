@@ -86,7 +86,7 @@ class NotificationConfigTests(unittest.TestCase):
 
         self.assertEqual(config["llm"]["provider"], "openrouter")
         self.assertEqual(config["llm"]["base_url"], "https://openrouter.ai/api/v1")
-        self.assertEqual(config["llm"]["model"], "openai/gpt-4.1-mini")
+        self.assertEqual(config["llm"]["model"], "openrouter/free")
 
     def test_apply_local_slm_preset_sets_qwen_defaults(self):
         config = self.module.apply_local_slm_preset({})
