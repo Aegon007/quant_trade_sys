@@ -30,6 +30,8 @@ button {
 }
 button:hover { background: var(--forest-2); transform: translateY(-1px); }
 button:disabled { opacity: 0.48; cursor: wait; transform: none; }
+.caution-button { background: var(--amber); }
+.caution-button:hover { background: #aa6f20; }
 input, textarea, select {
   width: 100%;
   border: 1px solid var(--line);

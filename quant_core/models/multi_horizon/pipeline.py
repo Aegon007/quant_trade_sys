@@ -365,7 +365,15 @@ def run_multi_horizon_job(
     )
     risk_free_symbol = str(normalized.get("risk_free_benchmark") or "BIL").strip().upper()
     artifacts = dict(normalized.get("artifacts", {}) or {})
-    checkpoint_path = _artifact_path(str(artifacts["checkpoint_path"]))
+    candidate_checkpoint_path = _artifact_path(str(artifacts["checkpoint_path"]))
+    production_checkpoint_path = _artifact_path(
+        str(artifacts.get("production_checkpoint_path") or candidate_checkpoint_path)
+    )
+    checkpoint_path = (
+        production_checkpoint_path
+        if not train and Path(production_checkpoint_path).exists()
+        else candidate_checkpoint_path
+    )
     snapshot_path = _artifact_path(str(artifacts["snapshot_path"]))
     if not bool(normalized.get("enabled", True)):
         snapshot = _not_ready_snapshot(
@@ -604,7 +612,7 @@ def run_multi_horizon_job(
             learning_rate=float(training["learning_rate"]),
             weight_decay=float(training["weight_decay"]),
             device=str(training["device"]),
-            checkpoint_path=checkpoint_path,
+            checkpoint_path=candidate_checkpoint_path,
             pretrained_checkpoint_path=(
                 pretraining_path
                 if str(dict(validation_result.get("selection", {}) or {}).get("initialization"))
@@ -618,6 +626,7 @@ def run_multi_horizon_job(
                 stage="supervised_training",
             ),
         )
+        checkpoint_path = candidate_checkpoint_path
         training_result["pretraining"] = pretraining_result
         training_result["final_initialization"] = (
             "pretrained"

@@ -85,11 +85,19 @@ export default function ResearchModels() {
     }
   }
 
-  async function promoteModel() {
+  async function promoteModel(allowInitialOverride = false) {
+    if (
+      allowInitialOverride
+      && !window.confirm(
+        "Deploy this model despite incomplete validation? It will become the production advice model, while future retraining remains candidate-only until manually promoted.",
+      )
+    ) return;
     setPromoting(true);
     setResult("");
     try {
-      const response = await postApi<Dict>("/api/actions/promote-multi-horizon");
+      const response = await postApi<Dict>("/api/actions/promote-multi-horizon", {
+        allow_initial_override: allowInitialOverride,
+      });
       if (response.accepted === false) {
         throw new Error(text(response.error, "Model promotion was rejected."));
       }
@@ -110,8 +118,12 @@ export default function ResearchModels() {
       ? Math.max((Date.now() - updatedAt) / 1000, 0)
       : 0
   );
-  const canPromote = text(lifecycle.status, "").toUpperCase() === "ELIGIBLE_FOR_MANUAL_PROMOTION";
-  const isProduction = Boolean(lifecycle.production_authorized);
+  const canPromote = ["ELIGIBLE_FOR_MANUAL_PROMOTION"].includes(
+    text(lifecycle.candidate_status ?? lifecycle.status, "").toUpperCase(),
+  );
+  const hasProduction = Boolean(lifecycle.production_authorized);
+  const candidateAuthorized = Boolean(snapshot.production_authorized);
+  const hasReadyCandidate = text(snapshot.status, "").toUpperCase() === "READY";
 
   return (
     <SnapshotFrame snapshot={data} loading={loading} error={error} onReload={reload}>
@@ -266,9 +278,16 @@ export default function ResearchModels() {
           title="Validation & promotion"
           subtitle="Only purged walk-forward PASS models can be manually authorized for trading advice."
           action={
-            <button disabled={!canPromote || promoting || isProduction} onClick={promoteModel}>
-              {isProduction ? "Production authorized" : promoting ? "Promoting..." : "Promote to production"}
-            </button>
+            <div className="button-row">
+              <button disabled={!canPromote || promoting || candidateAuthorized} onClick={() => promoteModel(false)}>
+                {candidateAuthorized ? "Candidate is production" : promoting ? "Promoting..." : "Promote validated model"}
+              </button>
+              {!hasProduction && !canPromote && hasReadyCandidate ? (
+                <button className="caution-button" disabled={promoting} onClick={() => promoteModel(true)}>
+                  Deploy current model with warning
+                </button>
+              ) : null}
+            </div>
           }
         >
           <Facts rows={[
@@ -285,7 +304,10 @@ export default function ResearchModels() {
             ["Initialization ablation complete", <Status value={promotionGates.initialization_ablation_complete ? "PASS" : "REVIEW"} />],
             ["MoE stable", <Status value={promotionGates.moe_stable ? "PASS" : "REVIEW"} />],
             ["Automatic promotion", <Status value="DISABLED" />],
-            ["Decision authority", <Status value={isProduction ? "PRODUCTION" : "SHADOW ONLY"} />],
+            ["Decision authority", <Status value={candidateAuthorized ? "CURRENT CANDIDATE" : hasProduction ? "EXISTING PRODUCTION" : "SHADOW ONLY"} />],
+            ["Approval mode", text(lifecycle.approval_mode, "Not approved")],
+            ["Candidate version", text(lifecycle.candidate_model_version ?? lifecycle.model_version, "Not trained")],
+            ["Production version", text(lifecycle.approved_model_version, "Not deployed")],
             ["Shadow outcomes", <Status value={asDict(lifecycle.shadow_outcomes).status ?? "OBSERVING"} />],
           ]} />
         </Panel>

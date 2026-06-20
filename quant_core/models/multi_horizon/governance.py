@@ -297,14 +297,21 @@ def approve_model_for_production(
     *,
     path: str = DEFAULT_GOVERNANCE_FILE,
     now: datetime | None = None,
+    allow_initial_override: bool = False,
 ) -> dict:
     prediction_snapshot = dict(prediction_snapshot or {})
     governance = dict(governance_snapshot or {})
     model = dict(prediction_snapshot.get("model", {}) or {})
     version = str(model.get("version") or model.get("trained_at") or "").strip()
-    if str(governance.get("status") or "").upper() != "ELIGIBLE_FOR_MANUAL_PROMOTION":
+    eligible = (
+        str(governance.get("status") or "").upper() == "ELIGIBLE_FOR_MANUAL_PROMOTION"
+        or str(governance.get("candidate_status") or "").upper() == "ELIGIBLE_FOR_MANUAL_PROMOTION"
+    )
+    if not eligible and not allow_initial_override:
         raise ValueError("Model is not eligible for production promotion.")
-    if str(governance.get("validation_status") or "").upper() != "PASS":
+    if not eligible and str(prediction_snapshot.get("status") or "").upper() != "READY":
+        raise ValueError("Only a trained READY model can be deployed with an initial override.")
+    if not allow_initial_override and str(governance.get("validation_status") or "").upper() != "PASS":
         raise ValueError("Walk-forward validation has not passed.")
     if not version:
         raise ValueError("Model version is missing; retrain before promotion.")
@@ -316,6 +323,8 @@ def approve_model_for_production(
         "approved_at": (now or datetime.now()).isoformat(),
         "approved_model_version": version,
         "model_version": version,
+        "approval_mode": "INITIAL_MANUAL_OVERRIDE" if not eligible else "VALIDATED_MANUAL_PROMOTION",
+        "validation_override": bool(not eligible),
     }
     save_model_governance_snapshot(promoted, path=path)
     return promoted
@@ -452,6 +461,24 @@ def refresh_model_governance(
                 "production_authorized": True,
                 "approved_at": previous.get("approved_at"),
                 "approved_model_version": current_version,
+            }
+        )
+    elif bool(previous.get("production_authorized")):
+        governance.update(
+            {
+                "status": "PRODUCTION",
+                "lifecycle": "PRODUCTION",
+                "production_authorized": True,
+                "approved_at": previous.get("approved_at"),
+                "approved_model_version": previous.get("approved_model_version"),
+                "approval_mode": previous.get("approval_mode"),
+                "validation_override": previous.get("validation_override", False),
+                "candidate_model_version": current_version,
+                "candidate_status": (
+                    "ELIGIBLE_FOR_MANUAL_PROMOTION"
+                    if str(governance.get("status") or "").upper() == "ELIGIBLE_FOR_MANUAL_PROMOTION"
+                    else "SHADOW"
+                ),
             }
         )
     save_model_governance_snapshot(governance, path=governance_path)

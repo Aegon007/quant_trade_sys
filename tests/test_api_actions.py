@@ -87,6 +87,25 @@ class ApiActionsTests(unittest.TestCase):
 
         self.assertEqual(updates[0][1]["state"], "completed")
 
+    def test_llm_settings_test_uses_saved_remote_configuration(self):
+        original_load = self.actions.notification_config.load_notification_config
+        original_overrides = self.actions.notification_config.apply_environment_overrides
+        original_test = self.actions.openai_compatible.test_llm_connection
+        self.addCleanup(setattr, self.actions.notification_config, "load_notification_config", original_load)
+        self.addCleanup(setattr, self.actions.notification_config, "apply_environment_overrides", original_overrides)
+        self.addCleanup(setattr, self.actions.openai_compatible, "test_llm_connection", original_test)
+        config = {"llm": {"enabled": True, "model": "test-model", "api_key": "secret"}}
+        self.actions.notification_config.load_notification_config = lambda: config
+        self.actions.notification_config.apply_environment_overrides = lambda value: value
+        self.actions.openai_compatible.test_llm_connection = (
+            lambda value: (value["model"] == "test-model", "OK")
+        )
+
+        result = self.actions.test_llm_settings(route="remote")
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["message"], "OK")
+
     def test_api_server_exposes_daily_workflow_routes(self):
         server = reload_module("jobs.api_server")
         app = server.create_app()
@@ -112,6 +131,7 @@ class ApiActionsTests(unittest.TestCase):
             "/api/actions/run-weekend-research-once",
             "/api/actions/train-multi-horizon",
             "/api/actions/promote-multi-horizon",
+            "/api/actions/test-llm",
             "/api/actions/save-multi-horizon-config",
         ]:
             self.assertIn(path, route_paths)

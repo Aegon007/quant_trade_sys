@@ -754,6 +754,74 @@ class MultiHorizonValidationTests(unittest.TestCase):
         self.assertTrue(production["production_authorized"])
         self.assertEqual(production["symbols"][0]["decision"]["action"], "ACCUMULATE")
 
+    def test_initial_manual_override_can_deploy_ready_model_and_is_recorded(self):
+        from quant_core.models.multi_horizon.governance import (
+            apply_production_gate,
+            approve_model_for_production,
+        )
+
+        prediction = {
+            "status": "READY",
+            "model": {"model_id": "finance_multi_asset_transformer", "version": "candidate-v1"},
+            "symbols": [
+                {
+                    "symbol": "MSFT",
+                    "list_type": "holding",
+                    "decision": {"action": "ACCUMULATE"},
+                }
+            ],
+        }
+        governance = {
+            "status": "SHADOW",
+            "validation_status": "REVIEW",
+            "production_authorized": False,
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            promoted = approve_model_for_production(
+                prediction,
+                governance,
+                path=str(Path(temp_dir) / "governance.json"),
+                allow_initial_override=True,
+            )
+
+        production = apply_production_gate(prediction, promoted)
+        self.assertEqual(promoted["approval_mode"], "INITIAL_MANUAL_OVERRIDE")
+        self.assertTrue(promoted["validation_override"])
+        self.assertTrue(production["production_authorized"])
+
+    def test_governance_preserves_existing_production_when_new_candidate_arrives(self):
+        from quant_core.models.multi_horizon import governance as module
+
+        previous = {
+            "status": "PRODUCTION",
+            "production_authorized": True,
+            "approved_model_version": "production-v1",
+            "approved_at": "2026-06-20T10:00:00",
+            "approval_mode": "VALIDATED_MANUAL_PROMOTION",
+        }
+        original_load = module.load_model_governance_snapshot
+        original_save = module.save_model_governance_snapshot
+        self.addCleanup(setattr, module, "load_model_governance_snapshot", original_load)
+        self.addCleanup(setattr, module, "save_model_governance_snapshot", original_save)
+        module.load_model_governance_snapshot = lambda **kwargs: previous
+        module.save_model_governance_snapshot = lambda snapshot, **kwargs: "ignored"
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            validation_path = Path(temp_dir) / "validation.json"
+            validation_path.write_text(json.dumps({"status": "REVIEW"}), encoding="utf-8")
+            refreshed = module.refresh_model_governance(
+                {
+                    "status": "READY",
+                    "model": {"version": "candidate-v2"},
+                },
+                validation_path=str(validation_path),
+            )
+
+        self.assertTrue(refreshed["production_authorized"])
+        self.assertEqual(refreshed["approved_model_version"], "production-v1")
+        self.assertEqual(refreshed["candidate_model_version"], "candidate-v2")
+        self.assertEqual(refreshed["candidate_status"], "SHADOW")
+
 
 class MultiHorizonConfigTests(unittest.TestCase):
     def test_compute_device_info_is_explicit(self):

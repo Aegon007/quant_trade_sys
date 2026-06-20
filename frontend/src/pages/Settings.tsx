@@ -79,6 +79,8 @@ export default function Settings() {
   const [config, setConfig] = useState<Dict>({});
   const [saving, setSaving] = useState(false);
   const [saveResult, setSaveResult] = useState("");
+  const [testingRoute, setTestingRoute] = useState("");
+  const [llmTestResults, setLlmTestResults] = useState<Dict>({});
 
   useEffect(() => {
     setConfig(notification);
@@ -89,6 +91,22 @@ export default function Settings() {
   const llm = asDict(config.llm);
   const slm = asDict(config.local_slm);
   const alerts = asDict(config.alert_settings);
+  const remoteTestResult = text(llmTestResults.remote, "");
+  const localTestResult = text(llmTestResults.local, "");
+  const remoteStatus = remoteTestResult.startsWith("SUCCESS")
+    ? "TESTED OK"
+    : remoteTestResult.startsWith("FAILED")
+      ? "TEST FAILED"
+      : llm.enabled && llm.api_key_configured
+        ? "CONFIGURED"
+        : "NOT CONFIGURED";
+  const localStatus = localTestResult.startsWith("SUCCESS")
+    ? "TESTED OK"
+    : localTestResult.startsWith("FAILED")
+      ? "TEST FAILED"
+      : slm.enabled
+        ? "CONFIGURED"
+        : "DISABLED";
 
   function updateSection(section: string, key: string, value: unknown) {
     setConfig((current) => ({
@@ -137,6 +155,24 @@ export default function Settings() {
     }
   }
 
+  async function testLlm(route: "remote" | "local") {
+    setTestingRoute(route);
+    setLlmTestResults((current) => ({ ...current, [route]: "Testing..." }));
+    try {
+      await postApi("/api/actions/save-notification-config", config);
+      const response = await postApi<Dict>("/api/actions/test-llm", { route });
+      const result = asDict(response.result);
+      setLlmTestResults((current) => ({
+        ...current,
+        [route]: `${result.ok ? "SUCCESS" : "FAILED"}: ${text(result.message)}`,
+      }));
+    } catch (exc) {
+      setLlmTestResults((current) => ({ ...current, [route]: `FAILED: ${(exc as Error).message}` }));
+    } finally {
+      setTestingRoute("");
+    }
+  }
+
   return (
     <SnapshotFrame snapshot={data} loading={loading} error={error} onReload={reload}>
       <Panel
@@ -147,8 +183,8 @@ export default function Settings() {
         <Facts rows={[
           ["Slack", <Status value={slack.enabled && slack.webhook_configured ? "READY" : "NOT CONFIGURED"} />],
           ["Email", <Status value={email.enabled && email.smtp_host_configured && email.password_configured ? "READY" : "NOT CONFIGURED"} />],
-          ["Remote LLM", <Status value={llm.enabled && llm.api_key_configured ? "READY" : "NOT CONFIGURED"} />],
-          ["Local SLM", <Status value={slm.enabled ? "ENABLED" : "DISABLED"} />],
+          ["Remote LLM", <Status value={remoteStatus} />],
+          ["Local SLM", <Status value={localStatus} />],
         ]} />
         {saveResult ? <p className="form-result settings-save-result">{saveResult}</p> : null}
       </Panel>
@@ -240,6 +276,12 @@ export default function Settings() {
               <input value={text(llm.app_name, "quant-trade-system")} onChange={(event) => updateSection("llm", "app_name", event.target.value)} />
             </Field>
           </div>
+          <div className="editor-footer">
+            <button disabled={testingRoute === "remote"} onClick={() => testLlm("remote")}>
+              {testingRoute === "remote" ? "Testing..." : "Test remote LLM"}
+            </button>
+            <span>{text(llmTestResults.remote, "Sends a minimal real chat request.")}</span>
+          </div>
         </Panel>
 
         <Panel
@@ -272,6 +314,12 @@ export default function Settings() {
             <Field label="Max tokens">
               <input type="number" min="1" value={text(slm.max_tokens, "220")} onChange={(event) => updateSection("local_slm", "max_tokens", Number(event.target.value))} />
             </Field>
+          </div>
+          <div className="editor-footer">
+            <button disabled={testingRoute === "local"} onClick={() => testLlm("local")}>
+              {testingRoute === "local" ? "Testing..." : "Test narration"}
+            </button>
+            <span>{text(llmTestResults.local, "Runs a real one-sentence narration request.")}</span>
           </div>
         </Panel>
       </div>

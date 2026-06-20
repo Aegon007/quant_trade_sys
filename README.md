@@ -321,6 +321,20 @@ journalctl --user -u quant-trade-system.service -f
 - 夜间模式：只推理
 - 周末模式：到期后重训并验证
 
+模型采用候选与生产双 checkpoint：
+
+- `trained_models/finance_multi_asset_transformer.pt`：最新训练候选模型。
+- `trained_models/finance_multi_asset_transformer_production.pt`：当前生产建议模型。
+- 训练和周末重训只更新候选模型，不会自动覆盖生产模型。
+- Walk-forward 验证通过后，可在 Research & Models 页面人工 Promote。
+- 尚无生产模型时，也可以使用带明确警告的首次人工部署；治理记录会标记
+  `INITIAL_MANUAL_OVERRIDE`，后续仍应由验证通过的新候选模型替换。
+- 自动 promotion 始终关闭。
+
+Settings 页面中的 Remote LLM 和 Local SLM 状态在保存后只表示 `CONFIGURED`。
+点击对应的测试按钮并完成真实请求后，才会显示 `TESTED OK`；调用错误会直接显示
+`TEST FAILED` 和服务返回的错误原因。
+
 如果当前环境没有安装 PyTorch，系统不会崩溃，深度学习策略会返回 `HOLD` 并提示依赖缺失。
 macOS 和普通 x86 Linux 的安装方式：
 

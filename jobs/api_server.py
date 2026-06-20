@@ -163,10 +163,20 @@ def create_app():
         )
 
     @app.post("/api/actions/promote-multi-horizon")
-    def promote_multi_horizon():
+    def promote_multi_horizon(payload: dict):
         return api_actions.run_with_job_status(
             "manual-multi-horizon-promotion",
-            api_actions.promote_multi_horizon_model,
+            lambda: api_actions.promote_multi_horizon_model(
+                allow_initial_override=bool(dict(payload or {}).get("allow_initial_override", False))
+            ),
+            run_async=False,
+        )
+
+    @app.post("/api/actions/test-llm")
+    def test_llm(payload: dict):
+        return api_actions.run_with_job_status(
+            "settings-llm-test",
+            lambda: api_actions.test_llm_settings(route=str(dict(payload or {}).get("route") or "")),
             run_async=False,
         )
 

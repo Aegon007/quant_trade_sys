@@ -8,10 +8,13 @@ the frontend layer.
 from __future__ import annotations
 
 import traceback
+import shutil
 from datetime import datetime
+from pathlib import Path
 from threading import Thread
 from typing import Callable, Mapping, Optional
 
+from quant_core import paths as qpaths
 from quant_core.api import snapshot_loader
 from quant_core.data import data_health
 from quant_core.data import market_data
@@ -22,6 +25,7 @@ from quant_core.execution import post_close_review
 from quant_core.jobs import job_registry
 from quant_core.ledger import transactions
 from quant_core.notifications import notification_config
+from quant_core.llm import openai_compatible
 from quant_core.models.multi_horizon import config as multi_horizon_config
 from quant_core.models.multi_horizon import governance as multi_horizon_governance
 from quant_core.models.multi_horizon import snapshot as multi_horizon_snapshot
@@ -192,16 +196,59 @@ def train_multi_horizon_model() -> dict:
     return gated
 
 
-def promote_multi_horizon_model() -> dict:
+def promote_multi_horizon_model(*, allow_initial_override: bool = False) -> dict:
     snapshot = multi_horizon_snapshot.load_multi_horizon_snapshot()
     governance = multi_horizon_governance.load_model_governance_snapshot()
-    promoted = multi_horizon_governance.approve_model_for_production(snapshot, governance)
+    config = multi_horizon_config.load_multi_horizon_config()
+    artifacts = dict(config.get("artifacts", {}) or {})
+    def artifact_path(value) -> Path:
+        path = Path(str(value))
+        return path if path.is_absolute() else qpaths.PROJECT_ROOT / path
+
+    candidate_path = artifact_path(artifacts["checkpoint_path"])
+    production_path = artifact_path(
+        artifacts.get("production_checkpoint_path") or qpaths.MULTI_HORIZON_PRODUCTION_CHECKPOINT_FILE
+    )
+    if not candidate_path.exists():
+        raise ValueError("Candidate model checkpoint is missing; train the model before deployment.")
+    production_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_production_path = production_path.with_suffix(production_path.suffix + ".pending")
+    shutil.copy2(candidate_path, temporary_production_path)
+    try:
+        promoted = multi_horizon_governance.approve_model_for_production(
+            snapshot,
+            governance,
+            allow_initial_override=allow_initial_override,
+        )
+        temporary_production_path.replace(production_path)
+    finally:
+        temporary_production_path.unlink(missing_ok=True)
     gated = multi_horizon_governance.apply_production_gate(snapshot, promoted)
     multi_horizon_snapshot.save_multi_horizon_snapshot(gated)
     return {
         "message": "multi-horizon model promoted to production",
         "model_version": promoted.get("approved_model_version"),
+        "approval_mode": promoted.get("approval_mode"),
+        "production_checkpoint_path": str(production_path),
         "governance": promoted,
+    }
+
+
+def test_llm_settings(*, route: str) -> dict:
+    config = notification_config.apply_environment_overrides(
+        notification_config.load_notification_config()
+    )
+    route = str(route or "").strip().lower()
+    if route == "remote":
+        ok, message = openai_compatible.test_llm_connection(config.get("llm", {}))
+    elif route == "local":
+        ok, message = openai_compatible.test_local_narration(config.get("local_slm", {}))
+    else:
+        raise ValueError("Unknown LLM test route.")
+    return {
+        "message": message,
+        "ok": bool(ok),
+        "route": route,
     }
 
 

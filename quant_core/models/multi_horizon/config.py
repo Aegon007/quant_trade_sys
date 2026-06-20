@@ -55,6 +55,7 @@ DEFAULT_CONFIG = {
     },
     "artifacts": {
         "checkpoint_path": qpaths.MULTI_HORIZON_CHECKPOINT_FILE,
+        "production_checkpoint_path": qpaths.MULTI_HORIZON_PRODUCTION_CHECKPOINT_FILE,
         "bootstrap_checkpoint_path": qpaths.MULTI_HORIZON_BOOTSTRAP_CHECKPOINT_FILE,
         "bootstrap_manifest_path": qpaths.MULTI_HORIZON_BOOTSTRAP_MANIFEST_FILE,
         "pretraining_checkpoint_path": qpaths.MULTI_HORIZON_PRETRAIN_CHECKPOINT_FILE,

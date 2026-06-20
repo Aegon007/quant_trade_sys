@@ -62,6 +62,9 @@ RUNTIME_SCHEDULE_CONFIG_FILE = str(CONFIG_DIR / "runtime_schedule.json")
 MODEL_REGISTRY_CONFIG_FILE = str(CONFIG_DIR / "model_registry.json")
 MULTI_HORIZON_MODEL_CONFIG_FILE = str(CONFIG_DIR / "multi_horizon_model.json")
 MULTI_HORIZON_CHECKPOINT_FILE = str(TRAINED_MODELS_DIR / "finance_multi_asset_transformer.pt")
+MULTI_HORIZON_PRODUCTION_CHECKPOINT_FILE = str(
+    TRAINED_MODELS_DIR / "finance_multi_asset_transformer_production.pt"
+)
 MULTI_HORIZON_PRETRAIN_CHECKPOINT_FILE = str(TRAINED_MODELS_DIR / "finance_multi_asset_transformer_pretrain.pt")
 MULTI_HORIZON_BOOTSTRAP_CHECKPOINT_FILE = str(BOOTSTRAP_MODELS_DIR / "finance_multi_asset_transformer.pt")
 MULTI_HORIZON_BOOTSTRAP_MANIFEST_FILE = str(BOOTSTRAP_MODELS_DIR / "manifest.json")

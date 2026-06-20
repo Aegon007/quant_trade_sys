@@ -64,6 +64,7 @@
   },
   "artifacts": {
     "checkpoint_path": "trained_models/finance_multi_asset_transformer.pt",
+    "production_checkpoint_path": "trained_models/finance_multi_asset_transformer_production.pt",
     "bootstrap_checkpoint_path": "model_artifacts/bootstrap/finance_multi_asset_transformer.pt",
     "bootstrap_manifest_path": "model_artifacts/bootstrap/manifest.json",
     "pretraining_checkpoint_path": "trained_models/finance_multi_asset_transformer_pretrain.pt",
