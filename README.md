@@ -24,6 +24,127 @@
 - Robinhood 导入闭环：在 `Operations` 上传 Account Activity CSV 后，系统会去重导入交易记录、reconcile 当前持仓/现金，并在 `Portfolio` 页面展示持仓、关注、最近交易、导入日摘要、post-close review 和 plan-quality。
 - 本地数据文件：持仓、观察列表、交易记录、价格缓存都保存在本地 JSON 文件中，无需数据库。
 
+## 系统架构
+
+```mermaid
+flowchart TB
+    User["用户 / 浏览器"] --> React["React + Vite Web UI<br/>Decision Brief · Portfolio · Core ETFs<br/>Satellite Radar · Risk · Research · Operations · Settings"]
+    User --> SlackUI["Slack Client"]
+
+    Supervisor["jobs.run_all<br/>统一进程编排与健康检查"] --> API["FastAPI Snapshot API<br/>jobs.api_server"]
+    Supervisor --> React
+    Supervisor --> SlackBot["Slack Socket Mode Bot"]
+    Supervisor --> DayWorker["日间市场刷新与盘中监控"]
+    Supervisor --> NightScheduler["夜间任务调度"]
+    Supervisor --> WeekendScheduler["周末研究调度"]
+
+    React -->|"GET 快照 / POST 操作"| API
+    SlackUI <-->|"命令与回复"| SlackBot
+    SlackBot --> CommandService["规则命令解析与服务<br/>持仓 · 关注 · CSV 导入 · 查询"]
+    API --> APIActions["API Actions<br/>手动刷新 · 夜间任务 · 周末研究<br/>训练 · 配置 · LLM 解释"]
+    API --> SnapshotLoader["Snapshot Loader<br/>轻量只读 DTO 组装"]
+
+    subgraph Jobs["后台计算与调度层"]
+        DayWorker --> MarketRefresh["行情刷新 · 数据健康<br/>事件抓取 · 紧急信号分类"]
+        NightScheduler --> Nightly["Nightly Pipeline<br/>推理 · 计划 · 风控 · 复盘 · 报告"]
+        WeekendScheduler --> Weekend["Weekend Research<br/>预训练 · Walk-forward · 策略治理"]
+        APIActions --> MarketRefresh
+        APIActions --> Nightly
+        APIActions --> Weekend
+        APIActions --> Training["神经模型训练与验证"]
+        APIActions --> LedgerActions["Robinhood CSV 导入<br/>持仓与现金 Reconcile"]
+    end
+
+    subgraph QuantCore["Quant Core 决策层"]
+        Data["Data<br/>行情源 · 缓存 · 数据健康"]
+        Events["Events<br/>财经新闻 · FinBERT · 分析师共识"]
+        Model["Multi-Horizon Transformer<br/>63 / 126 / 252 日预测"]
+        Analytics["Analytics<br/>ETF 轮动 · 卫星候选 · Monte Carlo<br/>Scoreboard · 策略比较"]
+        PortfolioEngine["Portfolio<br/>资金分配 · Core ETF · 仓位动作"]
+        Risk["Risk & Discipline<br/>集中度 · 相关性 · Risk Gate"]
+        Execution["Execution Planning<br/>次日计划 · 复盘 · Plan Quality"]
+        LLM["LLM Explanation Layer<br/>新闻智能 · 全局决策摘要 · 按需解释"]
+
+        Data --> Model
+        Data --> Analytics
+        Events --> Analytics
+        Model --> PortfolioEngine
+        Analytics --> PortfolioEngine
+        PortfolioEngine --> Risk
+        Risk --> Execution
+        Events --> LLM
+        Model --> LLM
+        PortfolioEngine --> LLM
+        Risk --> LLM
+        Execution --> LLM
+    end
+
+    MarketRefresh --> Data
+    MarketRefresh --> Events
+    Nightly --> Data
+    Nightly --> Events
+    Nightly --> Model
+    Nightly --> Analytics
+    Nightly --> PortfolioEngine
+    Nightly --> Risk
+    Nightly --> Execution
+    Nightly --> LLM
+    Weekend --> Training
+    Training --> Model
+    LedgerActions --> Ledger["Ledger<br/>交易记录 · 持仓 · 现金"]
+    CommandService --> LedgerActions
+    CommandService --> SnapshotLoader
+
+    subgraph Storage["本地持久化与模型资产"]
+        Config["storage/config<br/>运行计划 · 模型 · ETF · 通知配置"]
+        State["storage/state<br/>组合 · 价格 · 信号 · 风险 · Job Status<br/>News Intelligence · Decision Brief"]
+        Journals["storage/journals + reports<br/>预测日志 · 决策日志 · 夜间/周末报告"]
+        Models["trained_models + model_artifacts<br/>候选与生产 Checkpoint"]
+    end
+
+    Data <--> State
+    Events <--> State
+    Model <--> Models
+    PortfolioEngine --> State
+    Risk --> State
+    Execution --> State
+    LLM --> State
+    Nightly --> Journals
+    Weekend --> Journals
+    APIActions --> Config
+    Ledger <--> State
+    SnapshotLoader --> State
+    SnapshotLoader --> Journals
+    SnapshotLoader --> Models
+    SnapshotLoader --> API
+
+    subgraph External["外部服务"]
+        MarketSources["行情与新闻源<br/>Yahoo / yfinance · Stooq · 备用源"]
+        RemoteLLM["OpenAI-compatible LLM API<br/>OpenAI / OpenRouter / 私有服务器"]
+        LocalSLM["LM Studio Local SLM"]
+        Delivery["Slack Webhook · SMTP Email"]
+        Robinhood["Robinhood Account Activity CSV"]
+    end
+
+    MarketSources --> Data
+    MarketSources --> Events
+    RemoteLLM --> LLM
+    LocalSLM --> LLM
+    Robinhood --> LedgerActions
+    Nightly --> Notify["Notification Router"]
+    MarketRefresh --> Notify
+    LLM --> Notify
+    Notify --> Delivery
+```
+
+架构边界：
+
+- **前端不运行重型量化计算**：React 通过 FastAPI 读取已经生成的稳定快照，页面切换不会触发训练或回测。
+- **交易动作由量化与风控链决定**：模型输出先经过组合引擎、纪律层和 Risk Gate，再形成次日计划；LLM 只负责总结和解释，不能创造新动作或绕过风控。
+- **系统不连接券商下单**：Robinhood 只通过 Account Activity CSV 同步已经发生的交易，所有真实交易仍由用户手工执行。
+- **本地文件是唯一事实来源**：配置、运行状态、日志、报告和模型资产均保存在项目目录中，不依赖数据库服务。
+- **统一入口负责可靠启动**：`jobs.run_all` 先等待 FastAPI 健康检查通过，再启动 React，同时管理 Slack Bot、日间刷新、夜间任务和周末研究。
+
 ## 快速开始
 
 ### 1. 创建环境
