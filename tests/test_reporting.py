@@ -177,6 +177,12 @@ class ReportingTests(unittest.TestCase):
                         }
                     ],
                 },
+                "decision_brief": {
+                    "status": "READY",
+                    "trigger": "NIGHTLY",
+                    "executive_summary": "当前维持轻仓，优先复核 MSFT 的加仓区间。",
+                    "llm": {"route_name": "llm", "model": "gpt-brief"},
+                },
                 "nightly_manifest": {
                     "run_id": "20260511-nightly",
                     "status": "completed",
@@ -209,6 +215,8 @@ class ReportingTests(unittest.TestCase):
         self.assertIn("News intelligence:", text)
         self.assertIn("gpt-test", text)
         self.assertIn("MSFT", text)
+        self.assertIn("LLM decision brief:", text)
+        self.assertIn("gpt-brief", text)
 
 if __name__ == "__main__":
     unittest.main()

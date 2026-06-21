@@ -13,6 +13,9 @@ import socket
 import subprocess
 import sys
 import threading
+import time
+import urllib.error
+import urllib.request
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
@@ -27,6 +30,7 @@ from quant_core.data import storage as data_storage
 from quant_core.events.analyst_consensus import should_run_nightly_consensus_update
 from quant_core.events import event_news as en
 from quant_core.events import event_fetcher as ef
+from quant_core.llm import decision_brief as db
 from quant_core.execution import nightly_planner as np
 from quant_core.ledger import transactions as tx
 from quant_core.monitoring import intraday_journal as ij
@@ -57,6 +61,8 @@ DEFAULT_API_PORT = 8710
 DEFAULT_FRONTEND_HOST = "127.0.0.1"
 DEFAULT_FRONTEND_PORT = 5173
 MIN_FRONTEND_NODE_MAJOR = 18
+DEFAULT_API_READY_TIMEOUT_SECONDS = 30.0
+DEFAULT_API_READY_POLL_SECONDS = 0.2
 
 
 @dataclass(frozen=True)
@@ -159,6 +165,41 @@ def start_service_process(spec: ServiceSpec, *, popen=subprocess.Popen):
         env = os.environ.copy()
         env.update({str(key): str(value) for key, value in spec.env.items()})
     return popen(spec.command, cwd=spec.cwd, env=env)
+
+
+def wait_for_api_ready(
+    host: str,
+    port: int,
+    *,
+    process=None,
+    timeout_seconds: float = DEFAULT_API_READY_TIMEOUT_SECONDS,
+    poll_seconds: float = DEFAULT_API_READY_POLL_SECONDS,
+    urlopen=urllib.request.urlopen,
+    sleep=time.sleep,
+) -> tuple[bool, str]:
+    connect_host = "127.0.0.1" if str(host).strip() in {"", "0.0.0.0", "::"} else str(host).strip()
+    health_url = f"http://{connect_host}:{int(port)}/api/health"
+    deadline = time.monotonic() + max(float(timeout_seconds), 0.1)
+    last_error = ""
+    while time.monotonic() < deadline:
+        if process is not None:
+            return_code = process.poll()
+            if return_code is not None:
+                return False, f"API process exited with code {return_code} before becoming ready."
+        try:
+            request = urllib.request.Request(health_url, method="GET")
+            with urlopen(request, timeout=min(max(float(poll_seconds), 0.1) + 0.5, 2.0)) as response:
+                status = int(getattr(response, "status", 200) or 200)
+                if 200 <= status < 300:
+                    return True, f"API ready at {health_url}"
+                last_error = f"HTTP {status}"
+        except (urllib.error.URLError, OSError, TimeoutError) as exc:
+            last_error = str(exc)
+        except Exception as exc:
+            last_error = f"{type(exc).__name__}: {exc}"
+        sleep(max(float(poll_seconds), 0.0))
+    suffix = f" Last error: {last_error}" if last_error else ""
+    return False, f"API health check timed out after {float(timeout_seconds):.1f}s.{suffix}"
 
 
 def _service_skip_reason(spec: ServiceSpec) -> str:
@@ -506,6 +547,51 @@ def _record_intraday_classifier_events(
         ij.append_intraday_event(entry, journal_path=journal_path)
 
 
+def _refresh_decision_brief_for_material_change(
+    *,
+    data,
+    config,
+    events,
+    now,
+    logger,
+):
+    alert_settings = dict(config.get("alert_settings", {}) or {})
+    if not bool(alert_settings.get("enable_llm_decision_brief", True)):
+        return None
+    if not bool(alert_settings.get("refresh_llm_brief_on_material_change", True)):
+        return None
+    try:
+        context = db.build_current_decision_context(data=data, intraday_events=events)
+        brief = db.refresh_decision_brief(
+            context=context,
+            notification_config=config,
+            trigger="MATERIAL_CHANGE",
+            now=now,
+        )
+        logger.info(
+            "LLM decision brief material refresh: status=%s refreshed=%s signature=%s",
+            brief.get("status"),
+            brief.get("refreshed"),
+            str(brief.get("material_signature") or "")[:12],
+        )
+        return brief
+    except Exception:
+        logger.exception("LLM decision brief refresh failed; the quant alert remains available.")
+        return None
+
+
+def _append_decision_brief(body: str, brief, *, config) -> str:
+    if not brief:
+        return body
+    alert_settings = dict(config.get("alert_settings", {}) or {})
+    if not bool(alert_settings.get("send_llm_brief_on_material_change", True)):
+        return body
+    summary = str(dict(brief or {}).get("executive_summary") or "").strip()
+    if not summary:
+        return body
+    return f"{body}\n\nLLM decision brief:\n{summary}".strip()
+
+
 def maybe_run_market_refresh(
     *,
     now: Optional[datetime] = None,
@@ -646,6 +732,22 @@ def maybe_run_market_refresh(
         if intraday_alerts_enabled
         else None
     )
+    material_events = []
+    if pending_intraday_discipline_alert:
+        material_events.extend(list(pending_intraday_discipline_alert.get("items", []) or []))
+    if pending_intraday_classifier_alert:
+        material_events.extend(list(pending_intraday_classifier_alert.get("events", []) or []))
+    material_decision_brief = (
+        _refresh_decision_brief_for_material_change(
+            data=refreshed_data,
+            config=config,
+            events=material_events,
+            now=now,
+            logger=logger,
+        )
+        if material_events
+        else None
+    )
 
     if notifications_enabled and bool(alert_settings.get("send_hourly_market_summary", True)):
         market_hours_only = bool(alert_settings.get("send_hourly_market_summary_market_hours_only", True))
@@ -674,6 +776,11 @@ def maybe_run_market_refresh(
                         f"{summary_text}\n"
                         f"Intraday alert: {pending_intraday_classifier_alert['message']}"
                     ).strip()
+                summary_text = _append_decision_brief(
+                    summary_text,
+                    material_decision_brief,
+                    config=config,
+                )
                 delivery_results = message_router(
                     "hourly_market_summary",
                     subject=f"Hourly Market Refresh {now.strftime('%Y-%m-%d %H:%M')}",
@@ -753,11 +860,16 @@ def maybe_run_market_refresh(
             bodies.append(f"Discipline alert: {pending_intraday_discipline_alert['message']}")
         if pending_intraday_classifier_alert and pending_intraday_classifier_alert.get("message"):
             bodies.append(f"Market alert: {pending_intraday_classifier_alert['message']}")
+        alert_body = _append_decision_brief(
+            "\n\n".join(bodies),
+            material_decision_brief,
+            config=config,
+        )
         try:
             delivery_results = message_router(
                 "intraday_alert",
                 subject=f"Intraday Market Alert {now.strftime('%Y-%m-%d %H:%M')}",
-                body="\n\n".join(bodies),
+                body=alert_body,
                 config=config,
                 environ=environ,
                 slack_sender=slack_sender,
@@ -910,6 +1022,13 @@ def maybe_run_intraday_tactical_tick(
     )
     if not pending_alert or not pending_alert.get("message"):
         return False
+    material_decision_brief = _refresh_decision_brief_for_material_change(
+        data=data,
+        config=config,
+        events=list(pending_alert.get("events", []) or []),
+        now=now,
+        logger=logger,
+    )
     if not _has_enabled_delivery_channel(config):
         logger.info("Intraday tactical alert skipped because no delivery channel is enabled.")
         return False
@@ -920,7 +1039,11 @@ def maybe_run_intraday_tactical_tick(
     delivery_results = message_router(
         "intraday_alert",
         subject=f"Intraday Tactical Alert {now.strftime('%Y-%m-%d %H:%M')}",
-        body=f"Tactical alert: {pending_alert['message']}",
+        body=_append_decision_brief(
+            f"Tactical alert: {pending_alert['message']}",
+            material_decision_brief,
+            config=config,
+        ),
         config=config,
         environ=environ,
         slack_sender=slack_sender,
@@ -1036,6 +1159,7 @@ def run_supervisor(
     runner: Callable[..., object] = run_nightly_alerts,
     now_func: Callable[[], datetime] = datetime.now,
     status_printer: Callable[[str], None] = print,
+    api_readiness_checker: Callable[..., tuple[bool, str]] = wait_for_api_ready,
 ):
     logger = logging.getLogger(__name__)
     stop_event = threading.Event()
@@ -1057,6 +1181,7 @@ def run_supervisor(
     scheduler_thread = None
     market_refresh_thread = None
     reported_exits = set()
+    api_ready = not with_ui
     try:
         effective_with_slack = with_slack and _has_slack_credentials()
         if with_slack and not effective_with_slack:
@@ -1090,6 +1215,17 @@ def run_supervisor(
             }
 
         for spec in service_specs:
+            if spec.name == "react-frontend" and not api_ready:
+                detail = "API server did not become ready; frontend was not started."
+                logger.error("%s skipped: %s", spec.name, detail)
+                startup_statuses.append(
+                    ServiceStartupStatus(
+                        name=spec.name,
+                        state="skipped",
+                        detail=detail,
+                    )
+                )
+                continue
             skip_reason = _service_skip_reason(spec)
             if skip_reason:
                 logger.warning("%s skipped: %s", spec.name, skip_reason)
@@ -1100,6 +1236,8 @@ def run_supervisor(
                         detail=skip_reason,
                     )
                 )
+                if spec.name == "api-server":
+                    api_ready = False
                 continue
             try:
                 process = start_service_process(spec, popen=popen)
@@ -1116,11 +1254,36 @@ def run_supervisor(
             services.append(spec)
             launched_processes.append((spec, process))
             logger.info("Started %s: %s", spec.name, " ".join(spec.command))
+            if spec.name == "api-server":
+                api_ready, readiness_detail = api_readiness_checker(
+                    api_host,
+                    api_port,
+                    process=process,
+                )
+                if not api_ready:
+                    logger.error("API readiness check failed: %s", readiness_detail)
+                    startup_statuses.append(
+                        ServiceStartupStatus(
+                            name=spec.name,
+                            state="failed",
+                            detail=readiness_detail,
+                            pid=getattr(process, "pid", None),
+                        )
+                    )
+                    _terminate_process(process)
+                    services.pop()
+                    launched_processes.pop()
+                    continue
+                logger.info("%s", readiness_detail)
             startup_statuses.append(
                 ServiceStartupStatus(
                     name=spec.name,
                     state="started",
-                    detail=" ".join(spec.command),
+                    detail=(
+                        f"{' '.join(spec.command)}; {readiness_detail}"
+                        if spec.name == "api-server"
+                        else " ".join(spec.command)
+                    ),
                     pid=getattr(process, "pid", None),
                 )
             )

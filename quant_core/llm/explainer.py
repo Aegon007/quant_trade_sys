@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Mapping, Optional
@@ -403,6 +404,38 @@ def build_portfolio_risk_messages(*, risk_payload: Mapping, news_intelligence: O
     risk_lines = [
         f"- {row.get('level')}: {row.get('category')} | {row.get('message')} | action={row.get('action')}"
         for row in list(risk_payload.get("risk_items", []) or [])[:10]
+    ]
+
+
+def build_trading_system_summary_messages(*, decision_context: Mapping):
+    payload = json.dumps(dict(decision_context or {}), ensure_ascii=False, indent=2, default=str)
+    return [
+        {
+            "role": "system",
+            "content": (
+                "You are the reporting layer of a personal quantitative trading system. "
+                "Summarize only supplied structured evidence. Never invent prices, news, forecasts, or actions, "
+                "and never override the model, portfolio discipline, or risk gate."
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                "请把下面所有交易分析与信号整理成首页可直接阅读的中文决策摘要。\n"
+                "输出要求：\n"
+                "1. 第一段用 2-3 句给出总判断，必须明确“有动作”或“无强信号，保持不动”；\n"
+                "   总判断必须严格服从 canonical_decision.mode；只有 canonical_decision.executable_items 才能写成可执行动作，"
+                "approved_actions 只是原始模型候选。\n"
+                "   如果 canonical_decision.mode=NO_ACTION，全文不得建议买入、卖出、减仓或加仓；只能把原始动作写成“等待风险门控/计划确认的观察候选”。\n"
+                "2. 然后列出最多 4 个优先事项，按风险、减仓、加仓、观察排序；\n"
+                "3. 单独指出长期判断与短期时机的冲突，以及数据/模型可信度问题；只有 signal_conflicts 中的记录可以称为冲突，"
+                "不得自行推导或把方向一致的状态误称为冲突；\n"
+                "4. 若有新闻和分析师数据，只作为辅助证据，不能凭它们创造新动作；\n"
+                "5. 最后写明哪些变化会让当前判断失效；\n"
+                "6. 保持层次清楚，但不要为了压缩篇幅遗漏重要信号。\n\n"
+                f"结构化系统上下文：\n{payload}"
+            ),
+        },
     ]
     news_lines = [
         f"- {row.get('symbol')}: {row.get('direction')} | confidence={row.get('confidence')} | {row.get('summary')}"
@@ -837,3 +870,63 @@ def explain_portfolio_risk(
         cache_path=cache_path,
         urlopen=urlopen,
     )
+
+
+def summarize_trading_system(
+    *,
+    decision_context: Mapping,
+    notification_config: Mapping,
+    cache_path: str = DEFAULT_EXPLANATION_CACHE_FILE,
+    urlopen=None,
+):
+    task_config = ncfg.normalize_notification_config(dict(notification_config or {}))
+    brief_output_tokens = int(
+        dict(task_config.get("alert_settings", {}) or {}).get(
+            "decision_brief_max_output_tokens",
+            ncfg.DEFAULT_DECISION_BRIEF_MAX_OUTPUT_TOKENS,
+        )
+        or ncfg.DEFAULT_DECISION_BRIEF_MAX_OUTPUT_TOKENS
+    )
+    wall_timeout_seconds = int(
+        dict(task_config.get("alert_settings", {}) or {}).get(
+            "decision_brief_wall_timeout_seconds",
+            ncfg.DEFAULT_DECISION_BRIEF_WALL_TIMEOUT_SECONDS,
+        )
+        or ncfg.DEFAULT_DECISION_BRIEF_WALL_TIMEOUT_SECONDS
+    )
+    for route_key in ("llm", "local_slm"):
+        route = dict(task_config.get(route_key, {}) or {})
+        if route:
+            route["max_tokens"] = max(int(route.get("max_tokens") or 0), brief_output_tokens)
+            route["timeout_seconds"] = max(int(route.get("timeout_seconds") or 0), 90)
+            task_config[route_key] = route
+    result_holder = []
+
+    def run():
+        result_holder.append(
+            _run_messages_with_cache(
+                cache_kind="trading_system_decision_brief",
+                cache_payload={
+                    "prompt_version": 2,
+                    "decision_context": dict(decision_context or {}),
+                },
+                messages=build_trading_system_summary_messages(decision_context=decision_context),
+                notification_config=task_config,
+                complexity="analysis",
+                cache_path=cache_path,
+                urlopen=urlopen,
+            )
+        )
+
+    worker = threading.Thread(target=run, daemon=True, name="llm-decision-brief")
+    worker.start()
+    worker.join(timeout=max(wall_timeout_seconds, 10))
+    if worker.is_alive():
+        route_name, route_config = select_llm_route(task_config, complexity="analysis")
+        return False, f"LLM 全局摘要超过 {wall_timeout_seconds} 秒，已使用结构化摘要继续运行。", {
+            "route_name": route_name,
+            "model": str(dict(route_config or {}).get("model") or ""),
+            "cached": False,
+            "fallback_attempts": [{"route_name": route_name, "error": "wall_timeout"}],
+        }
+    return result_holder[0]

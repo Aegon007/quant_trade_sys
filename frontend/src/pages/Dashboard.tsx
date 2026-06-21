@@ -1,3 +1,5 @@
+import { useState } from "react";
+import { postApi } from "../api";
 import { ActionStatus, DecisionTable, HorizonStrip, type DecisionColumn } from "../components/DecisionTable";
 import { Facts, MetricStrip, Panel, SnapshotFrame, Status } from "../components/Primitives";
 import {
@@ -40,12 +42,29 @@ export default function Dashboard() {
   const newsImpacts = asArray(newsIntelligence.portfolio_impacts);
   const newsLlm = asDict(newsIntelligence.llm);
   const newsSource = asDict(newsIntelligence.source_status);
+  const decisionBrief = asDict(payload.decision_brief);
+  const briefLlm = asDict(decisionBrief.llm);
+  const [refreshingBrief, setRefreshingBrief] = useState(false);
+  const [briefError, setBriefError] = useState("");
   const modelStatus = text(data?.summary.multi_horizon_status ?? model.status ?? asDict(model.model).status, "MODEL_NOT_READY");
   const headline = modelStatus !== "READY"
     ? "Train the long-horizon model before using trade recommendations."
     : approved.length
       ? `${approved.length} approved action${approved.length === 1 ? "" : "s"} require review.`
       : "No strong action. Keep positions unchanged.";
+
+  async function refreshDecisionBrief() {
+    setRefreshingBrief(true);
+    setBriefError("");
+    try {
+      await postApi("/api/actions/refresh-decision-brief");
+      await reload();
+    } catch (exc) {
+      setBriefError(exc instanceof Error ? exc.message : String(exc));
+    } finally {
+      setRefreshingBrief(false);
+    }
+  }
 
   return (
     <SnapshotFrame snapshot={data} loading={loading} error={error} onReload={reload}>
@@ -57,6 +76,24 @@ export default function Dashboard() {
         </div>
         <Status value={modelStatus} />
       </section>
+
+      <Panel
+        title="LLM portfolio decision summary"
+        subtitle={`All quant signals, portfolio controls, changes, and evidence · ${text(decisionBrief.status, "NOT READY")} · ${text(briefLlm.model, "structured fallback")}`}
+        action={<button className="quiet-button" disabled={refreshingBrief} onClick={refreshDecisionBrief}>{refreshingBrief ? "Refreshing..." : "Refresh LLM summary"}</button>}
+      >
+        <div className={`llm-home-brief ${Number(decisionBrief.high_priority_change_count ?? 0) > 0 ? "alert" : ""}`}>
+          <p>{text(decisionBrief.executive_summary, "Run the nightly pipeline or refresh this summary after configuring the remote LLM.")}</p>
+          <div>
+            <Status value={decisionBrief.trigger ?? "WAITING"} />
+            <span>{text(decisionBrief.approved_action_count, "0")} actions</span>
+            <span>{text(decisionBrief.conflict_count, "0")} conflicts</span>
+            <span>{text(decisionBrief.high_priority_change_count, "0")} high-priority changes</span>
+            <span>{text(decisionBrief.generated_at, "-")}</span>
+          </div>
+        </div>
+        {briefError ? <div className="notice negative">{briefError}</div> : null}
+      </Panel>
 
       <MetricStrip items={[
         { label: "Total capital", value: formatCurrency(account.total_capital), hint: `Cash ${formatCurrency(account.cash_available)}` },

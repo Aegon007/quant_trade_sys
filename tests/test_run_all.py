@@ -4,6 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 import tempfile
 import json
+import urllib.error
 
 from tests.support import clear_modules, install_fake_yfinance, reload_module
 
@@ -109,6 +110,53 @@ class RunAllTests(unittest.TestCase):
                 "[SKIP] react-frontend - disabled by flag.",
             ],
         )
+
+    def test_wait_for_api_ready_retries_until_health_check_succeeds(self):
+        attempts = []
+
+        class Response:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+        def fake_urlopen(request, timeout=0):
+            attempts.append(request.full_url)
+            if len(attempts) < 3:
+                raise urllib.error.URLError("connection refused")
+            return Response()
+
+        ready, detail = self.module.wait_for_api_ready(
+            "127.0.0.1",
+            8710,
+            process=SimpleNamespace(poll=lambda: None),
+            timeout_seconds=2,
+            poll_seconds=0,
+            urlopen=fake_urlopen,
+            sleep=lambda _seconds: None,
+        )
+
+        self.assertTrue(ready)
+        self.assertEqual(len(attempts), 3)
+        self.assertIn("/api/health", attempts[-1])
+        self.assertIn("ready", detail.lower())
+
+    def test_wait_for_api_ready_stops_when_process_exits(self):
+        ready, detail = self.module.wait_for_api_ready(
+            "127.0.0.1",
+            8710,
+            process=SimpleNamespace(poll=lambda: 1),
+            timeout_seconds=2,
+            poll_seconds=0,
+            urlopen=lambda *args, **kwargs: None,
+            sleep=lambda _seconds: None,
+        )
+
+        self.assertFalse(ready)
+        self.assertIn("exited with code 1", detail)
 
     def test_maybe_run_nightly_alerts_runs_only_when_due(self):
         calls = []
@@ -319,6 +367,24 @@ class RunAllTests(unittest.TestCase):
 
         self.assertTrue(result)
         self.assertEqual(sent, [("hourly summary", "https://hooks.slack.com/services/from-env")])
+
+    def test_append_decision_brief_respects_delivery_setting(self):
+        brief = {"executive_summary": "当前轻仓，只复核高置信度信号。"}
+
+        enabled = self.module._append_decision_brief(
+            "market alert",
+            brief,
+            config={"alert_settings": {"send_llm_brief_on_material_change": True}},
+        )
+        disabled = self.module._append_decision_brief(
+            "market alert",
+            brief,
+            config={"alert_settings": {"send_llm_brief_on_material_change": False}},
+        )
+
+        self.assertIn("LLM decision brief", enabled)
+        self.assertIn("当前轻仓", enabled)
+        self.assertEqual(disabled, "market alert")
 
     def test_maybe_run_market_refresh_sends_discipline_alert_once_per_signature(self):
         market_hours = datetime.fromisoformat("2026-05-11T10:30:00-04:00")

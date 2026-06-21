@@ -11,6 +11,7 @@ from quant_core.events import analyst_consensus as ac
 from quant_core.events import event_fetcher as ef
 from quant_core.events import event_news as en
 from quant_core.events import news_intelligence as ni
+from quant_core.llm import decision_brief as db
 from quant_core.notifications import notification_config as ncfg
 from quant_core.notifications import delivery_router as dr
 from quant_core.notifications import reporting as nr
@@ -162,6 +163,7 @@ def run_nightly_alerts(
     model_governance_path=mh_governance.DEFAULT_GOVERNANCE_FILE,
     model_validation_path=qpaths.MULTI_HORIZON_VALIDATION_FILE,
     news_intelligence_path=ni.DEFAULT_NEWS_INTELLIGENCE_FILE,
+    decision_brief_path=db.DEFAULT_DECISION_BRIEF_FILE,
     event_source_status_path=qpaths.EVENT_SOURCE_STATUS_FILE,
     event_refresher=None,
     news_intelligence_builder=None,
@@ -738,6 +740,66 @@ def run_nightly_alerts(
     snapshot["intraday_event_summary"] = intraday_event_summary
     snapshot["change_feed"] = change_feed
     snapshot["nightly_manifest"] = manifest
+    decision_context = db.build_decision_context(
+        account=account_snapshot,
+        multi_horizon_snapshot=multi_horizon_snapshot,
+        core_etf_snapshot=core_etf_snapshot,
+        satellite_candidate_snapshot=satellite_candidate_snapshot,
+        discipline_snapshot=discipline_snapshot,
+        trade_plan=trade_plan,
+        change_feed=change_feed,
+        news_intelligence=news_intelligence,
+        market_monitor_snapshot=market_monitor_snapshot,
+        data_health_snapshot=data_health_snapshot,
+        plan_quality_snapshot=plan_quality_snapshot,
+        analyst_context=dict(news_intelligence.get("analyst_context", {}) or {}),
+    )
+    manifest = nman.mark_step_started(
+        manifest,
+        step_name="decision_brief",
+        input_version=manifest_input_version,
+        path=manifest_path,
+        now=now,
+    )
+    brief_enabled = bool(
+        dict(config.get("alert_settings", {}) or {}).get("enable_llm_decision_brief", True)
+    )
+    if brief_enabled:
+        decision_brief = db.refresh_decision_brief(
+            context=decision_context,
+            notification_config=config,
+            trigger="NIGHTLY",
+            path=decision_brief_path,
+            now=now,
+        )
+    else:
+        decision_brief = {
+            "schema_version": 1,
+            "generated_at": now.isoformat(),
+            "status": "DISABLED",
+            "trigger": "NIGHTLY",
+            "executive_summary": "LLM portfolio decision summary is disabled in Settings.",
+            "approved_action_count": len(decision_context.get("approved_actions", [])),
+            "conflict_count": len(decision_context.get("signal_conflicts", [])),
+            "high_priority_change_count": len(decision_context.get("high_priority_changes", [])),
+            "refreshed": False,
+        }
+        db.save_decision_brief(decision_brief, path=decision_brief_path)
+    snapshot["decision_brief"] = decision_brief
+    manifest = nman.mark_step_completed(
+        manifest,
+        step_name="decision_brief",
+        output_file=decision_brief_path,
+        input_version=manifest_input_version,
+        metadata={
+            "status": decision_brief.get("status"),
+            "refreshed": bool(decision_brief.get("refreshed")),
+            "approved_action_count": int(decision_brief.get("approved_action_count", 0) or 0),
+        },
+        path=manifest_path,
+        now=now,
+    )
+    snapshot["nightly_manifest"] = manifest
     if dry_run:
         manifest = nman.finalize_nightly_run_manifest(manifest, status="completed", path=manifest_path, now=now)
         snapshot["nightly_manifest"] = manifest
@@ -757,6 +819,7 @@ def run_nightly_alerts(
             "manifest": manifest,
             "multi_horizon_snapshot": multi_horizon_snapshot,
             "news_intelligence": news_intelligence,
+            "decision_brief": decision_brief,
         }
 
     sent_results = ae.send_new_alerts(
@@ -902,6 +965,7 @@ def run_nightly_alerts(
         "change_feed": change_feed,
         "multi_horizon_snapshot": multi_horizon_snapshot,
         "news_intelligence": news_intelligence,
+        "decision_brief": decision_brief,
         "manifest": manifest,
     }
 

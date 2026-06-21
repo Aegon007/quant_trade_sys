@@ -350,6 +350,7 @@ def build_nightly_report(snapshot: Mapping) -> str:
     strategy_governance_snapshot = dict(snapshot.get("strategy_governance_snapshot", {}) or {})
     multi_horizon_snapshot = dict(snapshot.get("multi_horizon_snapshot", {}) or {})
     news_intelligence = dict(snapshot.get("news_intelligence", {}) or {})
+    decision_brief = dict(snapshot.get("decision_brief", {}) or {})
     intraday_event_summary = dict(snapshot.get("intraday_event_summary", {}) or {})
     change_feed = dict(snapshot.get("change_feed", {}) or {})
     nightly_manifest = dict(snapshot.get("nightly_manifest", {}) or {})
@@ -479,6 +480,21 @@ def build_nightly_report(snapshot: Mapping) -> str:
                 f"action={impact.get('risk_action') or 'NONE'} | "
                 f"{str(impact.get('summary') or '').strip()}"
             )
+
+    if decision_brief:
+        llm_meta = dict(decision_brief.get("llm", {}) or {})
+        lines.append(
+            "LLM decision brief: "
+            f"status={decision_brief.get('status') or 'UNKNOWN'} "
+            f"trigger={decision_brief.get('trigger') or 'UNKNOWN'} "
+            f"actions={int(_float(decision_brief.get('approved_action_count'), 0) or 0)} "
+            f"conflicts={int(_float(decision_brief.get('conflict_count'), 0) or 0)} "
+            f"route={llm_meta.get('route_name') or 'structured'} "
+            f"model={llm_meta.get('model') or '-'}"
+        )
+        decision_summary = str(decision_brief.get("executive_summary") or "").strip()
+        if decision_summary:
+            lines.append(f"Decision summary: {decision_summary}")
 
     if core_etf_snapshot:
         core_summary = dict(core_etf_snapshot.get("summary", {}) or {})

@@ -16,6 +16,9 @@ SECRET_FIELDS = (
 )
 DEFAULT_LLM_TIMEOUT_SECONDS = 30
 DEFAULT_LLM_MAX_TOKENS = 300
+DEFAULT_LLM_CONTEXT_WINDOW_TOKENS = 200000
+DEFAULT_DECISION_BRIEF_MAX_OUTPUT_TOKENS = 16000
+DEFAULT_DECISION_BRIEF_WALL_TIMEOUT_SECONDS = 90
 DEFAULT_LLM_TEMPERATURE = 0.2
 DEFAULT_LOCAL_SLM_TIMEOUT_SECONDS = 20
 DEFAULT_LOCAL_SLM_MAX_TOKENS = 220
@@ -79,6 +82,7 @@ DEFAULT_NOTIFICATION_CONFIG = {
         "model": LLM_PRESETS["openai"]["model"],
         "temperature": DEFAULT_LLM_TEMPERATURE,
         "max_tokens": DEFAULT_LLM_MAX_TOKENS,
+        "context_window_tokens": DEFAULT_LLM_CONTEXT_WINDOW_TOKENS,
         "timeout_seconds": DEFAULT_LLM_TIMEOUT_SECONDS,
         "site_url": "",
         "app_name": "quant-trade-system",
@@ -95,6 +99,11 @@ DEFAULT_NOTIFICATION_CONFIG = {
         "send_hourly_market_summary": True,
         "send_hourly_market_summary_market_hours_only": True,
         "send_weekend_research_summary": True,
+        "enable_llm_decision_brief": True,
+        "refresh_llm_brief_on_material_change": True,
+        "send_llm_brief_on_material_change": True,
+        "decision_brief_max_output_tokens": DEFAULT_DECISION_BRIEF_MAX_OUTPUT_TOKENS,
+        "decision_brief_wall_timeout_seconds": DEFAULT_DECISION_BRIEF_WALL_TIMEOUT_SECONDS,
         "enable_weekend_research": True,
         "weekend_research_day_local": DEFAULT_WEEKEND_RESEARCH_DAY,
         "weekend_research_hour_local": DEFAULT_WEEKEND_RESEARCH_HOUR_LOCAL,
@@ -176,6 +185,13 @@ def normalize_notification_config(config):
             1,
             _coerce_int(llm.get("max_tokens", DEFAULT_LLM_MAX_TOKENS), DEFAULT_LLM_MAX_TOKENS),
         )
+        normalized["llm"]["context_window_tokens"] = max(
+            1024,
+            _coerce_int(
+                llm.get("context_window_tokens", DEFAULT_LLM_CONTEXT_WINDOW_TOKENS),
+                DEFAULT_LLM_CONTEXT_WINDOW_TOKENS,
+            ),
+        )
         normalized["llm"]["timeout_seconds"] = max(
             1,
             _coerce_int(llm.get("timeout_seconds", DEFAULT_LLM_TIMEOUT_SECONDS), DEFAULT_LLM_TIMEOUT_SECONDS),
@@ -224,6 +240,35 @@ def normalize_notification_config(config):
         )
         normalized["alert_settings"]["send_weekend_research_summary"] = bool(
             alert_settings.get("send_weekend_research_summary", True)
+        )
+        normalized["alert_settings"]["enable_llm_decision_brief"] = bool(
+            alert_settings.get("enable_llm_decision_brief", True)
+        )
+        normalized["alert_settings"]["refresh_llm_brief_on_material_change"] = bool(
+            alert_settings.get("refresh_llm_brief_on_material_change", True)
+        )
+        normalized["alert_settings"]["send_llm_brief_on_material_change"] = bool(
+            alert_settings.get("send_llm_brief_on_material_change", True)
+        )
+        normalized["alert_settings"]["decision_brief_max_output_tokens"] = max(
+            512,
+            _coerce_int(
+                alert_settings.get(
+                    "decision_brief_max_output_tokens",
+                    DEFAULT_DECISION_BRIEF_MAX_OUTPUT_TOKENS,
+                ),
+                DEFAULT_DECISION_BRIEF_MAX_OUTPUT_TOKENS,
+            ),
+        )
+        normalized["alert_settings"]["decision_brief_wall_timeout_seconds"] = max(
+            10,
+            _coerce_int(
+                alert_settings.get(
+                    "decision_brief_wall_timeout_seconds",
+                    DEFAULT_DECISION_BRIEF_WALL_TIMEOUT_SECONDS,
+                ),
+                DEFAULT_DECISION_BRIEF_WALL_TIMEOUT_SECONDS,
+            ),
         )
         normalized["alert_settings"]["enable_weekend_research"] = bool(
             alert_settings.get("enable_weekend_research", True)

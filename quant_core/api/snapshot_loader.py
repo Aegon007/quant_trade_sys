@@ -40,6 +40,7 @@ SNAPSHOT_PATHS = {
     "multi-horizon": qpaths.MULTI_HORIZON_SNAPSHOT_FILE,
     "model-governance": qpaths.MULTI_HORIZON_GOVERNANCE_FILE,
     "news-intelligence": qpaths.NEWS_INTELLIGENCE_FILE,
+    "decision-brief": qpaths.DECISION_BRIEF_FILE,
     "reports-latest": str(qpaths.PROJECT_ROOT / "reports" / "nightly_report_latest.json"),
 }
 
@@ -525,6 +526,7 @@ def load_dashboard_response(*, now: Optional[datetime] = None) -> dict:
     market_monitor_payload, _ = safe_read_json(qpaths.MARKET_MONITOR_SNAPSHOT_FILE)
     strategy_governance_payload, _ = safe_read_json(qpaths.STRATEGY_REGISTRY_STATE_FILE)
     news_intelligence_payload, _ = safe_read_json(qpaths.NEWS_INTELLIGENCE_FILE)
+    decision_brief_payload, _ = safe_read_json(qpaths.DECISION_BRIEF_FILE)
     multi_horizon_payload = _load_gated_multi_horizon_snapshot()
     job_status = job_registry.load_job_status()
 
@@ -537,6 +539,7 @@ def load_dashboard_response(*, now: Optional[datetime] = None) -> dict:
     market_monitor_payload = market_monitor_payload if isinstance(market_monitor_payload, dict) else {}
     strategy_governance_payload = strategy_governance_payload if isinstance(strategy_governance_payload, dict) else {}
     news_intelligence_payload = news_intelligence_payload if isinstance(news_intelligence_payload, dict) else {}
+    decision_brief_payload = decision_brief_payload if isinstance(decision_brief_payload, dict) else {}
 
     change_items = []
     for key in ("high_items", "medium_items", "items"):
@@ -596,6 +599,8 @@ def load_dashboard_response(*, now: Optional[datetime] = None) -> dict:
         "news_intelligence_status": news_intelligence_payload.get("status"),
         "news_market_risk_level": news_intelligence_payload.get("market_risk_level"),
         "news_impact_count": len(list(news_intelligence_payload.get("portfolio_impacts", []) or [])),
+        "decision_brief_status": decision_brief_payload.get("status"),
+        "decision_brief_generated_at": decision_brief_payload.get("generated_at"),
     }
     payload = {
         "account": account,
@@ -609,6 +614,7 @@ def load_dashboard_response(*, now: Optional[datetime] = None) -> dict:
         "strategy_governance_snapshot": strategy_governance_payload,
         "multi_horizon_snapshot": multi_horizon_payload,
         "news_intelligence": news_intelligence_payload,
+        "decision_brief": decision_brief_payload,
         "job_status": job_status,
     }
     generated_at = now_iso(now)
@@ -743,6 +749,7 @@ def _sanitize_notification_config(payload) -> dict:
             "model": llm.get("model"),
             "temperature": llm.get("temperature"),
             "max_tokens": llm.get("max_tokens"),
+            "context_window_tokens": llm.get("context_window_tokens"),
             "timeout_seconds": llm.get("timeout_seconds"),
             "site_url": llm.get("site_url"),
             "app_name": llm.get("app_name"),

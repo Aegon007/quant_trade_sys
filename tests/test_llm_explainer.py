@@ -408,3 +408,32 @@ class LLMExplainerTests(unittest.TestCase):
         self.assertTrue(ok)
         self.assertEqual(text, "组合新闻解释完成")
         self.assertEqual(meta["route_name"], "llm")
+
+    def test_summarize_trading_system_prefers_remote_llm(self):
+        def fake_urlopen(request, timeout=0):
+            payload = {"choices": [{"message": {"content": "全局交易摘要完成"}}]}
+            return _FakeResponse(json.dumps(payload).encode("utf-8"))
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            ok, text, meta = self.module.summarize_trading_system(
+                decision_context={
+                    "discipline": {"regime": "LIGHT", "risk_regime": "CAUTION"},
+                    "approved_actions": [{"symbol": "MSFT", "action": "ACCUMULATE"}],
+                    "signal_conflicts": [],
+                    "high_priority_changes": [],
+                },
+                notification_config={
+                    "llm": {
+                        "enabled": True,
+                        "base_url": "https://api.example.test/v1",
+                        "api_key": "test",
+                        "model": "remote",
+                    }
+                },
+                cache_path=str(Path(temp_dir) / "cache.json"),
+                urlopen=fake_urlopen,
+            )
+
+        self.assertTrue(ok)
+        self.assertEqual(text, "全局交易摘要完成")
+        self.assertEqual(meta["route_name"], "llm")

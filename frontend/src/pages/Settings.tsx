@@ -273,8 +273,11 @@ export default function Settings() {
             <Field label="Temperature">
               <input type="number" min="0" step="0.1" value={text(llm.temperature, "0.2")} onChange={(event) => updateSection("llm", "temperature", Number(event.target.value))} />
             </Field>
-            <Field label="Max tokens">
+            <Field label="Default max output tokens" hint="Used by ordinary short explanations. The portfolio decision brief has its own larger budget below.">
               <input type="number" min="1" value={text(llm.max_tokens, "300")} onChange={(event) => updateSection("llm", "max_tokens", Number(event.target.value))} />
+            </Field>
+            <Field label="Context window tokens" hint="Total input + output capacity advertised by the selected model.">
+              <input type="number" min="1024" value={text(llm.context_window_tokens, "200000")} onChange={(event) => updateSection("llm", "context_window_tokens", Number(event.target.value))} />
             </Field>
             <Field label="Timeout (seconds)">
               <input type="number" min="1" value={text(llm.timeout_seconds, "30")} onChange={(event) => updateSection("llm", "timeout_seconds", Number(event.target.value))} />
@@ -340,6 +343,9 @@ export default function Settings() {
           <Toggle label="Hourly summary during market hours only" checked={Boolean(alerts.send_hourly_market_summary_market_hours_only)} onChange={(value) => updateSection("alert_settings", "send_hourly_market_summary_market_hours_only", value)} />
           <Toggle label="Weekend research" checked={Boolean(alerts.enable_weekend_research)} onChange={(value) => updateSection("alert_settings", "enable_weekend_research", value)} />
           <Toggle label="Send weekend research summary" checked={Boolean(alerts.send_weekend_research_summary)} onChange={(value) => updateSection("alert_settings", "send_weekend_research_summary", value)} />
+          <Toggle label="Enable LLM portfolio summary" checked={Boolean(alerts.enable_llm_decision_brief)} onChange={(value) => updateSection("alert_settings", "enable_llm_decision_brief", value)} />
+          <Toggle label="Refresh LLM summary on material signal changes" checked={Boolean(alerts.refresh_llm_brief_on_material_change)} onChange={(value) => updateSection("alert_settings", "refresh_llm_brief_on_material_change", value)} />
+          <Toggle label="Include changed LLM summary in Slack / Email" checked={Boolean(alerts.send_llm_brief_on_material_change)} onChange={(value) => updateSection("alert_settings", "send_llm_brief_on_material_change", value)} />
         </div>
         <div className="settings-form-grid compact-settings">
           <Field label="Alert cooldown (hours)">
@@ -347,6 +353,12 @@ export default function Settings() {
           </Field>
           <Field label="Weekend history period">
             <input value={text(alerts.weekend_research_history_period, "5y")} onChange={(event) => updateSection("alert_settings", "weekend_research_history_period", event.target.value)} />
+          </Field>
+          <Field label="Decision brief max output tokens" hint="Large independent output budget for the full-system LLM summary.">
+            <input type="number" min="512" value={text(alerts.decision_brief_max_output_tokens, "16000")} onChange={(event) => updateSection("alert_settings", "decision_brief_max_output_tokens", Number(event.target.value))} />
+          </Field>
+          <Field label="Decision brief wall timeout (seconds)" hint="Stops a slow free route from blocking nightly jobs; structured fallback remains available.">
+            <input type="number" min="10" value={text(alerts.decision_brief_wall_timeout_seconds, "90")} onChange={(event) => updateSection("alert_settings", "decision_brief_wall_timeout_seconds", Number(event.target.value))} />
           </Field>
         </div>
         <div className="editor-footer"><button disabled={saving} onClick={saveConnections}>{saving ? "Saving..." : "Save delivery policy"}</button><span>{saveResult}</span></div>

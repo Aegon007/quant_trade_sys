@@ -29,6 +29,7 @@ from quant_core.ledger import transactions
 from quant_core.notifications import notification_config
 from quant_core.llm import openai_compatible
 from quant_core.llm import explainer as llm_explainer
+from quant_core.llm import decision_brief
 from quant_core.models.multi_horizon import config as multi_horizon_config
 from quant_core.models.multi_horizon import governance as multi_horizon_governance
 from quant_core.models.multi_horizon import snapshot as multi_horizon_snapshot
@@ -321,6 +322,21 @@ def explain_risk() -> dict:
         notification_config=_llm_config(),
     )
     return {"ok": ok, "text": text, "meta": meta}
+
+
+def refresh_decision_brief_now() -> dict:
+    config = _llm_config()
+    context = decision_brief.build_current_decision_context()
+    result = decision_brief.refresh_decision_brief(
+        context=context,
+        notification_config=config,
+        trigger="MANUAL",
+        force=True,
+    )
+    return {
+        "message": "LLM decision brief refreshed",
+        "decision_brief": result,
+    }
 
 
 def import_robinhood_csv_text(csv_text: str, *, filename: str = "", replace_existing: bool = False) -> dict:

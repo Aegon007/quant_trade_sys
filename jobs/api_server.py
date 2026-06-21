@@ -129,6 +129,13 @@ def create_app():
             loader.SNAPSHOT_PATHS["news-intelligence"],
         )
 
+    @app.get("/api/decision-brief")
+    def decision_brief():
+        return loader.load_snapshot_response(
+            "decision-brief",
+            loader.SNAPSHOT_PATHS["decision-brief"],
+        )
+
     @app.get("/api/job-status")
     def job_status():
         return loader.load_job_status_response()
@@ -221,6 +228,14 @@ def create_app():
         return api_actions.run_with_job_status(
             "llm-explain-risk",
             api_actions.explain_risk,
+            run_async=False,
+        )
+
+    @app.post("/api/actions/refresh-decision-brief")
+    def refresh_decision_brief():
+        return api_actions.run_with_job_status(
+            "llm-refresh-decision-brief",
+            api_actions.refresh_decision_brief_now,
             run_async=False,
         )
 
