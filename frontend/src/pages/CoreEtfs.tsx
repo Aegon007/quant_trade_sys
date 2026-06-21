@@ -1,4 +1,5 @@
-import { ActionStatus, DecisionTable, HorizonStrip, type DecisionColumn } from "../components/DecisionTable";
+import { ActionStatus, DecisionTable, HorizonStrip, ModelDetail, type DecisionColumn } from "../components/DecisionTable";
+import { LlmExplanation } from "../components/LlmExplanation";
 import { MetricStrip, Panel, SnapshotFrame, Status } from "../components/Primitives";
 import { asArray, asDict, formatCurrency, formatPercent, modelDecision, numberValue, text, useSnapshot, type Dict } from "../lib/data";
 
@@ -32,7 +33,17 @@ export default function CoreEtfs() {
         { label: "Account exposure", value: formatPercent(account.exposure_pct), hint: `${uncovered.length} holdings outside this core universe` },
       ]} />
       <Panel title="Core ETF allocation board" subtitle="One full-width comparison. Expand a row for quantiles, reasons, and downside estimates.">
-        <DecisionTable rows={rows} columns={columns} emptyText="Run neural model inference to build the core ETF board." />
+        <DecisionTable
+          rows={rows}
+          columns={columns}
+          detail={(row) => (
+            <>
+              <ModelDetail row={row} />
+              <LlmExplanation endpoint="/api/actions/explain-core-etf" payload={{ symbol: text(row.symbol) }} />
+            </>
+          )}
+          emptyText="Run neural model inference to build the core ETF board."
+        />
       </Panel>
       <Panel title="Portfolio coverage gap" subtitle="These current holdings are not represented in the configured Core ETF universe. Add an ETF to Settings/config if it should be managed here.">
         <DecisionTable

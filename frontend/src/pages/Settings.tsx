@@ -75,6 +75,9 @@ export default function Settings() {
   const schedule = asDict(payload.runtime_schedule);
   const modelConfig = asDict(payload.multi_horizon_config);
   const coreEtfUniverse = asDict(payload.core_etf_universe);
+  const eventSourceConfig = asDict(payload.event_source_config);
+  const eventSourceStatus = asDict(payload.event_source_status);
+  const analystStatus = asDict(payload.analyst_consensus_status);
   const notification = asDict(payload.notification_config);
   const registry = asDict(payload.model_registry);
   const [config, setConfig] = useState<Dict>({});
@@ -349,6 +352,17 @@ export default function Settings() {
         <div className="editor-footer"><button disabled={saving} onClick={saveConnections}>{saving ? "Saving..." : "Save delivery policy"}</button><span>{saveResult}</span></div>
       </Panel>
 
+      <Panel title="Financial intelligence sources" subtitle="News is refreshed during market-data cycles and nightly runs. Analyst coverage is recommendation consensus, not full report text.">
+        <Facts rows={[
+          ["News refresh", <Status value={eventSourceStatus.status ?? "NOT RUN"} />],
+          ["Active news events", text(eventSourceStatus.event_count, "0")],
+          ["News sources OK / failed", `${text(eventSourceStatus.successful_source_count, "0")} / ${text(eventSourceStatus.failed_source_count, "0")}`],
+          ["Analyst cache updated", text(analystStatus.last_updated, "NOT RUN")],
+          ["Analyst symbols covered", text(Object.keys(asDict(analystStatus.recommendations)).length, "0")],
+          ["Research report text", <Status value="NOT INGESTED" />],
+        ]} />
+      </Panel>
+
       <div className="split-layout editors">
         <JsonEditor
           title="Core ETF universe"
@@ -363,6 +377,12 @@ export default function Settings() {
           onSave={async (value) => { await postApi("/api/actions/save-runtime-schedule", value); reload(); }}
         />
       </div>
+      <JsonEditor
+        title="Financial news sources"
+        subtitle="Enable or disable local and yfinance/Yahoo news adapters. A failed source leaves the previous cache available."
+        value={eventSourceConfig}
+        onSave={async (value) => { await postApi("/api/actions/save-event-sources", value); reload(); }}
+      />
       <div className="split-layout editors">
         <JsonEditor
           title="Multi-horizon model"

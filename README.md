@@ -289,6 +289,8 @@ journalctl --user -u quant-trade-system.service -f
 - `storage/config/notification_config.json`：本地通知、LLM 和发送策略的非敏感配置，不提交到 Git。
 - `storage/config/notification_secrets.local.json`：只保存 Slack webhook、SMTP 密码及 LLM API key；不提交到 Git，并尽量使用仅当前用户可读写的文件权限。
 - `storage/state/market_events.json`：手工维护事件输入文件（可选）。
+- `storage/state/event_source_status.json`：最近一次财经新闻抓取的源级成功/失败状态。
+- `storage/state/news_intelligence.json`：夜间生成的组合相关新闻、分析师共识与 LLM 解读快照。
 - `config/event_sources.json`：事件源配置，定义本地 mock 与自动抓取源（如 yfinance 新闻）。
 - `storage/state/transactions.json`：买入/卖出交易记录与组合动作事件记录（如转到关注、转到持仓等）。
 - `storage/state/multi_horizon_snapshot.json`：前端、夜间计划和通知共同读取的统一多周期模型快照。
@@ -459,6 +461,16 @@ export LLM_MODEL=openrouter/free
 笼统的 `HTTP 400`。
 
 LLM / SLM 只负责转述、解释和整理结构化证据，不会直接生成交易动作。
+
+### 财经新闻与分析师信息
+
+- 日间市场刷新和夜间流水线都会按 `config/event_sources.json` 抓取新闻；失败时保留上一份缓存，不让单一新闻源阻断量化主流程。
+- 夜间任务会将活跃事件、当前持仓、卫星候选和分析师共识组合成 `news_intelligence.json`。
+- 远程 LLM 优先负责组合新闻综合解读；没有可用 LLM 时仍会生成可审计的结构化摘要。
+- Dashboard 展示最相关的标的、方向、置信度、风险动作和原始标题证据；夜间 Slack/Email 报告也包含同一份摘要。
+- Core ETF、Satellite Radar 和 Risk 页面提供按需解释按钮，只有点击时才调用远程 LLM。
+- 当前分析师模块读取的是推荐数量与强弱共识，不包含付费研报正文。系统会明确标记这一限制，不会伪装成已经阅读过完整研报。
+- 新闻源开关、最近抓取状态和分析师缓存状态集中显示在 Settings 页面。
 
 ## 组合级建议
 

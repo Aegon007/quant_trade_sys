@@ -39,6 +39,7 @@ SNAPSHOT_PATHS = {
     "strategy-validation": qpaths.STRATEGY_VALIDATION_SNAPSHOT_FILE,
     "multi-horizon": qpaths.MULTI_HORIZON_SNAPSHOT_FILE,
     "model-governance": qpaths.MULTI_HORIZON_GOVERNANCE_FILE,
+    "news-intelligence": qpaths.NEWS_INTELLIGENCE_FILE,
     "reports-latest": str(qpaths.PROJECT_ROOT / "reports" / "nightly_report_latest.json"),
 }
 
@@ -523,6 +524,7 @@ def load_dashboard_response(*, now: Optional[datetime] = None) -> dict:
     plan_quality_payload, _ = safe_read_json(qpaths.PLAN_QUALITY_SNAPSHOT_FILE)
     market_monitor_payload, _ = safe_read_json(qpaths.MARKET_MONITOR_SNAPSHOT_FILE)
     strategy_governance_payload, _ = safe_read_json(qpaths.STRATEGY_REGISTRY_STATE_FILE)
+    news_intelligence_payload, _ = safe_read_json(qpaths.NEWS_INTELLIGENCE_FILE)
     multi_horizon_payload = _load_gated_multi_horizon_snapshot()
     job_status = job_registry.load_job_status()
 
@@ -534,6 +536,7 @@ def load_dashboard_response(*, now: Optional[datetime] = None) -> dict:
     plan_quality_payload = plan_quality_payload if isinstance(plan_quality_payload, dict) else {}
     market_monitor_payload = market_monitor_payload if isinstance(market_monitor_payload, dict) else {}
     strategy_governance_payload = strategy_governance_payload if isinstance(strategy_governance_payload, dict) else {}
+    news_intelligence_payload = news_intelligence_payload if isinstance(news_intelligence_payload, dict) else {}
 
     change_items = []
     for key in ("high_items", "medium_items", "items"):
@@ -590,6 +593,9 @@ def load_dashboard_response(*, now: Optional[datetime] = None) -> dict:
         ),
         "multi_horizon_conflict_count": dict(multi_horizon_payload.get("summary", {}) or {}).get("conflict_count"),
         "multi_horizon_action_counts": dict(multi_horizon_payload.get("summary", {}) or {}).get("action_counts", {}),
+        "news_intelligence_status": news_intelligence_payload.get("status"),
+        "news_market_risk_level": news_intelligence_payload.get("market_risk_level"),
+        "news_impact_count": len(list(news_intelligence_payload.get("portfolio_impacts", []) or [])),
     }
     payload = {
         "account": account,
@@ -602,6 +608,7 @@ def load_dashboard_response(*, now: Optional[datetime] = None) -> dict:
         "market_monitor_snapshot": market_monitor_payload,
         "strategy_governance_snapshot": strategy_governance_payload,
         "multi_horizon_snapshot": multi_horizon_payload,
+        "news_intelligence": news_intelligence_payload,
         "job_status": job_status,
     }
     generated_at = now_iso(now)
@@ -762,12 +769,18 @@ def load_settings_response(*, now: Optional[datetime] = None) -> dict:
     model_registry, _ = safe_read_json(qpaths.MODEL_REGISTRY_CONFIG_FILE)
     multi_horizon_config, _ = safe_read_json(qpaths.MULTI_HORIZON_MODEL_CONFIG_FILE)
     core_etf_universe, _ = safe_read_json(qpaths.CORE_ETF_UNIVERSE_FILE)
+    event_source_config, _ = safe_read_json(qpaths.EVENT_SOURCES_CONFIG_FILE)
+    event_source_status, _ = safe_read_json(qpaths.EVENT_SOURCE_STATUS_FILE)
+    analyst_consensus_status, _ = safe_read_json(qpaths.ANALYST_CONSENSUS_CACHE_FILE)
     settings_payload = {
         "runtime_schedule": schedule,
         "notification_config": _sanitize_notification_config(notification_config if isinstance(notification_config, dict) else {}),
         "model_registry": model_registry if isinstance(model_registry, dict) else {},
         "multi_horizon_config": multi_horizon_config if isinstance(multi_horizon_config, dict) else {},
         "core_etf_universe": core_etf_universe if isinstance(core_etf_universe, dict) else {},
+        "event_source_config": event_source_config if isinstance(event_source_config, dict) else {},
+        "event_source_status": event_source_status if isinstance(event_source_status, dict) else {},
+        "analyst_consensus_status": analyst_consensus_status if isinstance(analyst_consensus_status, dict) else {},
     }
     return build_api_response(
         name="settings",

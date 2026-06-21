@@ -162,6 +162,21 @@ class ReportingTests(unittest.TestCase):
                 "change_feed": {
                     "summary": {"high_count": 2, "medium_count": 1, "low_count": 0},
                 },
+                "news_intelligence": {
+                    "status": "READY",
+                    "market_risk_level": "HIGH",
+                    "executive_summary": "高利率压制风险偏好，MSFT 公司事件偏正面。",
+                    "llm": {"route_name": "llm", "model": "gpt-test"},
+                    "portfolio_impacts": [
+                        {
+                            "symbol": "MSFT",
+                            "direction": "MIXED",
+                            "confidence": 0.82,
+                            "risk_action": "WATCH",
+                            "summary": "公司利好与宏观压力并存。",
+                        }
+                    ],
+                },
                 "nightly_manifest": {
                     "run_id": "20260511-nightly",
                     "status": "completed",
@@ -191,6 +206,9 @@ class ReportingTests(unittest.TestCase):
         self.assertIn("ignore=1", text.lower())
         self.assertIn("Strategy validation:", text)
         self.assertIn("status=CAUTION", text)
+        self.assertIn("News intelligence:", text)
+        self.assertIn("gpt-test", text)
+        self.assertIn("MSFT", text)
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
-import { ActionStatus, DecisionTable, HorizonStrip, type DecisionColumn } from "../components/DecisionTable";
+import { ActionStatus, DecisionTable, HorizonStrip, ModelDetail, type DecisionColumn } from "../components/DecisionTable";
+import { LlmExplanation } from "../components/LlmExplanation";
 import { MetricStrip, Panel, SnapshotFrame, Status } from "../components/Primitives";
 import { asArray, asDict, formatCurrency, formatPercent, modelDecision, text, useSnapshot, type Dict } from "../lib/data";
 
@@ -26,6 +27,12 @@ export default function SatelliteRadar() {
     return pool.filter((item) => text(asDict(item).symbol, "").toUpperCase().includes(normalized));
   }, [pool, query]);
   const approved = top.map(asDict).filter((row) => ["ACCUMULATE", "PROBE"].includes(text(modelDecision(row).action, "").toUpperCase()));
+  const detail = (row: Dict) => (
+    <>
+      <ModelDetail row={row} />
+      <LlmExplanation endpoint="/api/actions/explain-satellite" payload={{ symbol: text(row.symbol) }} />
+    </>
+  );
 
   return (
     <SnapshotFrame snapshot={data} loading={loading} error={error} onReload={reload}>
@@ -50,14 +57,14 @@ export default function SatelliteRadar() {
         />
       </Panel>
       <Panel title="Top 3 satellite candidates" subtitle="These are the only non-core candidates eligible for a new-entry action.">
-        <DecisionTable rows={top} columns={columns} emptyText="No neural Top 3 yet. Train or run the multi-horizon model." />
+        <DecisionTable rows={top} columns={columns} detail={detail} emptyText="No neural Top 3 yet. Train or run the multi-horizon model." />
       </Panel>
       <Panel
         title="Ranked research funnel"
         subtitle="Candidates outside Top 3 remain WATCH even when their raw score is attractive."
         action={<input className="compact-input" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Filter symbol" />}
       >
-        <DecisionTable rows={filteredPool} columns={columns} emptyText="No candidate pool is available." />
+        <DecisionTable rows={filteredPool} columns={columns} detail={detail} emptyText="No candidate pool is available." />
       </Panel>
     </SnapshotFrame>
   );

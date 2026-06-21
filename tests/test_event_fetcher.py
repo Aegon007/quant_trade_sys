@@ -177,6 +177,37 @@ class EventFetcherTests(unittest.TestCase):
         self.assertEqual(len(reports), 1)
         self.assertTrue(reports[0]["ok"])
 
+    def test_refresh_event_cache_persists_events_and_source_status(self):
+        from quant_core.events import event_fetcher
+        from quant_core.events.event_news import MarketEvent, load_market_events
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            events_path = str(Path(temp_dir) / "market_events.json")
+            status_path = str(Path(temp_dir) / "event_source_status.json")
+            result = event_fetcher.refresh_event_cache(
+                ["MSFT"],
+                events_path=events_path,
+                status_path=status_path,
+                fetcher=lambda symbols, **kwargs: (
+                    [
+                        MarketEvent(
+                            event_id="news-1",
+                            title="Microsoft update",
+                            symbols=["MSFT"],
+                            source="Company IR",
+                            verified=True,
+                        )
+                    ],
+                    [{"source_id": "test", "type": "mock", "ok": True, "fetched": 1, "error": ""}],
+                ),
+                now=datetime(2026, 6, 20, 1, 0, 0),
+            )
+
+            self.assertEqual(result["status"], "OK")
+            self.assertEqual(result["event_count"], 1)
+            self.assertEqual(load_market_events(path=events_path)[0].event_id, "news-1")
+            self.assertTrue(Path(status_path).exists())
+
 
 if __name__ == "__main__":
     unittest.main()

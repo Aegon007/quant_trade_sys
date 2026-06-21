@@ -428,6 +428,17 @@ nav button span { font-size: 0.68rem; opacity: .7; }
   color: var(--muted);
 }
 .notice.negative { border-left-color: var(--red); color: var(--red); }
+.negative-text { color: var(--red); }
+.llm-explanation {
+  padding: 12px 18px 16px;
+  border-top: 1px solid var(--line);
+}
+.llm-explanation p {
+  max-width: 980px;
+  margin: 10px 0 0;
+  white-space: pre-wrap;
+  line-height: 1.65;
+}
 
 @media (max-width: 1100px) {
   .app-shell { grid-template-columns: 200px minmax(0, 1fr); }

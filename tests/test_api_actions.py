@@ -125,6 +125,7 @@ class ApiActionsTests(unittest.TestCase):
             "/api/downloads/training-analysis-bundle",
             "/api/multi-horizon",
             "/api/reports/latest",
+            "/api/news-intelligence",
             "/api/actions/refresh-market",
             "/api/actions/import-robinhood-csv",
             "/api/actions/save-account-calibration",
@@ -133,8 +134,12 @@ class ApiActionsTests(unittest.TestCase):
             "/api/actions/train-multi-horizon",
             "/api/actions/promote-multi-horizon",
             "/api/actions/test-llm",
+            "/api/actions/explain-core-etf",
+            "/api/actions/explain-satellite",
+            "/api/actions/explain-risk",
             "/api/actions/save-multi-horizon-config",
             "/api/actions/save-core-etf-universe",
+            "/api/actions/save-event-sources",
         ]:
             self.assertIn(path, route_paths)
 

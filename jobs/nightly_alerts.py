@@ -8,6 +8,9 @@ from quant_core.data import data_health as dhealth
 from quant_core.notifications import alert_engine as ae
 from quant_core.notifications import notification_channels as nch
 from quant_core.events import analyst_consensus as ac
+from quant_core.events import event_fetcher as ef
+from quant_core.events import event_news as en
+from quant_core.events import news_intelligence as ni
 from quant_core.notifications import notification_config as ncfg
 from quant_core.notifications import delivery_router as dr
 from quant_core.notifications import reporting as nr
@@ -158,6 +161,10 @@ def run_nightly_alerts(
     model_prediction_journal_path=mh_governance.DEFAULT_PREDICTION_JOURNAL_FILE,
     model_governance_path=mh_governance.DEFAULT_GOVERNANCE_FILE,
     model_validation_path=qpaths.MULTI_HORIZON_VALIDATION_FILE,
+    news_intelligence_path=ni.DEFAULT_NEWS_INTELLIGENCE_FILE,
+    event_source_status_path=qpaths.EVENT_SOURCE_STATUS_FILE,
+    event_refresher=None,
+    news_intelligence_builder=None,
     environ=None,
 ):
     now = now or datetime.now()
@@ -178,11 +185,27 @@ def run_nightly_alerts(
     data = du.load_data()
     symbols = _tracked_symbols(data)
     transaction_rows = tx.normalize_transactions(tx.load_transactions())
+    config = ncfg.apply_environment_overrides(
+        ncfg.load_notification_config(notification_config_path),
+        environ=environ,
+    )
 
     if force or ac.should_run_nightly_consensus_update(now=now):
         ac.refresh_analyst_consensus_cache(symbols, now=now)
 
     analyst_cache = ac.load_analyst_consensus_cache()
+    event_refresher = event_refresher or ef.refresh_event_cache
+    event_source_status = event_refresher(
+        symbols,
+        status_path=event_source_status_path,
+        now=now,
+    )
+    active_events = en.select_active_events(
+        en.load_market_events(auto_bootstrap=True),
+        symbols=symbols,
+        now=now,
+        verified_only=False,
+    )
     risk_decision = evaluate_current_market_risk(data, history_period=history_period) if data.get("holdings") else None
     alerts = ae.collect_alerts(
         analyst_cache=analyst_cache,
@@ -465,6 +488,61 @@ def run_nightly_alerts(
         raise
     satellite_candidate_snapshot = mh_pipeline.build_satellite_snapshot_from_model(multi_horizon_snapshot)
     cpool.save_satellite_candidate_pool_snapshot(satellite_candidate_snapshot)
+    candidate_symbols = [
+        str(dict(row or {}).get("symbol") or "").strip().upper()
+        for row in list(
+            dict(satellite_candidate_snapshot or {}).get("top_recommendations", [])
+            or dict(satellite_candidate_snapshot or {}).get("symbols", [])
+            or []
+        )[:10]
+        if str(dict(row or {}).get("symbol") or "").strip()
+    ]
+    intelligence_symbols = sorted(set(symbols).union(candidate_symbols))
+    if set(intelligence_symbols) != set(symbols):
+        ac.refresh_analyst_consensus_cache(intelligence_symbols, now=now)
+        analyst_cache = ac.load_analyst_consensus_cache()
+        event_source_status = event_refresher(
+            intelligence_symbols,
+            status_path=event_source_status_path,
+            now=now,
+        )
+        active_events = en.select_active_events(
+            en.load_market_events(auto_bootstrap=True),
+            symbols=intelligence_symbols,
+            now=now,
+            verified_only=False,
+        )
+    news_intelligence_builder = news_intelligence_builder or ni.build_news_intelligence
+    manifest = nman.mark_step_started(
+        manifest,
+        step_name="news_intelligence",
+        input_version=manifest_input_version,
+        path=manifest_path,
+        now=now,
+    )
+    news_intelligence = news_intelligence_builder(
+        events=active_events,
+        portfolio_symbols=symbols,
+        candidate_symbols=candidate_symbols,
+        analyst_cache=analyst_cache,
+        notification_config=config,
+        now=now,
+    )
+    news_intelligence["source_status"] = dict(event_source_status or {})
+    ni.save_news_intelligence(news_intelligence, path=news_intelligence_path)
+    manifest = nman.mark_step_completed(
+        manifest,
+        step_name="news_intelligence",
+        output_file=news_intelligence_path,
+        input_version=manifest_input_version,
+        metadata={
+            "status": news_intelligence.get("status"),
+            "event_count": int(dict(news_intelligence.get("structured_summary", {}) or {}).get("event_count", 0) or 0),
+            "source_status": dict(event_source_status or {}).get("status"),
+        },
+        path=manifest_path,
+        now=now,
+    )
     try:
         if nman.can_resume_step(manifest, step_name="trade_plan", output_file=trade_plan_path, now=now):
             trade_plan = plan_loader(path=trade_plan_path)
@@ -586,6 +664,7 @@ def run_nightly_alerts(
         market_monitor_snapshot=market_monitor_snapshot,
         strategy_governance_snapshot=strategy_governance_snapshot,
         multi_horizon_snapshot=multi_horizon_snapshot,
+        news_intelligence=news_intelligence,
         intraday_event_summary=intraday_event_summary,
         generated_at=now,
     )
@@ -659,11 +738,6 @@ def run_nightly_alerts(
     snapshot["intraday_event_summary"] = intraday_event_summary
     snapshot["change_feed"] = change_feed
     snapshot["nightly_manifest"] = manifest
-    config = ncfg.apply_environment_overrides(
-        ncfg.load_notification_config(notification_config_path),
-        environ=environ,
-    )
-
     if dry_run:
         manifest = nman.finalize_nightly_run_manifest(manifest, status="completed", path=manifest_path, now=now)
         snapshot["nightly_manifest"] = manifest
@@ -682,6 +756,7 @@ def run_nightly_alerts(
             "change_feed": change_feed,
             "manifest": manifest,
             "multi_horizon_snapshot": multi_horizon_snapshot,
+            "news_intelligence": news_intelligence,
         }
 
     sent_results = ae.send_new_alerts(
@@ -826,6 +901,7 @@ def run_nightly_alerts(
         "discipline_snapshot": discipline_snapshot,
         "change_feed": change_feed,
         "multi_horizon_snapshot": multi_horizon_snapshot,
+        "news_intelligence": news_intelligence,
         "manifest": manifest,
     }
 

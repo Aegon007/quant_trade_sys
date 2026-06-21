@@ -122,6 +122,13 @@ def create_app():
     def change_feed():
         return loader.load_snapshot_response("change-feed", loader.SNAPSHOT_PATHS["change-feed"])
 
+    @app.get("/api/news-intelligence")
+    def news_intelligence():
+        return loader.load_snapshot_response(
+            "news-intelligence",
+            loader.SNAPSHOT_PATHS["news-intelligence"],
+        )
+
     @app.get("/api/job-status")
     def job_status():
         return loader.load_job_status_response()
@@ -193,6 +200,30 @@ def create_app():
             run_async=False,
         )
 
+    @app.post("/api/actions/explain-core-etf")
+    def explain_core_etf(payload: dict):
+        return api_actions.run_with_job_status(
+            "llm-explain-core-etf",
+            lambda: api_actions.explain_core_etf(str(dict(payload or {}).get("symbol") or "")),
+            run_async=False,
+        )
+
+    @app.post("/api/actions/explain-satellite")
+    def explain_satellite(payload: dict):
+        return api_actions.run_with_job_status(
+            "llm-explain-satellite",
+            lambda: api_actions.explain_satellite(str(dict(payload or {}).get("symbol") or "")),
+            run_async=False,
+        )
+
+    @app.post("/api/actions/explain-risk")
+    def explain_risk():
+        return api_actions.run_with_job_status(
+            "llm-explain-risk",
+            api_actions.explain_risk,
+            run_async=False,
+        )
+
     @app.post("/api/actions/import-robinhood-csv")
     def import_robinhood_csv(payload: dict):
         payload = dict(payload or {})
@@ -238,6 +269,14 @@ def create_app():
         return api_actions.run_with_job_status(
             "settings-core-etf-universe",
             lambda: api_actions.save_core_etf_universe_settings(dict(payload or {})),
+            run_async=False,
+        )
+
+    @app.post("/api/actions/save-event-sources")
+    def save_event_sources(payload: dict):
+        return api_actions.run_with_job_status(
+            "settings-event-sources",
+            lambda: api_actions.save_event_source_settings(dict(payload or {})),
             run_async=False,
         )
 

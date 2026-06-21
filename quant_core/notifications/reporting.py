@@ -349,6 +349,7 @@ def build_nightly_report(snapshot: Mapping) -> str:
     market_monitor_snapshot = dict(snapshot.get("market_monitor_snapshot", {}) or {})
     strategy_governance_snapshot = dict(snapshot.get("strategy_governance_snapshot", {}) or {})
     multi_horizon_snapshot = dict(snapshot.get("multi_horizon_snapshot", {}) or {})
+    news_intelligence = dict(snapshot.get("news_intelligence", {}) or {})
     intraday_event_summary = dict(snapshot.get("intraday_event_summary", {}) or {})
     change_feed = dict(snapshot.get("change_feed", {}) or {})
     nightly_manifest = dict(snapshot.get("nightly_manifest", {}) or {})
@@ -451,6 +452,33 @@ def build_nightly_report(snapshot: Mapping) -> str:
             f"action={monitor_summary.get('recommended_action') or '—'} "
             f"symbol={monitor_summary.get('recommended_symbol') or '—'}"
         )
+
+    if news_intelligence:
+        llm_meta = dict(news_intelligence.get("llm", {}) or {})
+        source_meta = dict(news_intelligence.get("source_status", {}) or {})
+        lines.append(
+            "News intelligence: "
+            f"status={news_intelligence.get('status') or 'UNKNOWN'} "
+            f"risk={news_intelligence.get('market_risk_level') or 'UNKNOWN'} "
+            f"sources={source_meta.get('status') or 'UNKNOWN'} "
+            f"source_ok={int(_float(source_meta.get('successful_source_count'), 0) or 0)} "
+            f"source_failed={int(_float(source_meta.get('failed_source_count'), 0) or 0)} "
+            f"route={llm_meta.get('route_name') or 'structured'} "
+            f"model={llm_meta.get('model') or '-'}"
+        )
+        executive_summary = str(news_intelligence.get("executive_summary") or "").strip()
+        if executive_summary:
+            lines.append(f"News summary: {executive_summary}")
+        for impact in list(news_intelligence.get("portfolio_impacts", []) or [])[:3]:
+            impact = dict(impact or {})
+            lines.append(
+                "News impact: "
+                f"{impact.get('symbol') or '-'} "
+                f"{impact.get('direction') or 'NEUTRAL'} "
+                f"confidence={_format_pct(impact.get('confidence'))} "
+                f"action={impact.get('risk_action') or 'NONE'} | "
+                f"{str(impact.get('summary') or '').strip()}"
+            )
 
     if core_etf_snapshot:
         core_summary = dict(core_etf_snapshot.get("summary", {}) or {})

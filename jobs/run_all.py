@@ -26,6 +26,7 @@ from quant_core.data import data_health as dhealth
 from quant_core.data import storage as data_storage
 from quant_core.events.analyst_consensus import should_run_nightly_consensus_update
 from quant_core.events import event_news as en
+from quant_core.events import event_fetcher as ef
 from quant_core.execution import nightly_planner as np
 from quant_core.ledger import transactions as tx
 from quant_core.monitoring import intraday_journal as ij
@@ -579,6 +580,18 @@ def maybe_run_market_refresh(
             if item.get("symbol")
         }
     )
+    if isinstance(now, datetime):
+        try:
+            event_source_status = ef.refresh_event_cache(tracked_symbols, now=now)
+            logger.info(
+                "Financial news refresh: status=%s events=%s sources_ok=%s sources_failed=%s",
+                event_source_status.get("status"),
+                event_source_status.get("event_count"),
+                event_source_status.get("successful_source_count"),
+                event_source_status.get("failed_source_count"),
+            )
+        except Exception:
+            logger.exception("Financial news refresh failed; existing event cache remains available.")
 
     try:
         account_snapshot = ss.build_account_snapshot(refreshed_data)

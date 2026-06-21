@@ -36,6 +36,10 @@ export default function Dashboard() {
   const discipline = asDict(payload.discipline_snapshot);
   const dataHealth = asDict(payload.data_health_snapshot);
   const planQuality = asDict(payload.plan_quality_snapshot);
+  const newsIntelligence = asDict(payload.news_intelligence);
+  const newsImpacts = asArray(newsIntelligence.portfolio_impacts);
+  const newsLlm = asDict(newsIntelligence.llm);
+  const newsSource = asDict(newsIntelligence.source_status);
   const modelStatus = text(data?.summary.multi_horizon_status ?? model.status ?? asDict(model.model).status, "MODEL_NOT_READY");
   const headline = modelStatus !== "READY"
     ? "Train the long-horizon model before using trade recommendations."
@@ -63,6 +67,44 @@ export default function Dashboard() {
 
       <Panel title="Approved actions" subtitle="Only fused, risk-approved actions appear here. Expand any row for the full horizon distribution.">
         <DecisionTable rows={approved} columns={actionColumns} emptyText="No approved trades in the latest model snapshot." />
+      </Panel>
+
+      <Panel
+        title="Portfolio news intelligence"
+        subtitle={`Evidence-backed summary · ${text(newsIntelligence.status, "NOT_READY")} · ${text(newsLlm.model, "structured only")}`}
+      >
+        <div className={`notice ${text(newsIntelligence.market_risk_level, "").toUpperCase() === "HIGH" ? "negative" : ""}`}>
+          {text(newsIntelligence.executive_summary, "Run the nightly pipeline to build portfolio-aware news intelligence.")}
+        </div>
+        <DecisionTable
+          rows={newsImpacts.slice(0, 6)}
+          columns={[
+            { label: "Symbol", className: "symbol-cell", render: (row) => text(row.symbol) },
+            { label: "Direction", render: (row) => <Status value={row.direction} /> },
+            { label: "Relevance", render: (row) => text(row.relevance_score) },
+            { label: "Confidence", render: (row) => formatPercent(row.confidence) },
+            { label: "Risk action", render: (row) => <Status value={row.risk_action} /> },
+            { label: "Evidence summary", render: (row) => text(row.summary) },
+          ]}
+          detail={(row) => (
+            <div className="decision-detail">
+              <div>
+                <h4>Source evidence</h4>
+                {asArray(row.evidence).map((item, index) => {
+                  const evidence = asDict(item);
+                  return <p key={index}><b>{text(evidence.source, "source")}</b><span>{text(evidence.title)}</span></p>;
+                })}
+              </div>
+              <div>
+                <h4>Provenance</h4>
+                <p><b>News source</b><span>{text(newsSource.status, "UNKNOWN")}</span></p>
+                <p><b>LLM route</b><span>{text(newsLlm.route_name, "structured")}</span></p>
+                <p><b>Generated</b><span>{text(newsIntelligence.generated_at)}</span></p>
+              </div>
+            </div>
+          )}
+          emptyText="No portfolio-relevant active news is available."
+        />
       </Panel>
 
       <div className="split-layout">

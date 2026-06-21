@@ -365,3 +365,46 @@ class LLMExplainerTests(unittest.TestCase):
         self.assertTrue(meta2["cached"])
         self.assertEqual(meta1["route_name"], "llm")
         self.assertEqual(calls["count"], 1)
+
+    def test_analyze_portfolio_news_prefers_remote_llm(self):
+        def fake_urlopen(request, timeout=0):
+            payload = {"choices": [{"message": {"content": "组合新闻解释完成"}}]}
+            return _FakeResponse(json.dumps(payload).encode("utf-8"))
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            ok, text, meta = self.module.analyze_portfolio_news(
+                news_payload={
+                    "overview": "两条重要事件。",
+                    "portfolio_impacts": [
+                        {
+                            "symbol": "MSFT",
+                            "direction": "POSITIVE",
+                            "confidence": 0.8,
+                            "evidence": ["Cloud outlook raised"],
+                        }
+                    ],
+                    "analyst_context": {
+                        "input_type": "structured_consensus",
+                        "records": [{"symbol": "MSFT", "signal": "STRONG_BUY", "bullish_ratio": 0.95}],
+                    },
+                },
+                notification_config={
+                    "local_slm": {
+                        "enabled": True,
+                        "base_url": "http://127.0.0.1:8000/v1",
+                        "model": "local",
+                    },
+                    "llm": {
+                        "enabled": True,
+                        "base_url": "https://api.example.test/v1",
+                        "api_key": "test",
+                        "model": "remote",
+                    },
+                },
+                cache_path=str(Path(temp_dir) / "cache.json"),
+                urlopen=fake_urlopen,
+            )
+
+        self.assertTrue(ok)
+        self.assertEqual(text, "组合新闻解释完成")
+        self.assertEqual(meta["route_name"], "llm")

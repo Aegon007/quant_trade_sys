@@ -20,6 +20,7 @@ from quant_core.data import data_health
 from quant_core.data import market_data
 from quant_core.data import storage as data_storage
 from quant_core.analytics import core_etf_rotation
+from quant_core.events import event_fetcher
 from quant_core.execution import nightly_planner
 from quant_core.execution import plan_quality
 from quant_core.execution import post_close_review
@@ -27,6 +28,7 @@ from quant_core.jobs import job_registry
 from quant_core.ledger import transactions
 from quant_core.notifications import notification_config
 from quant_core.llm import openai_compatible
+from quant_core.llm import explainer as llm_explainer
 from quant_core.models.multi_horizon import config as multi_horizon_config
 from quant_core.models.multi_horizon import governance as multi_horizon_governance
 from quant_core.models.multi_horizon import snapshot as multi_horizon_snapshot
@@ -253,6 +255,74 @@ def test_llm_settings(*, route: str) -> dict:
     }
 
 
+def _llm_config() -> dict:
+    return notification_config.apply_environment_overrides(
+        notification_config.load_notification_config()
+    )
+
+
+def _find_symbol_row(rows, symbol: str) -> dict:
+    normalized = str(symbol or "").strip().upper()
+    for row in list(rows or []):
+        row = dict(row or {})
+        if str(row.get("symbol") or "").strip().upper() == normalized:
+            return row
+    raise ValueError(f"Symbol {normalized or '-'} is not present in the latest snapshot.")
+
+
+def explain_core_etf(symbol: str) -> dict:
+    response = snapshot_loader.load_model_enriched_snapshot_response(
+        "core-etfs",
+        snapshot_loader.SNAPSHOT_PATHS["core-etfs"],
+        row_keys=("symbols",),
+    )
+    row = _find_symbol_row(dict(response.get("payload", {}) or {}).get("symbols", []), symbol)
+    discipline, _ = snapshot_loader.safe_read_json(qpaths.DISCIPLINE_SNAPSHOT_FILE)
+    change_feed, _ = snapshot_loader.safe_read_json(qpaths.CHANGE_FEED_FILE)
+    ok, text, meta = llm_explainer.explain_core_etf_decision(
+        symbol_row=row,
+        notification_config=_llm_config(),
+        discipline_snapshot=discipline,
+        change_feed=change_feed,
+    )
+    return {"ok": ok, "text": text, "meta": meta, "symbol": str(symbol).upper()}
+
+
+def explain_satellite(symbol: str) -> dict:
+    response = snapshot_loader.load_model_enriched_snapshot_response(
+        "satellite-radar",
+        snapshot_loader.SNAPSHOT_PATHS["satellite-radar"],
+        row_keys=("top_recommendations", "symbols", "candidate_pool"),
+    )
+    payload = dict(response.get("payload", {}) or {})
+    rows = (
+        list(payload.get("top_recommendations", []) or [])
+        + list(payload.get("candidate_pool", []) or [])
+        + list(payload.get("current_holdings", []) or [])
+    )
+    row = _find_symbol_row(rows, symbol)
+    discipline, _ = snapshot_loader.safe_read_json(qpaths.DISCIPLINE_SNAPSHOT_FILE)
+    change_feed, _ = snapshot_loader.safe_read_json(qpaths.CHANGE_FEED_FILE)
+    ok, text, meta = llm_explainer.explain_satellite_candidate(
+        candidate_row=row,
+        notification_config=_llm_config(),
+        discipline_snapshot=discipline,
+        change_feed=change_feed,
+    )
+    return {"ok": ok, "text": text, "meta": meta, "symbol": str(symbol).upper()}
+
+
+def explain_risk() -> dict:
+    risk_response = snapshot_loader.load_risk_response()
+    news_intelligence, _ = snapshot_loader.safe_read_json(qpaths.NEWS_INTELLIGENCE_FILE)
+    ok, text, meta = llm_explainer.explain_portfolio_risk(
+        risk_payload=dict(risk_response.get("payload", {}) or {}),
+        news_intelligence=news_intelligence,
+        notification_config=_llm_config(),
+    )
+    return {"ok": ok, "text": text, "meta": meta}
+
+
 def import_robinhood_csv_text(csv_text: str, *, filename: str = "", replace_existing: bool = False) -> dict:
     if not str(csv_text or "").strip():
         raise ValueError("CSV content is empty.")
@@ -364,6 +434,15 @@ def save_core_etf_universe_settings(config: Mapping) -> dict:
         "message": "core ETF universe saved; rerun nightly analysis to refresh model outputs",
         "path": path,
         "core_etf_universe": core_etf_rotation.load_core_etf_universe(path=path),
+    }
+
+
+def save_event_source_settings(config: Mapping) -> dict:
+    path = event_fetcher.save_event_source_config(dict(config or {}))
+    return {
+        "message": "financial news source configuration saved",
+        "path": path,
+        "event_source_config": event_fetcher.load_event_source_config(path=path),
     }
 
 

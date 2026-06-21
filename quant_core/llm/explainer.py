@@ -348,6 +348,89 @@ def build_news_summary_messages(*, summary_payload: Mapping, mode: str = "narrat
     ]
 
 
+def build_portfolio_news_messages(*, news_payload: Mapping):
+    payload = dict(news_payload or {})
+    analyst_context = dict(payload.get("analyst_context", {}) or {})
+    impacts = []
+    for row in list(payload.get("portfolio_impacts", []) or [])[:10]:
+        row = dict(row or {})
+        evidence_titles = []
+        for item in list(row.get("evidence", []) or [])[:2]:
+            if isinstance(item, Mapping):
+                title = str(item.get("title") or "").strip()
+            else:
+                title = str(item or "").strip()
+            if title:
+                evidence_titles.append(title)
+        evidence = " | ".join(evidence_titles)
+        impacts.append(
+            f"- {row.get('symbol')}: direction={row.get('direction')}, relevance={row.get('relevance_score')}, "
+            f"confidence={row.get('confidence')}, risk_action={row.get('risk_action')}, evidence={evidence or 'none'}"
+        )
+    analyst_lines = [
+        f"- {row.get('symbol')}: signal={row.get('signal')}, analysts={row.get('total_analysts')}, "
+        f"bullish={row.get('bullish_ratio')}, bearish={row.get('bearish_ratio')}, source={row.get('source')}"
+        for row in list(analyst_context.get("records", []) or [])[:10]
+    ]
+    user_prompt = (
+        "请基于下面的结构化新闻证据和分析师共识，生成一段面向当前投资组合的中文解读。\n"
+        "要求：\n"
+        "1. 先给 2-4 句执行摘要，再列出最多 3 个最重要的标的影响；\n"
+        "2. 区分公司事件和系统性宏观风险；\n"
+        "3. 分析师输入只是推荐数量统计，不是研报正文，不要伪装成读过研报；\n"
+        "4. 只能解释证据，不得改变量化动作、编造目标价或给出自主交易指令；\n"
+        "5. 明确指出证据冲突或低置信度。\n\n"
+        f"新闻总览：{payload.get('overview') or '无'}\n"
+        f"市场风险级别：{payload.get('market_risk_level') or 'UNKNOWN'}\n"
+        "组合影响：\n"
+        + ("\n".join(impacts) or "- 无")
+        + "\n分析师结构化共识：\n"
+        + ("\n".join(analyst_lines) or "- 无覆盖")
+    )
+    return [
+        {
+            "role": "system",
+            "content": "You are a portfolio news analyst. Use only supplied evidence, preserve uncertainty, and never invent report content or prices.",
+        },
+        {"role": "user", "content": user_prompt},
+    ]
+
+
+def build_portfolio_risk_messages(*, risk_payload: Mapping, news_intelligence: Optional[Mapping] = None):
+    risk_payload = dict(risk_payload or {})
+    news_intelligence = dict(news_intelligence or {})
+    account = dict(risk_payload.get("account", {}) or {})
+    risk_lines = [
+        f"- {row.get('level')}: {row.get('category')} | {row.get('message')} | action={row.get('action')}"
+        for row in list(risk_payload.get("risk_items", []) or [])[:10]
+    ]
+    news_lines = [
+        f"- {row.get('symbol')}: {row.get('direction')} | confidence={row.get('confidence')} | {row.get('summary')}"
+        for row in list(news_intelligence.get("portfolio_impacts", []) or [])[:5]
+    ]
+    return [
+        {
+            "role": "system",
+            "content": "You are a portfolio risk analyst. Explain supplied controls and evidence only. Never invent prices or override the risk gate.",
+        },
+        {
+            "role": "user",
+            "content": (
+                "请解释当前组合纪律与风险状态。\n"
+                "要求：先说明最重要的风险，再说明哪些只是观察项，最后给出执行时应遵守的纪律。"
+                "不要改写系统限制，不要补充外部事实。\n\n"
+                f"纪律状态：{risk_payload.get('regime') or 'UNKNOWN'}\n"
+                f"风险状态：{risk_payload.get('risk_regime') or 'UNKNOWN'}\n"
+                f"总资产：{account.get('total_capital')}，现金：{account.get('cash_available')}，暴露：{account.get('exposure_pct')}%\n"
+                "风险条目：\n"
+                + ("\n".join(risk_lines) or "- 无")
+                + "\n新闻影响：\n"
+                + ("\n".join(news_lines) or "- 无")
+            ),
+        },
+    ]
+
+
 def _core_etf_cache_key(
     *,
     symbol_row: Mapping,
@@ -708,6 +791,49 @@ def narrate_news_summary(
         messages=messages,
         notification_config=notification_config,
         complexity="narration",
+        cache_path=cache_path,
+        urlopen=urlopen,
+    )
+
+
+def analyze_portfolio_news(
+    *,
+    news_payload: Mapping,
+    notification_config: Mapping,
+    cache_path: str = DEFAULT_EXPLANATION_CACHE_FILE,
+    urlopen=None,
+):
+    return _run_messages_with_cache(
+        cache_kind="portfolio_news_analysis",
+        cache_payload=dict(news_payload or {}),
+        messages=build_portfolio_news_messages(news_payload=news_payload),
+        notification_config=notification_config,
+        complexity="analysis",
+        cache_path=cache_path,
+        urlopen=urlopen,
+    )
+
+
+def explain_portfolio_risk(
+    *,
+    risk_payload: Mapping,
+    notification_config: Mapping,
+    news_intelligence: Optional[Mapping] = None,
+    cache_path: str = DEFAULT_EXPLANATION_CACHE_FILE,
+    urlopen=None,
+):
+    return _run_messages_with_cache(
+        cache_kind="portfolio_risk_explanation",
+        cache_payload={
+            "risk": dict(risk_payload or {}),
+            "news": dict(news_intelligence or {}),
+        },
+        messages=build_portfolio_risk_messages(
+            risk_payload=risk_payload,
+            news_intelligence=news_intelligence,
+        ),
+        notification_config=notification_config,
+        complexity="analysis",
         cache_path=cache_path,
         urlopen=urlopen,
     )

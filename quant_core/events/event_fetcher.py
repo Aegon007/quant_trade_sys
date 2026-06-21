@@ -10,6 +10,7 @@ from quant_core.events.event_news import (
     MarketEvent,
     attach_event_sentiment,
     load_market_events,
+    save_market_events,
     with_event_confidence,
 )
 from quant_core.events.finbert_sentiment import (
@@ -101,6 +102,20 @@ def load_event_source_config(path: str = EVENT_SOURCES_CONFIG_PATH) -> Dict:
     return DEFAULT_EVENT_SOURCE_CONFIG.copy()
 
 
+def save_event_source_config(config: Dict, path: str = EVENT_SOURCES_CONFIG_PATH) -> str:
+    if not isinstance(config, dict) or not isinstance(config.get("sources"), list):
+        raise ValueError("Event source config must contain a sources list.")
+    target = os.path.abspath(path)
+    parent = os.path.dirname(target)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    temporary = f"{target}.tmp"
+    with open(temporary, "w", encoding="utf-8") as handle:
+        json.dump(config, handle, ensure_ascii=False, indent=2)
+    os.replace(temporary, target)
+    return target
+
+
 def _extract_news_payload(item: Dict) -> Dict:
     content = item.get("content")
     if isinstance(content, dict):
@@ -144,6 +159,43 @@ def _source_severity(source_config: Dict) -> str:
     return severity
 
 
+def _news_search_terms(symbol: str, quotes: Iterable[Dict], source_config: Dict) -> set[str]:
+    ignored = {"corporation", "corp", "company", "inc", "limited", "holdings", "group", "plc", "class"}
+    terms = {symbol.lower()}
+    configured = dict(source_config.get("symbol_aliases", {}) or {}).get(symbol, [])
+    if isinstance(configured, str):
+        configured = [configured]
+    for value in configured or []:
+        text = str(value or "").strip().lower()
+        if text:
+            terms.add(text)
+    for quote in list(quotes or [])[:3]:
+        if not isinstance(quote, dict):
+            continue
+        for key in ("shortname", "longname", "shortName", "longName"):
+            name = str(quote.get(key) or "").strip().lower()
+            if not name:
+                continue
+            terms.add(name)
+            terms.update(
+                token.strip(".,()")
+                for token in name.split()
+                if len(token.strip(".,()")) >= 4 and token.strip(".,()") not in ignored
+            )
+    return terms
+
+
+def _is_relevant_search_item(item: Dict, payload: Dict, *, symbol: str, terms: set[str]) -> bool:
+    related = set(_extract_related_tickers(item, payload))
+    if symbol in related:
+        return True
+    text = " ".join(
+        str(payload.get(key) or item.get(key) or "")
+        for key in ("title", "summary", "description")
+    ).lower()
+    return any(term and term in text for term in terms)
+
+
 def _fetch_from_local_file(source_config: Dict) -> List[MarketEvent]:
     path = str(source_config.get("path") or MARKET_EVENTS_FILE)
     example_path = str(source_config.get("example_path") or qpaths.MARKET_EVENTS_EXAMPLE_FILE)
@@ -180,23 +232,51 @@ def _fetch_from_yfinance_news(
         symbol = str(raw_symbol or "").strip().upper()
         if not symbol:
             continue
-        ticker = yf.Ticker(symbol)
         items = []
-        if hasattr(ticker, "get_news"):
+        search_terms = {symbol.lower()}
+        strict_relevance = False
+        if hasattr(yf, "Search"):
             try:
-                items = ticker.get_news(count=max_items) or []
+                search = yf.Search(symbol, news_count=max(max_items * 2, max_items))
+                items = list(getattr(search, "news", []) or [])
+                search_terms = _news_search_terms(
+                    symbol,
+                    getattr(search, "quotes", []) or [],
+                    source_config,
+                )
+                strict_relevance = True
             except Exception:
                 items = []
         if not items:
-            try:
-                items = getattr(ticker, "news", []) or []
-            except Exception:
-                items = []
-        for index, item in enumerate(items[:max_items]):
+            ticker = yf.Ticker(symbol)
+            if hasattr(ticker, "get_news"):
+                try:
+                    items = ticker.get_news(count=max_items) or []
+                except Exception:
+                    items = []
+            if not items:
+                try:
+                    items = getattr(ticker, "news", []) or []
+                except Exception:
+                    items = []
+        accepted = 0
+        for index, item in enumerate(items):
+            if accepted >= max_items:
+                break
             if not isinstance(item, dict):
                 continue
             payload = _extract_news_payload(item)
-            title = str(payload.get("title") or item.get("title") or "").strip()
+            if strict_relevance and not _is_relevant_search_item(
+                item,
+                payload,
+                symbol=symbol,
+                terms=search_terms,
+            ):
+                continue
+            try:
+                title = str(payload.get("title") or item.get("title") or "").strip()
+            except Exception:
+                title = ""
             if not title:
                 continue
             publisher = str(
@@ -236,6 +316,7 @@ def _fetch_from_yfinance_news(
             event = with_event_confidence(event)
             event = attach_event_sentiment(event, sentiment)
             events.append(event)
+            accepted += 1
     return events
 
 
@@ -301,3 +382,49 @@ def fetch_events_from_sources(
             reports.append({"source_id": source_id, "type": source_type, "ok": False, "fetched": 0, "error": str(exc)})
 
     return _dedupe_events(events), reports
+
+
+def refresh_event_cache(
+    symbols: Iterable[str],
+    *,
+    events_path: str = MARKET_EVENTS_FILE,
+    status_path: str = qpaths.EVENT_SOURCE_STATUS_FILE,
+    config_path: str = EVENT_SOURCES_CONFIG_PATH,
+    fetcher: Callable = fetch_events_from_sources,
+    now: Optional[datetime] = None,
+) -> Dict:
+    now = now or datetime.now()
+    normalized_symbols = sorted(_normalize_symbol_set(symbols))
+    try:
+        events, reports = fetcher(normalized_symbols, config_path=config_path, now=now)
+    except Exception as exc:
+        events = load_market_events(path=events_path, auto_bootstrap=True)
+        reports = [{"source_id": "event_fetcher", "type": "runtime", "ok": False, "fetched": 0, "error": str(exc)}]
+
+    save_market_events(events, path=events_path)
+    successful_sources = [row for row in reports if bool(dict(row or {}).get("ok"))]
+    failed_sources = [row for row in reports if not bool(dict(row or {}).get("ok"))]
+    if successful_sources and not failed_sources:
+        status = "OK"
+    elif successful_sources:
+        status = "PARTIAL"
+    else:
+        status = "FAILED"
+    payload = {
+        "generated_at": now.isoformat(),
+        "status": status,
+        "tracked_symbols": normalized_symbols,
+        "event_count": len(events),
+        "successful_source_count": len(successful_sources),
+        "failed_source_count": len(failed_sources),
+        "sources": reports,
+    }
+    target = os.path.abspath(status_path)
+    parent = os.path.dirname(target)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    temporary = f"{target}.tmp"
+    with open(temporary, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, ensure_ascii=False, indent=2)
+    os.replace(temporary, target)
+    return payload

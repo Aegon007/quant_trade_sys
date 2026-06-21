@@ -237,6 +237,47 @@ def load_market_events(
     return normalized
 
 
+def save_market_events(events: Iterable[MarketEvent], path: str = MARKET_EVENTS_FILE) -> str:
+    target = os.path.abspath(path)
+    parent_dir = os.path.dirname(target)
+    if parent_dir:
+        os.makedirs(parent_dir, exist_ok=True)
+
+    def iso(value):
+        return value.isoformat() if isinstance(value, datetime) else None
+
+    payload = {
+        "updated_at": datetime.now().isoformat(),
+        "events": [
+            {
+                "id": event.event_id,
+                "title": event.title,
+                "source_id": event.source_id,
+                "event_type": event.event_type,
+                "severity": event.severity,
+                "starts_at": iso(event.starts_at),
+                "ends_at": iso(event.ends_at),
+                "symbols": list(event.symbols or []),
+                "tags": list(event.tags or []),
+                "source": event.source,
+                "verified": bool(event.verified),
+                "sentiment": event.sentiment,
+                "sentiment_score": event.sentiment_score,
+                "sentiment_model": event.sentiment_model,
+                "confidence_score": event.confidence_score,
+                "confidence_level": event.confidence_level,
+                "notes": event.notes,
+            }
+            for event in events or []
+        ],
+    }
+    temporary = f"{target}.tmp"
+    with open(temporary, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, ensure_ascii=False, indent=2)
+    os.replace(temporary, target)
+    return target
+
+
 def _is_active(event: MarketEvent, now: Optional[datetime] = None) -> bool:
     now = now or datetime.now()
     if event.starts_at is not None and now < event.starts_at:

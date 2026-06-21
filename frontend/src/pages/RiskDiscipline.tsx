@@ -1,5 +1,6 @@
 import { DecisionTable, HorizonStrip, type DecisionColumn } from "../components/DecisionTable";
 import { Facts, MetricStrip, Panel, SnapshotFrame, Status } from "../components/Primitives";
+import { LlmExplanation } from "../components/LlmExplanation";
 import { asArray, asDict, formatCurrency, formatPercent, text, useSnapshot, type Dict } from "../lib/data";
 
 const conflictColumns: DecisionColumn[] = [
@@ -73,6 +74,9 @@ export default function RiskDiscipline() {
           ]} />
         </Panel>
       </div>
+      <Panel title="LLM risk interpretation" subtitle="Uses current risk controls and cached news evidence. It cannot override the risk gate.">
+        <LlmExplanation endpoint="/api/actions/explain-risk" label="Explain current risk" />
+      </Panel>
     </SnapshotFrame>
   );
 }
