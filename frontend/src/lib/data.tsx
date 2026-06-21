@@ -95,7 +95,7 @@ export function useSnapshot<TPayload = Dict>(path: string) {
   const reload = useCallback((silent = false) => {
     if (!silent) setLoading(true);
     setError("");
-    fetchApi<TPayload>(path)
+    return fetchApi<TPayload>(path)
       .then(setData)
       .catch((exc: Error) => setError(exc.message))
       .finally(() => setLoading(false));

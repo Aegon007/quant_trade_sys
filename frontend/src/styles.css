@@ -383,6 +383,48 @@ nav button span { font-size: 0.68rem; opacity: .7; }
 .form-grid label { display: grid; gap: 6px; color: var(--muted); font-size: .78rem; font-weight: 900; }
 .form-result, .editor-footer span { color: var(--muted); font-size: .82rem; }
 .button-row { display: flex; flex-wrap: wrap; gap: 8px; }
+.job-control-list { display: grid; gap: 12px; }
+.job-control {
+  padding: 16px;
+  border: 1px solid var(--line);
+  background: rgba(255,255,255,.45);
+}
+.job-control.running { border-color: var(--amber); }
+.job-control-main {
+  display: flex;
+  justify-content: space-between;
+  gap: 18px;
+  align-items: start;
+}
+.job-control h3 { margin: 0 0 4px; font-size: .95rem; }
+.job-control p { margin: 0; color: var(--muted); line-height: 1.45; }
+.job-progress {
+  height: 5px;
+  margin: 13px 0 9px;
+  overflow: hidden;
+  background: var(--line);
+}
+.job-progress span {
+  display: block;
+  height: 100%;
+  background: var(--forest);
+  transition: width .25s ease;
+}
+.job-control.running .job-progress span { background: var(--amber); }
+.job-control-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px 18px;
+  margin-bottom: 10px;
+  color: var(--muted);
+  font-size: .72rem;
+}
+.job-control .job-result {
+  margin: 0 0 12px;
+  color: var(--ink);
+  font-size: .78rem;
+  overflow-wrap: anywhere;
+}
 .check-line { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; font-weight: 800; }
 .check-line input { width: 18px; accent-color: var(--forest); }
 .file-input { display: block; padding: 18px; border: 1px dashed var(--muted); border-radius: 8px; font-weight: 800; cursor: pointer; }

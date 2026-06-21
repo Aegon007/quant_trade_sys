@@ -181,6 +181,7 @@ def update_job_status(
         "panel_rows",
         "sample_count",
         "folds",
+        "result_summary",
     ):
         if key not in entry and previous.get(key) is not None:
             entry[key] = previous[key]
@@ -222,6 +223,7 @@ def update_job_status(
         "fold",
         "folds",
         "phase",
+        "result_summary",
     ):
         if key in entry and entry[key] is not None:
             event[key] = entry[key]

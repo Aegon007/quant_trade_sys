@@ -865,7 +865,12 @@ def load_job_status_response(*, now: Optional[datetime] = None) -> dict:
         is_stale=False,
         summary={
             "job_count": len(jobs),
-            "started_count": len([row for row in jobs.values() if str(dict(row or {}).get("state") or "").lower() == "started"]),
+            "active_count": len([
+                row
+                for row in jobs.values()
+                if str(dict(row or {}).get("state") or "").lower() in {"started", "running", "queued"}
+            ]),
+            "completed_count": len([row for row in jobs.values() if str(dict(row or {}).get("state") or "").lower() == "completed"]),
             "failed_count": len([row for row in jobs.values() if str(dict(row or {}).get("state") or "").lower() == "failed"]),
         },
         items=list(jobs.values()),

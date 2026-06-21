@@ -43,6 +43,38 @@ def _safe_detail(payload) -> str:
     return "completed"
 
 
+def _result_summary(payload) -> dict:
+    if not isinstance(payload, Mapping):
+        return {"result": str(payload)}
+    preferred_keys = (
+        "message",
+        "status",
+        "symbol_count",
+        "priced_count",
+        "holdings_count",
+        "watchlist_count",
+        "data_health_status",
+        "dry_run",
+        "snapshot_journal_path",
+        "decision",
+        "action_count",
+        "generated_at",
+    )
+    summary = {
+        key: payload.get(key)
+        for key in preferred_keys
+        if payload.get(key) not in (None, "", [], {})
+    }
+    if "snapshot" in payload and isinstance(payload.get("snapshot"), Mapping):
+        snapshot = dict(payload.get("snapshot") or {})
+        summary.setdefault("generated_at", snapshot.get("generated_at"))
+        summary["alert_count"] = len(list(snapshot.get("alerts", []) or []))
+        summary["decision_brief_status"] = dict(snapshot.get("decision_brief", {}) or {}).get("status")
+    if "report_files" in payload and isinstance(payload.get("report_files"), Mapping):
+        summary["report_path"] = dict(payload.get("report_files") or {}).get("latest_markdown_path")
+    return summary or {"message": _safe_detail(payload)}
+
+
 def build_job_progress_callback(
     job_name: str,
     *,
@@ -86,12 +118,23 @@ def run_with_job_status(
 
     def _execute():
         try:
+            job_registry.update_job_status(
+                normalized_name,
+                state="running",
+                detail="job is running",
+                metadata={"stage": "running", "progress_pct": 1},
+                now=now_func(),
+            )
             result = runner()
             job_registry.update_job_status(
                 normalized_name,
                 state="completed",
                 detail=_safe_detail(result),
-                metadata={"stage": "completed", "progress_pct": 100},
+                metadata={
+                    "stage": "completed",
+                    "progress_pct": 100,
+                    "result_summary": _result_summary(result),
+                },
                 now=now_func(),
             )
             return result

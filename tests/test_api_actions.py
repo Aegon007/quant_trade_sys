@@ -28,6 +28,7 @@ class ApiActionsTests(unittest.TestCase):
             updates,
             [
                 ("manual-test", "started", "manual trigger accepted"),
+                ("manual-test", "running", "job is running"),
                 ("manual-test", "completed", "finished cleanly"),
             ],
         )
@@ -46,7 +47,30 @@ class ApiActionsTests(unittest.TestCase):
         self.assertFalse(result["accepted"])
         self.assertIn("RuntimeError: boom", result["error"])
         self.assertEqual(updates[0], ("manual-test", "started", "manual trigger accepted"))
-        self.assertEqual(updates[1], ("manual-test", "failed", "RuntimeError: boom"))
+        self.assertEqual(updates[1], ("manual-test", "running", "job is running"))
+        self.assertEqual(updates[2], ("manual-test", "failed", "RuntimeError: boom"))
+
+    def test_run_with_job_status_records_result_summary(self):
+        updates = []
+        self.actions.job_registry.update_job_status = (
+            lambda name, **kwargs: updates.append((name, kwargs)) or {}
+        )
+
+        self.actions.run_with_job_status(
+            "manual-refresh",
+            lambda: {
+                "message": "market data refreshed",
+                "symbol_count": 12,
+                "priced_count": 11,
+                "data_health_status": "OK",
+            },
+            run_async=False,
+        )
+
+        completed = updates[-1][1]
+        self.assertEqual(completed["state"], "completed")
+        self.assertEqual(completed["metadata"]["result_summary"]["symbol_count"], 12)
+        self.assertEqual(completed["metadata"]["result_summary"]["data_health_status"], "OK")
 
     def test_training_progress_updates_job_registry_and_console_logger(self):
         updates = []
