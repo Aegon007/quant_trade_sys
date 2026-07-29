@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 from datetime import datetime
 from pathlib import Path
-from typing import Mapping, Optional
+from typing import Iterable, Mapping, Optional
 
 from quant_core import paths as qpaths
 from quant_core.api.schemas import build_api_response, now_iso
@@ -68,6 +68,8 @@ def enrich_rows_with_multi_horizon(rows, snapshot: Mapping | None) -> list[dict]
     result = []
     for raw_row in list(rows or []):
         row = dict(raw_row or {})
+        if row.get("average_cost") is None and row.get("cost") is not None:
+            row["average_cost"] = row.get("cost")
         symbol = str(row.get("symbol") or "").strip().upper()
         model_row = indexed.get(symbol)
         if not model_row:
@@ -103,12 +105,17 @@ def _live_position_context(data: Mapping | None) -> tuple[dict, dict[str, dict]]
         if not symbol:
             continue
         shares = float(row.get("shares") or 0.0)
+        average_cost = row.get("average_cost")
+        if average_cost is None:
+            average_cost = row.get("cost")
+        average_cost = float(average_cost) if average_cost is not None else None
         price = row.get("current_price")
         price = float(price) if price is not None else None
         current_value = shares * price if price is not None else None
         positions[symbol] = {
             **row,
             "symbol": symbol,
+            "average_cost": average_cost,
             "is_held": True,
             "current_shares": shares,
             "current_value": current_value,
@@ -127,18 +134,32 @@ def overlay_live_positions(rows, *, positions: Mapping[str, Mapping]) -> list[di
         row = dict(raw_row or {})
         symbol = str(row.get("symbol") or "").strip().upper()
         position = dict(positions.get(symbol, {}) or {})
+        average_cost = position.get("average_cost") if position else row.get("average_cost")
+        if average_cost is None:
+            average_cost = row.get("cost")
         row.update(
             {
                 "is_held": bool(position),
                 "current_shares": float(position.get("current_shares") or 0.0),
                 "current_value": position.get("current_value"),
                 "current_weight_pct": float(position.get("current_weight_pct") or 0.0),
+                "average_cost": average_cost,
             }
         )
         if position.get("current_price") is not None:
             row["current_price"] = position["current_price"]
         result.append(row)
     return result
+
+
+def add_average_cost_alias(rows: Iterable[Mapping]) -> list[dict]:
+    normalized = []
+    for raw_row in list(rows or []):
+        row = dict(raw_row or {})
+        if row.get("average_cost") is None and row.get("cost") is not None:
+            row["average_cost"] = row.get("cost")
+        normalized.append(row)
+    return normalized
 
 
 def _parse_iso_datetime(value) -> Optional[datetime]:
@@ -468,6 +489,7 @@ def load_portfolio_response(*, now: Optional[datetime] = None) -> dict:
         list(data.get("holdings", []) or []) if isinstance(data, Mapping) else [],
         multi_horizon_payload,
     )
+    holdings = add_average_cost_alias(holdings)
     watchlist = enrich_rows_with_multi_horizon(
         list(data.get("watchlist", []) or []) if isinstance(data, Mapping) else [],
         multi_horizon_payload,
@@ -816,6 +838,8 @@ def load_research_models_response(*, now: Optional[datetime] = None) -> dict:
     registry = registry if isinstance(registry, dict) else {}
     config = config if isinstance(config, dict) else {}
     governance = governance if isinstance(governance, dict) else {}
+    if "promotion_blockers" not in governance:
+        governance["promotion_blockers"] = mh_governance.promotion_blockers(validation)
     bootstrap_manifest = bootstrap_manifest if isinstance(bootstrap_manifest, dict) else {}
     snapshot = mh_governance.apply_production_gate(snapshot, governance)
     errors = [

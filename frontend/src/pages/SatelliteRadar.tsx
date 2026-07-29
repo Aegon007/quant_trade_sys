@@ -2,7 +2,16 @@ import { useMemo, useState } from "react";
 import { ActionStatus, DecisionTable, HorizonStrip, ModelDetail, type DecisionColumn } from "../components/DecisionTable";
 import { LlmExplanation } from "../components/LlmExplanation";
 import { MetricStrip, Panel, SnapshotFrame, Status } from "../components/Primitives";
-import { asArray, asDict, formatCurrency, formatPercent, modelDecision, text, useSnapshot, type Dict } from "../lib/data";
+import { averageCost, asArray, asDict, currentPrice, formatCurrency, formatPercent, modelDecision, text, useSnapshot, type Dict } from "../lib/data";
+
+function averageLastCell(row: Dict) {
+  return (
+    <span className="stacked-cell">
+      <b>{formatCurrency(averageCost(row), 2)}</b>
+      <small>{formatCurrency(currentPrice(row), 2)}</small>
+    </span>
+  );
+}
 
 const columns: DecisionColumn[] = [
   { label: "Rank", render: (row, index) => text(row.satellite_rank ?? index + 1) },
@@ -48,6 +57,7 @@ export default function SatelliteRadar() {
           columns={[
             { label: "Symbol", className: "symbol-cell", render: (row) => text(row.symbol) },
             { label: "Account weight", render: (row) => formatPercent(row.current_weight_pct) },
+            { label: "Avg / Last", render: averageLastCell },
             { label: "Value", render: (row) => formatCurrency(row.current_value, 2) },
             { label: "Long score", render: (row) => formatPercent(asDict(row.long_horizon).blended_rank) },
             { label: "Timing", render: (row) => <Status value={asDict(row.timing).state ?? row.timing_state} /> },

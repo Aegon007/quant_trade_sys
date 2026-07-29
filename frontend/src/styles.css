@@ -224,6 +224,14 @@ nav button span { font-size: 0.68rem; opacity: .7; }
 .decision-row[open] summary::after { content: "−"; }
 .decision-row summary > span { min-width: 0; overflow-wrap: anywhere; }
 .symbol-cell { font-weight: 950; letter-spacing: .03em; }
+.stacked-cell {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 2px;
+  line-height: 1.12;
+}
+.stacked-cell b { font-size: .9rem; color: var(--ink); }
+.stacked-cell small { color: var(--muted); font-size: .72rem; }
 .decision-detail {
   display: grid;
   grid-template-columns: minmax(0, 1.35fr) minmax(280px, .65fr);
@@ -383,6 +391,25 @@ nav button span { font-size: 0.68rem; opacity: .7; }
 .form-grid label { display: grid; gap: 6px; color: var(--muted); font-size: .78rem; font-weight: 900; }
 .form-result, .editor-footer span { color: var(--muted); font-size: .82rem; }
 .button-row { display: flex; flex-wrap: wrap; gap: 8px; }
+.promotion-blockers {
+  margin-bottom: 16px;
+  padding: 14px 16px;
+  border: 1px solid #e9c46a;
+  background: #fff7df;
+}
+.promotion-blockers.ok {
+  border-color: #9bc9b8;
+  background: #edf8f2;
+}
+.promotion-blockers strong { display: block; margin-bottom: 8px; }
+.promotion-blockers ul { margin: 0; padding-left: 18px; display: grid; gap: 6px; }
+.promotion-blockers li { color: var(--muted); line-height: 1.4; }
+.promotion-blockers code {
+  margin-right: 8px;
+  color: #925f14;
+  background: rgba(223, 182, 111, .18);
+}
+.promotion-blockers p { margin: 8px 0 0; color: var(--muted); }
 .job-control-list { display: grid; gap: 12px; }
 .job-control {
   padding: 16px;
@@ -481,6 +508,14 @@ nav button span { font-size: 0.68rem; opacity: .7; }
   white-space: pre-wrap;
   line-height: 1.65;
 }
+.llm-output {
+  margin-top: 14px;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  background: #fbfcf7;
+}
+.llm-output strong { display: block; margin-bottom: 8px; }
+.llm-output p { margin: 0; white-space: pre-wrap; line-height: 1.65; color: var(--muted); }
 .llm-home-brief {
   padding: 18px 20px;
   border-left: 4px solid var(--forest);

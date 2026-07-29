@@ -1,7 +1,16 @@
 import { DecisionTable, HorizonStrip, type DecisionColumn } from "../components/DecisionTable";
 import { Facts, MetricStrip, Panel, SnapshotFrame, Status } from "../components/Primitives";
 import { LlmExplanation } from "../components/LlmExplanation";
-import { asArray, asDict, formatCurrency, formatPercent, text, useSnapshot, type Dict } from "../lib/data";
+import { averageCost, asArray, asDict, currentPrice, formatCurrency, formatPercent, text, useSnapshot, type Dict } from "../lib/data";
+
+function averageLastCell(row: Dict) {
+  return (
+    <span className="stacked-cell">
+      <b>{formatCurrency(averageCost(row), 2)}</b>
+      <small>{formatCurrency(currentPrice(row), 2)}</small>
+    </span>
+  );
+}
 
 const conflictColumns: DecisionColumn[] = [
   { label: "Symbol", className: "symbol-cell", render: (row) => text(row.symbol) },
@@ -41,6 +50,7 @@ export default function RiskDiscipline() {
           columns={[
             { label: "Symbol", className: "symbol-cell", render: (row) => text(row.symbol) },
             { label: "Shares", render: (row) => text(row.current_shares) },
+            { label: "Avg / Last", render: averageLastCell },
             { label: "Value", render: (row) => formatCurrency(row.current_value, 2) },
             { label: "Account weight", render: (row) => formatPercent(row.current_weight_pct) },
             { label: "Limit", render: () => formatPercent(account.max_single_position_pct) },

@@ -13,7 +13,7 @@ from typing import Callable
 
 from quant_core.api import actions as api_actions
 from quant_core.api import snapshot_loader as loader
-from quant_core.models.multi_horizon.export import build_training_analysis_bundle
+from quant_core.models.multi_horizon.export import build_training_analysis_bundle, build_training_analysis_report_html
 
 
 API_TITLE = "Quant Trade System Local API"
@@ -155,6 +155,16 @@ def create_app():
             headers={"Content-Disposition": f'attachment; filename="{filename}"'},
         )
 
+    @app.get("/api/downloads/training-analysis-report")
+    def training_analysis_report():
+        from fastapi.responses import HTMLResponse
+
+        filename = f"quant-training-analysis-{loader.now_iso()[:10]}.html"
+        return HTMLResponse(
+            build_training_analysis_report_html(),
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
     @app.post("/api/actions/refresh-market")
     def refresh_market(payload: dict | None = None):
         payload = dict(payload or {})
@@ -228,6 +238,14 @@ def create_app():
         return api_actions.run_with_job_status(
             "llm-explain-risk",
             api_actions.explain_risk,
+            run_async=False,
+        )
+
+    @app.post("/api/actions/explain-training-analysis")
+    def explain_training_analysis():
+        return api_actions.run_with_job_status(
+            "llm-explain-training-analysis",
+            api_actions.explain_training_analysis,
             run_async=False,
         )
 

@@ -66,6 +66,14 @@ export function formatDate(value: unknown): string {
   });
 }
 
+export function averageCost(row: Dict): number | null {
+  return numberValue(row.average_cost ?? row.cost);
+}
+
+export function currentPrice(row: Dict): number | null {
+  return numberValue(row.current_price ?? row.last_price);
+}
+
 export function listFromPayload(payload: unknown, keys: string[]): unknown[] {
   const record = asDict(payload);
   for (const key of keys) {

@@ -872,6 +872,61 @@ def explain_portfolio_risk(
     )
 
 
+def build_training_analysis_messages(*, training_payload: Mapping):
+    payload = dict(training_payload or {})
+    validation = dict(payload.get("validation", {}) or {})
+    governance = dict(payload.get("governance", {}) or {})
+    snapshot = dict(payload.get("snapshot", {}) or {})
+    metrics = dict(dict(validation.get("governance", {}) or {}).get("promotion_metrics", {}) or {})
+    gates = dict(dict(validation.get("governance", {}) or {}).get("promotion_gates", {}) or {})
+    improvement = dict(governance.get("candidate_improvement", {}) or {})
+    blockers = list(governance.get("promotion_blockers", []) or payload.get("promotion_blockers", []) or [])
+    prompt = (
+        "请用中文为这个量化模型训练结果生成一份务实的模型质量解读。\n"
+        "请不要编造外部市场信息，只基于下面的训练、验证和治理数据。\n\n"
+        f"- Snapshot status: {snapshot.get('status')}\n"
+        f"- Validation status: {validation.get('status')}\n"
+        f"- Governance status: {governance.get('status')}\n"
+        f"- Model version: {dict(snapshot.get('model', {}) or {}).get('version')}\n"
+        f"- Fold count: {validation.get('fold_count')}\n"
+        f"- Promotion gates: {json.dumps(gates, ensure_ascii=False)}\n"
+        f"- Promotion metrics: {json.dumps(metrics, ensure_ascii=False)}\n"
+        f"- Candidate vs production improvement: {json.dumps(improvement, ensure_ascii=False)}\n"
+        f"- Promotion blockers: {json.dumps(blockers[:12], ensure_ascii=False)}\n\n"
+        "输出要求：\n"
+        "1. 先用一句话判断：是否应该 validated promote，或者是否只是 improved-over-production promote。\n"
+        "2. 用 3-6 个要点解释主要问题，例如方向准确率、校准、Rank IC、Top 3 vs BIL/SPY、baseline 对比。\n"
+        "3. 明确区分“可以手动 warning 部署”和“已通过验证部署”。\n"
+        "4. 给出下一轮训练/数据改进最值得做的 3 件事。\n"
+        "5. 不要承诺收益，不要把 REVIEW 模型说成可靠生产模型。"
+    )
+    return [
+        {
+            "role": "system",
+            "content": "You are a quant model governance reviewer. Be practical, skeptical, and concise. Do not invent facts.",
+        },
+        {"role": "user", "content": prompt},
+    ]
+
+
+def explain_training_analysis(
+    *,
+    training_payload: Mapping,
+    notification_config: Mapping,
+    cache_path: str = DEFAULT_EXPLANATION_CACHE_FILE,
+    urlopen=None,
+):
+    return _run_messages_with_cache(
+        cache_kind="training_analysis_explanation",
+        cache_payload=dict(training_payload or {}),
+        messages=build_training_analysis_messages(training_payload=training_payload),
+        notification_config=notification_config,
+        complexity="analysis",
+        cache_path=cache_path,
+        urlopen=urlopen,
+    )
+
+
 def summarize_trading_system(
     *,
     decision_context: Mapping,

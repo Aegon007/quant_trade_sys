@@ -97,6 +97,7 @@ class ApiSnapshotLoaderTests(unittest.TestCase):
             positions={
                 "QQQM": {
                     "current_shares": 1.5,
+                    "average_cost": 240.0,
                     "current_price": 292.0,
                     "current_value": 438.0,
                     "current_weight_pct": 9.9,
@@ -106,6 +107,7 @@ class ApiSnapshotLoaderTests(unittest.TestCase):
 
         self.assertTrue(rows[0]["is_held"])
         self.assertEqual(rows[0]["current_shares"], 1.5)
+        self.assertEqual(rows[0]["average_cost"], 240.0)
         self.assertEqual(rows[0]["current_weight_pct"], 9.9)
 
     def test_load_risk_response_uses_live_portfolio_concentration(self):
@@ -248,6 +250,7 @@ class ApiSnapshotLoaderTests(unittest.TestCase):
         self.assertEqual(response["summary"]["post_close_review_status"], "NO_PLAN")
         self.assertEqual(response["summary"]["plan_quality_status"], "DEGRADED")
         self.assertEqual(response["payload"]["holdings"][0]["symbol"], "AAPL")
+        self.assertEqual(response["payload"]["holdings"][0]["average_cost"], 100.0)
         self.assertEqual(response["payload"]["recent_transactions"][0]["symbol"], "AAPL")
 
     def test_multi_horizon_snapshot_enriches_portfolio_rows(self):

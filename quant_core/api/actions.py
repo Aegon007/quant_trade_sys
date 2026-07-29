@@ -367,6 +367,32 @@ def explain_risk() -> dict:
     return {"ok": ok, "text": text, "meta": meta}
 
 
+def explain_training_analysis() -> dict:
+    snapshot, _ = snapshot_loader.safe_read_json(qpaths.MULTI_HORIZON_SNAPSHOT_FILE)
+    validation, _ = snapshot_loader.safe_read_json(qpaths.MULTI_HORIZON_VALIDATION_FILE)
+    governance, _ = snapshot_loader.safe_read_json(qpaths.MULTI_HORIZON_GOVERNANCE_FILE)
+    snapshot = snapshot if isinstance(snapshot, dict) else {}
+    validation = validation if isinstance(validation, dict) else {}
+    governance = governance if isinstance(governance, dict) else {}
+    if "promotion_blockers" not in governance:
+        governance["promotion_blockers"] = multi_horizon_governance.promotion_blockers(validation)
+    payload = {
+        "snapshot": {
+            "status": snapshot.get("status"),
+            "model": dict(snapshot.get("model", {}) or {}),
+            "summary": dict(snapshot.get("summary", {}) or {}),
+        },
+        "validation": validation,
+        "governance": governance,
+        "promotion_blockers": list(governance.get("promotion_blockers", []) or []),
+    }
+    ok, text, meta = llm_explainer.explain_training_analysis(
+        training_payload=payload,
+        notification_config=_llm_config(),
+    )
+    return {"ok": ok, "text": text, "meta": meta}
+
+
 def refresh_decision_brief_now() -> dict:
     config = _llm_config()
     context = decision_brief.build_current_decision_context()

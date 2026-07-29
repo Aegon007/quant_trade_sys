@@ -17,6 +17,141 @@ from .validation import rank_information_coefficient, top_k_excess_return
 DEFAULT_PREDICTION_JOURNAL_FILE = qpaths.MULTI_HORIZON_PREDICTION_JOURNAL_FILE
 DEFAULT_GOVERNANCE_FILE = qpaths.MULTI_HORIZON_GOVERNANCE_FILE
 
+PROMOTION_GATE_LABELS = {
+    "minimum_walk_forward_folds": "Need at least 3 purged walk-forward folds.",
+    "absolute_direction_better_than_chance": "Absolute up/down accuracy must beat 50%.",
+    "absolute_probability_calibrated": "Absolute return probability calibration must be acceptable.",
+    "risk_free_direction_better_than_chance": "Risk-free outperformance direction accuracy must beat 50%.",
+    "risk_free_probability_calibrated": "Risk-free outperformance probability calibration must be acceptable.",
+    "median_return_error_bounded": "Median return forecast error is too high.",
+    "positive_top_k_risk_free_excess": "Top 3 picks must have positive excess return versus the risk-free benchmark.",
+    "positive_rank_ic": "252d Rank IC must be positive.",
+    "positive_top_k_excess_return": "Top 3 picks must have positive excess return versus SPY.",
+    "beats_baseline_top_k": "Neural Top 3 must beat the relative-strength baseline.",
+    "initialization_ablation_complete": "Pretrained-vs-scratch ablation must complete.",
+    "moe_stable": "Mixture-of-experts routing must not collapse.",
+}
+
+
+def _safe_float(value, default=None):
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return default
+    return parsed if np.isfinite(parsed) else default
+
+
+def validation_quality_score(validation_snapshot: Mapping | None) -> float | None:
+    """Composite validation score used to compare candidate vs production.
+
+    This is intentionally trading-oriented: it rewards 252d directional skill,
+    probability calibration, rank quality, and Top 3 excess returns while
+    penalizing large median-return forecast error.
+    """
+
+    validation_snapshot = dict(validation_snapshot or {})
+    metrics = dict(
+        dict(validation_snapshot.get("governance", {}) or {}).get("promotion_metrics", {})
+        or {}
+    )
+    directional = _safe_float(metrics.get("directional_accuracy"), 0.0)
+    risk_free_directional = _safe_float(metrics.get("risk_free_directional_accuracy"), 0.0)
+    brier = _safe_float(metrics.get("brier_score"), 1.0)
+    risk_free_brier = _safe_float(metrics.get("risk_free_brier_score"), 1.0)
+    return_error = min(max(_safe_float(metrics.get("median_return_mae"), 2.0), 0.0), 2.0)
+    rank_ic = min(max(_safe_float(metrics.get("candidate_rank_ic"), -1.0), -1.0), 1.0)
+    top_market = min(max(_safe_float(metrics.get("candidate_top_k_excess_return"), -1.0), -1.0), 1.0)
+    top_risk_free = min(
+        max(_safe_float(metrics.get("candidate_top_k_risk_free_excess_return"), -1.0), -1.0),
+        1.0,
+    )
+    if not metrics:
+        return None
+    return float(
+        directional
+        + risk_free_directional
+        - brier
+        - risk_free_brier
+        - return_error
+        + rank_ic
+        + 0.2 * top_market
+        + 0.2 * top_risk_free
+    )
+
+
+def minimum_safety_gates_pass(validation_snapshot: Mapping | None) -> bool:
+    gates = dict(
+        dict(dict(validation_snapshot or {}).get("governance", {}) or {}).get(
+            "promotion_gates",
+            {},
+        )
+        or {}
+    )
+    if not gates:
+        return False
+    return bool(
+        gates.get("minimum_walk_forward_folds")
+        and gates.get("moe_stable", True)
+        and (
+            gates.get("positive_top_k_risk_free_excess")
+            or gates.get("positive_top_k_excess_return")
+        )
+    )
+
+
+def relative_improvement_report(
+    validation_snapshot: Mapping | None,
+    previous_governance: Mapping | None,
+    *,
+    min_delta: float = 0.01,
+) -> dict:
+    candidate_score = validation_quality_score(validation_snapshot)
+    previous = dict(previous_governance or {})
+    approved_score = _safe_float(previous.get("approved_model_quality_score"))
+    improved = (
+        candidate_score is not None
+        and approved_score is not None
+        and candidate_score > approved_score + float(min_delta)
+    )
+    return {
+        "candidate_quality_score": candidate_score,
+        "approved_model_quality_score": approved_score,
+        "min_delta": float(min_delta),
+        "delta": (
+            candidate_score - approved_score
+            if candidate_score is not None and approved_score is not None
+            else None
+        ),
+        "minimum_safety_gates_pass": minimum_safety_gates_pass(validation_snapshot),
+        "improved_over_production": bool(improved),
+    }
+
+
+def promotion_blockers(validation_snapshot: Mapping | None) -> list[dict]:
+    validation_snapshot = dict(validation_snapshot or {})
+    blockers = []
+    status = str(validation_snapshot.get("status") or "PENDING").upper()
+    if status != "PASS":
+        blockers.append(
+            {
+                "code": "walk_forward_status",
+                "message": f"Walk-forward validation status is {status}, not PASS.",
+            }
+        )
+    gates = dict(dict(validation_snapshot.get("governance", {}) or {}).get("promotion_gates", {}) or {})
+    metrics = dict(dict(validation_snapshot.get("governance", {}) or {}).get("promotion_metrics", {}) or {})
+    for code, passed in gates.items():
+        if bool(passed):
+            continue
+        blockers.append(
+            {
+                "code": str(code),
+                "message": PROMOTION_GATE_LABELS.get(str(code), f"Promotion gate failed: {code}."),
+                "metric": metrics.get(str(code)),
+            }
+        )
+    return blockers
+
 
 def _compact_prediction_snapshot(snapshot: Mapping) -> dict:
     snapshot = dict(snapshot or {})
@@ -268,6 +403,7 @@ def build_model_governance_snapshot(
     eligible = validation_status == "PASS" and not bool(
         dict(validation_snapshot.get("governance", {}) or {}).get("moe_collapsed")
     )
+    quality_score = validation_quality_score(validation_snapshot)
     return {
         "schema_version": 1,
         "generated_at": (now or datetime.now()).isoformat(),
@@ -277,6 +413,8 @@ def build_model_governance_snapshot(
         "production_authorized": False,
         "approved_model_version": None,
         "validation_status": validation_status,
+        "candidate_quality_score": quality_score,
+        "promotion_blockers": promotion_blockers(validation_snapshot),
         "shadow_outcomes": shadow_outcomes,
         "model": model,
         "model_version": model_version,
@@ -307,12 +445,33 @@ def approve_model_for_production(
         str(governance.get("status") or "").upper() == "ELIGIBLE_FOR_MANUAL_PROMOTION"
         or str(governance.get("candidate_status") or "").upper() == "ELIGIBLE_FOR_MANUAL_PROMOTION"
     )
-    if not eligible and not allow_initial_override:
+    improvement_eligible = bool(
+        governance.get("candidate_improvement", {}).get("improved_over_production")
+        and governance.get("candidate_improvement", {}).get("minimum_safety_gates_pass")
+    )
+    if not eligible and not improvement_eligible and not allow_initial_override:
         raise ValueError("Model is not eligible for production promotion.")
-    if not eligible and str(prediction_snapshot.get("status") or "").upper() != "READY":
+    if (
+        not eligible
+        and not improvement_eligible
+        and str(prediction_snapshot.get("status") or "").upper() != "READY"
+    ):
         raise ValueError("Only a trained READY model can be deployed with an initial override.")
-    if not allow_initial_override and str(governance.get("validation_status") or "").upper() != "PASS":
+    if improvement_eligible and str(prediction_snapshot.get("status") or "").upper() != "READY":
+        raise ValueError("Only a trained READY model can be promoted as an improved candidate.")
+    if (
+        not allow_initial_override
+        and str(governance.get("validation_status") or "").upper() != "PASS"
+        and not improvement_eligible
+    ):
         raise ValueError("Walk-forward validation has not passed.")
+    approval_mode = (
+        "INITIAL_MANUAL_OVERRIDE"
+        if not eligible and allow_initial_override
+        else "IMPROVED_MANUAL_PROMOTION"
+        if improvement_eligible and str(governance.get("validation_status") or "").upper() != "PASS"
+        else "VALIDATED_MANUAL_PROMOTION"
+    )
     if not version:
         raise ValueError("Model version is missing; retrain before promotion.")
     promoted = {
@@ -323,8 +482,11 @@ def approve_model_for_production(
         "approved_at": (now or datetime.now()).isoformat(),
         "approved_model_version": version,
         "model_version": version,
-        "approval_mode": "INITIAL_MANUAL_OVERRIDE" if not eligible else "VALIDATED_MANUAL_PROMOTION",
-        "validation_override": bool(not eligible),
+        "approved_model_quality_score": governance.get("candidate_quality_score"),
+        "approval_mode": approval_mode,
+        "validation_override": bool(
+            approval_mode in {"INITIAL_MANUAL_OVERRIDE", "IMPROVED_MANUAL_PROMOTION"}
+        ),
     }
     save_model_governance_snapshot(promoted, path=path)
     return promoted
@@ -448,6 +610,8 @@ def refresh_model_governance(
         shadow_outcomes=outcomes,
         now=now,
     )
+    improvement = relative_improvement_report(validation, previous)
+    governance["candidate_improvement"] = improvement
     current_version = str(governance.get("model_version") or "").strip()
     if (
         bool(previous.get("production_authorized"))
@@ -461,9 +625,20 @@ def refresh_model_governance(
                 "production_authorized": True,
                 "approved_at": previous.get("approved_at"),
                 "approved_model_version": current_version,
+                "approved_model_quality_score": previous.get(
+                    "approved_model_quality_score",
+                    governance.get("candidate_quality_score"),
+                ),
             }
         )
     elif bool(previous.get("production_authorized")):
+        candidate_eligible = (
+            str(governance.get("status") or "").upper() == "ELIGIBLE_FOR_MANUAL_PROMOTION"
+            or bool(
+                improvement.get("improved_over_production")
+                and improvement.get("minimum_safety_gates_pass")
+            )
+        )
         governance.update(
             {
                 "status": "PRODUCTION",
@@ -471,13 +646,21 @@ def refresh_model_governance(
                 "production_authorized": True,
                 "approved_at": previous.get("approved_at"),
                 "approved_model_version": previous.get("approved_model_version"),
+                "approved_model_quality_score": previous.get("approved_model_quality_score"),
                 "approval_mode": previous.get("approval_mode"),
                 "validation_override": previous.get("validation_override", False),
                 "candidate_model_version": current_version,
                 "candidate_status": (
                     "ELIGIBLE_FOR_MANUAL_PROMOTION"
-                    if str(governance.get("status") or "").upper() == "ELIGIBLE_FOR_MANUAL_PROMOTION"
+                    if candidate_eligible
                     else "SHADOW"
+                ),
+                "candidate_promotion_basis": (
+                    "VALIDATION_PASS"
+                    if str(governance.get("validation_status") or "").upper() == "PASS"
+                    else "IMPROVED_OVER_PRODUCTION"
+                    if candidate_eligible
+                    else "BLOCKED"
                 ),
             }
         )

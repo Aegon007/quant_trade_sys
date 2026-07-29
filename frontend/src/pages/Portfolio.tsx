@@ -3,8 +3,10 @@ import { postApi } from "../api";
 import { ActionStatus, DecisionTable, HorizonStrip, ModelDetail, type DecisionColumn } from "../components/DecisionTable";
 import { Facts, MetricStrip, Panel, SnapshotFrame, Status } from "../components/Primitives";
 import {
+  averageCost,
   asArray,
   asDict,
+  currentPrice,
   formatCurrency,
   formatDate,
   formatNumber,
@@ -21,16 +23,22 @@ function positionColumns(totalCapital: number): DecisionColumn[] {
   return [
     { label: "Symbol", className: "symbol-cell", render: (row) => text(row.symbol) },
     { label: "Current weight", render: (row) => {
-      const value = (numberValue(row.shares) ?? 0) * (numberValue(row.current_price) ?? numberValue(row.cost) ?? 0);
+      const value = (numberValue(row.shares) ?? 0) * (currentPrice(row) ?? averageCost(row) ?? 0);
       return totalCapital > 0 ? formatPercent(value / totalCapital) : "-";
     } },
+    { label: "Avg / Last", render: (row) => (
+      <span className="stacked-cell">
+        <b>{formatCurrency(averageCost(row), 2)}</b>
+        <small>{formatCurrency(currentPrice(row), 2)}</small>
+      </span>
+    ) },
     { label: "Target", render: (row) => text(modelDecision(row).target_weight_range_pct) },
     { label: "Long horizon", render: (row) => <Status value={row.long_horizon_state} /> },
     { label: "Timing", render: (row) => <Status value={timing(row).state ?? row.timing_state} /> },
     { label: "Action", render: (row) => <ActionStatus row={row} /> },
     { label: "P/L", render: (row) => {
-      const price = numberValue(row.current_price);
-      const cost = numberValue(row.cost);
+      const price = currentPrice(row);
+      const cost = averageCost(row);
       return price !== null && cost !== null && cost !== 0 ? formatPercent((price - cost) / cost) : "-";
     } },
   ];
@@ -96,9 +104,9 @@ export default function Portfolio() {
             <ModelDetail row={row} />
             <Facts rows={[
               ["Shares", formatNumber(row.shares, 3)],
-              ["Average cost", formatCurrency(row.cost, 2)],
-              ["Current price", formatCurrency(row.current_price, 2)],
-              ["Market value", formatCurrency((numberValue(row.shares) ?? 0) * (numberValue(row.current_price) ?? 0), 2)],
+              ["Average cost", formatCurrency(averageCost(row), 2)],
+              ["Current price", formatCurrency(currentPrice(row), 2)],
+              ["Market value", formatCurrency((numberValue(row.shares) ?? 0) * (currentPrice(row) ?? 0), 2)],
             ]} />
           </div>
         )} emptyText="No reconciled holdings." />

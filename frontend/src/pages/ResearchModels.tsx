@@ -42,6 +42,8 @@ export default function ResearchModels() {
   const governance = asDict(validation.governance);
   const selection = asDict(validation.selection);
   const lifecycle = asDict(payload.governance);
+  const promotionBlockers = asArray(lifecycle.promotion_blockers).map(asDict);
+  const candidateImprovement = asDict(lifecycle.candidate_improvement);
   const bootstrap = asDict(payload.bootstrap_manifest);
   const promotionGates = asDict(governance.promotion_gates);
   const registry = asDict(payload.model_registry);
@@ -54,6 +56,9 @@ export default function ResearchModels() {
   const [launching, setLaunching] = useState(false);
   const [promoting, setPromoting] = useState(false);
   const [downloading, setDownloading] = useState(false);
+  const [downloadingReport, setDownloadingReport] = useState(false);
+  const [explainingTraining, setExplainingTraining] = useState(false);
+  const [trainingExplanation, setTrainingExplanation] = useState("");
   const [result, setResult] = useState("");
   const [, setClockTick] = useState(0);
 
@@ -127,6 +132,38 @@ export default function ResearchModels() {
     }
   }
 
+  async function downloadTrainingReport() {
+    setDownloadingReport(true);
+    setResult("");
+    try {
+      await downloadApi(
+        "/api/downloads/training-analysis-report",
+        "quant-training-analysis.html",
+      );
+      setResult("Readable training analysis report downloaded.");
+    } catch (exc) {
+      setResult((exc as Error).message);
+    } finally {
+      setDownloadingReport(false);
+    }
+  }
+
+  async function explainTrainingAnalysis() {
+    setExplainingTraining(true);
+    setTrainingExplanation("");
+    setResult("");
+    try {
+      const response = await postApi<Dict>("/api/actions/explain-training-analysis");
+      const nested = asDict(response.result);
+      setTrainingExplanation(text(nested.text ?? response.text, "LLM did not return a training summary."));
+      setResult(text(nested.ok ?? response.ok, "LLM training summary completed."));
+    } catch (exc) {
+      setResult((exc as Error).message);
+    } finally {
+      setExplainingTraining(false);
+    }
+  }
+
   const progress = Number(trainingJob.progress_pct ?? 0);
   const trainingEvents = asArray(trainingJob.events).map(asDict).slice(-14).reverse();
   const updatedAt = new Date(text(trainingJob.updated_at, "")).getTime();
@@ -156,8 +193,14 @@ export default function ResearchModels() {
         subtitle="Patch temporal encoder, cross-asset attention, sparse regime experts, and multi-horizon quantile heads."
         action={
           <div className="button-row">
+            <button className="quiet-button" disabled={downloadingReport} onClick={downloadTrainingReport}>
+              {downloadingReport ? "Preparing report..." : "Download readable report"}
+            </button>
+            <button className="quiet-button" disabled={explainingTraining} onClick={explainTrainingAnalysis}>
+              {explainingTraining ? "Calling LLM..." : "Generate LLM training summary"}
+            </button>
             <button className="quiet-button" disabled={downloading} onClick={downloadTrainingBundle}>
-              {downloading ? "Preparing ZIP..." : "Download training analysis"}
+              {downloading ? "Preparing ZIP..." : "Download raw ZIP"}
             </button>
             <button disabled={launching || isTraining} onClick={trainModel}>
               {launching ? "Starting..." : isTraining ? "Training in progress..." : "Train and validate model"}
@@ -250,6 +293,12 @@ export default function ResearchModels() {
           ["BIL probability loss", text(training.risk_free_outperformance_loss, "Not trained")],
           ["Result", result || text(trainingJob.detail, "Ready to train")],
         ]} />
+        {trainingExplanation ? (
+          <div className="llm-output">
+            <strong>LLM training summary</strong>
+            <p>{trainingExplanation}</p>
+          </div>
+        ) : null}
       </Panel>
 
       <div className="three-layout">
@@ -298,20 +347,39 @@ export default function ResearchModels() {
       <div className="split-layout">
         <Panel
           title="Validation & promotion"
-          subtitle="Only purged walk-forward PASS models can be manually authorized for trading advice."
+          subtitle="PASS models use validated promotion. READY candidates can still be manually deployed with a warning if you accept the risk."
           action={
             <div className="button-row">
               <button disabled={!canPromote || promoting || candidateAuthorized} onClick={() => promoteModel(false)}>
                 {candidateAuthorized ? "Candidate is production" : promoting ? "Promoting..." : "Promote validated model"}
               </button>
-              {!hasProduction && !canPromote && hasReadyCandidate ? (
+              {!canPromote && hasReadyCandidate && !candidateAuthorized ? (
                 <button className="caution-button" disabled={promoting} onClick={() => promoteModel(true)}>
-                  Deploy current model with warning
+                  Deploy candidate with warning
                 </button>
               ) : null}
             </div>
           }
         >
+          {promotionBlockers.length ? (
+            <div className="promotion-blockers">
+              <strong>Why the validated promote button is disabled</strong>
+              <ul>
+                {promotionBlockers.slice(0, 8).map((blocker, index) => (
+                  <li key={`${text(blocker.code)}-${index}`}>
+                    <code>{text(blocker.code)}</code>
+                    <span>{text(blocker.message)}</span>
+                  </li>
+                ))}
+              </ul>
+              {promotionBlockers.length > 8 ? <p>{promotionBlockers.length - 8} more blockers are included in the readable training report.</p> : null}
+            </div>
+          ) : (
+            <div className="promotion-blockers ok">
+              <strong>No validation blockers detected.</strong>
+              <p>The candidate can be promoted after manual review.</p>
+            </div>
+          )}
           <Facts rows={[
             ["3+ walk-forward folds", <Status value={promotionGates.minimum_walk_forward_folds ? "PASS" : "REVIEW"} />],
             ["Up/down better than chance", <Status value={promotionGates.absolute_direction_better_than_chance ? "PASS" : "REVIEW"} />],
@@ -330,6 +398,11 @@ export default function ResearchModels() {
             ["Approval mode", text(lifecycle.approval_mode, "Not approved")],
             ["Candidate version", text(lifecycle.candidate_model_version ?? lifecycle.model_version, "Not trained")],
             ["Production version", text(lifecycle.approved_model_version, "Not deployed")],
+            ["Promotion basis", text(lifecycle.candidate_promotion_basis ?? (canPromote ? "VALIDATION_PASS" : "BLOCKED"))],
+            ["Candidate quality", text(lifecycle.candidate_quality_score, "Not scored")],
+            ["Production quality", text(lifecycle.approved_model_quality_score ?? candidateImprovement.approved_model_quality_score, "Not recorded")],
+            ["Quality delta", text(candidateImprovement.delta, "Not comparable")],
+            ["Minimum safety gates", <Status value={candidateImprovement.minimum_safety_gates_pass ? "PASS" : "REVIEW"} />],
             ["Shadow outcomes", <Status value={asDict(lifecycle.shadow_outcomes).status ?? "OBSERVING"} />],
           ]} />
         </Panel>
