@@ -11,6 +11,7 @@ from quant_core.events import analyst_consensus as ac
 from quant_core.events import event_fetcher as ef
 from quant_core.events import event_news as en
 from quant_core.events import news_intelligence as ni
+from quant_core.fundamentals import financials as fin
 from quant_core.llm import decision_brief as db
 from quant_core.notifications import notification_config as ncfg
 from quant_core.notifications import delivery_router as dr
@@ -36,6 +37,7 @@ from quant_core.snapshots import system_snapshot as ss
 from quant_core.ledger import transactions as tx
 from quant_core.analytics.signal_scoreboard import build_signal_scoreboard
 from quant_core.risk.risk_gate import build_market_risk_snapshot_from_histories, evaluate_market_risk_gate
+from quant_core.models.foundation import pipeline as foundation_pipeline
 from quant_core.models.multi_horizon import pipeline as mh_pipeline
 from quant_core.models.multi_horizon import snapshot as mh_snapshot
 from quant_core.models.multi_horizon import governance as mh_governance
@@ -163,6 +165,7 @@ def run_nightly_alerts(
     model_governance_path=mh_governance.DEFAULT_GOVERNANCE_FILE,
     model_validation_path=qpaths.MULTI_HORIZON_VALIDATION_FILE,
     news_intelligence_path=ni.DEFAULT_NEWS_INTELLIGENCE_FILE,
+    financials_intelligence_path=fin.DEFAULT_SNAPSHOT_FILE,
     decision_brief_path=db.DEFAULT_DECISION_BRIEF_FILE,
     event_source_status_path=qpaths.EVENT_SOURCE_STATUS_FILE,
     event_refresher=None,
@@ -308,7 +311,54 @@ def run_nightly_alerts(
         risk_gate=risk_decision,
         account_snapshot=account_snapshot,
     )
-    multi_horizon_runner = multi_horizon_runner or mh_pipeline.run_multi_horizon_job
+    financials_intelligence = {}
+    try:
+        if nman.can_resume_step(manifest, step_name="financials_intelligence", output_file=financials_intelligence_path, now=now):
+            financials_intelligence = fin.load_financials_intelligence(path=financials_intelligence_path)
+            manifest = nman.mark_step_completed(
+                manifest,
+                step_name="financials_intelligence",
+                output_file=financials_intelligence_path,
+                input_version=manifest_input_version,
+                reused=True,
+                path=manifest_path,
+                now=now,
+            )
+        else:
+            manifest = nman.mark_step_started(
+                manifest,
+                step_name="financials_intelligence",
+                input_version=manifest_input_version,
+                path=manifest_path,
+                now=now,
+            )
+            financials_intelligence = fin.build_financials_intelligence(
+                symbols=symbols,
+                notification_config=config,
+                now=now,
+            )
+            fin.save_financials_intelligence(financials_intelligence, path=financials_intelligence_path)
+            manifest = nman.mark_step_completed(
+                manifest,
+                step_name="financials_intelligence",
+                output_file=financials_intelligence_path,
+                input_version=manifest_input_version,
+                metadata=dict(financials_intelligence.get("summary", {}) or {}),
+                path=manifest_path,
+                now=now,
+            )
+    except Exception as exc:
+        manifest = nman.mark_step_failed(manifest, step_name="financials_intelligence", error_message=str(exc), path=manifest_path, now=now)
+        financials_intelligence = {
+            "schema_version": 1,
+            "generated_at": now.isoformat(),
+            "status": "FAILED",
+            "summary": {"covered_count": 0, "missing_count": len(symbols), "stress_count": 0, "caution_count": 0},
+            "executive_summary": f"Financial intelligence failed: {exc}",
+            "symbols": [],
+            "stress": [],
+        }
+    multi_horizon_runner = multi_horizon_runner or foundation_pipeline.run_foundation_job
     multi_horizon_snapshot = None
     try:
         if nman.can_resume_step(
@@ -667,6 +717,7 @@ def run_nightly_alerts(
         strategy_governance_snapshot=strategy_governance_snapshot,
         multi_horizon_snapshot=multi_horizon_snapshot,
         news_intelligence=news_intelligence,
+        financials_intelligence=financials_intelligence,
         intraday_event_summary=intraday_event_summary,
         generated_at=now,
     )
@@ -740,6 +791,7 @@ def run_nightly_alerts(
     snapshot["intraday_event_summary"] = intraday_event_summary
     snapshot["change_feed"] = change_feed
     snapshot["nightly_manifest"] = manifest
+    snapshot["financials_intelligence"] = financials_intelligence
     decision_context = db.build_decision_context(
         account=account_snapshot,
         multi_horizon_snapshot=multi_horizon_snapshot,
@@ -749,6 +801,7 @@ def run_nightly_alerts(
         trade_plan=trade_plan,
         change_feed=change_feed,
         news_intelligence=news_intelligence,
+        financials_intelligence=financials_intelligence,
         market_monitor_snapshot=market_monitor_snapshot,
         data_health_snapshot=data_health_snapshot,
         plan_quality_snapshot=plan_quality_snapshot,
@@ -819,6 +872,7 @@ def run_nightly_alerts(
             "manifest": manifest,
             "multi_horizon_snapshot": multi_horizon_snapshot,
             "news_intelligence": news_intelligence,
+            "financials_intelligence": financials_intelligence,
             "decision_brief": decision_brief,
         }
 
@@ -964,8 +1018,9 @@ def run_nightly_alerts(
         "discipline_snapshot": discipline_snapshot,
         "change_feed": change_feed,
         "multi_horizon_snapshot": multi_horizon_snapshot,
-        "news_intelligence": news_intelligence,
-        "decision_brief": decision_brief,
+            "news_intelligence": news_intelligence,
+            "financials_intelligence": financials_intelligence,
+            "decision_brief": decision_brief,
         "manifest": manifest,
     }
 

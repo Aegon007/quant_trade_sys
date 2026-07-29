@@ -67,7 +67,7 @@ export default function SatelliteRadar() {
         />
       </Panel>
       <Panel title="Top 3 satellite candidates" subtitle="These are the only non-core candidates eligible for a new-entry action.">
-        <DecisionTable rows={top} columns={columns} detail={detail} emptyText="No neural Top 3 yet. Train or run the multi-horizon model." />
+        <DecisionTable rows={top} columns={columns} detail={detail} emptyText="No foundation Top 3 yet. Run the nightly pipeline or weekend research." />
       </Panel>
       <Panel
         title="Ranked research funnel"

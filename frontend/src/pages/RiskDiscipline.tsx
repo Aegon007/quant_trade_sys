@@ -35,15 +35,51 @@ export default function RiskDiscipline() {
   const riskRows = asArray(payload.risk_items ?? payload.items ?? payload.alerts ?? payload.rules);
   const account = asDict(payload.account);
   const holdings = asArray(payload.holdings);
+  const marketSentiment = asDict(payload.market_sentiment);
+  const systemicRisk = asDict(payload.systemic_risk);
+  const financialsIntelligence = asDict(payload.financials_intelligence);
+  const financialsSummary = asDict(financialsIntelligence.summary);
 
   return (
     <SnapshotFrame snapshot={risk.data} loading={risk.loading} error={risk.error} onReload={() => { risk.reload(); model.reload(); }}>
       <MetricStrip items={[
         { label: "Discipline", value: text(payload.regime ?? summary.regime, "UNKNOWN"), hint: "Heavy / normal / light / stop" },
         { label: "Risk regime", value: text(payload.risk_regime ?? summary.risk_regime, "UNKNOWN"), hint: "Final veto authority" },
-        { label: "Actual exposure", value: formatPercent(account.exposure_pct ?? summary.actual_exposure_pct), hint: `Target ${formatPercent(payload.target_exposure_pct ?? summary.target_exposure_pct)}` },
-        { label: "Available cash", value: formatCurrency(account.cash_available, 2), hint: `Total capital ${formatCurrency(account.total_capital, 2)}` },
+        { label: "Market mood", value: text(marketSentiment.risk_appetite_state, "UNKNOWN"), hint: `Score ${text(marketSentiment.market_sentiment_score, "-")}` },
+        { label: "AI capex stress", value: text(systemicRisk.ai_capex_stress, "UNKNOWN"), hint: `Systemic ${text(systemicRisk.systemic_risk_score, "-")}` },
+        { label: "Financials", value: text(financialsSummary.hard_financial_data, "MISSING"), hint: `${text(financialsSummary.stress_count, "0")} stress` },
       ]} />
+      <div className="split-layout">
+        <Panel title="Market sentiment overlay" subtitle="Used to reduce confidence and block aggressive adds during risk-off tape.">
+          <Facts rows={[
+            ["Risk appetite", <Status value={marketSentiment.risk_appetite_state ?? "UNKNOWN"} />],
+            ["Breadth state", <Status value={marketSentiment.breadth_state ?? "UNKNOWN"} />],
+            ["Above 50d", formatPercent(marketSentiment.breadth_above_50d_pct)],
+            ["Above 200d", formatPercent(marketSentiment.breadth_above_200d_pct)],
+            ["Drivers", text(marketSentiment.main_sentiment_drivers)],
+          ]} />
+        </Panel>
+        <Panel title="AI capex / systemic early warning" subtitle="A conservative overlay for concentration, correlation, AI capex narrative pressure, and risk-off regimes.">
+          <Facts rows={[
+            ["Stress state", <Status value={systemicRisk.ai_capex_stress ?? "UNKNOWN"} />],
+            ["Score", text(systemicRisk.systemic_risk_score, "-")],
+            ["AI correlation", text(systemicRisk.ai_supply_chain_correlation, "Unavailable")],
+            ["Data freshness", text(systemicRisk.data_freshness)],
+            ["Financial stress", text(systemicRisk.financial_statement_stress)],
+            ["Warnings", text(systemicRisk.warnings)],
+          ]} />
+        </Panel>
+      </div>
+      <Panel title="Financial statement pressure" subtitle="Company-level cash-flow, capex, debt, and revenue-growth checks. ETFs often have no statement data.">
+        <Facts rows={[
+          ["Status", <Status value={financialsIntelligence.status ?? "NOT_READY"} />],
+          ["Hard data", <Status value={financialsSummary.hard_financial_data ?? "MISSING"} />],
+          ["Covered / missing", `${text(financialsSummary.covered_count, "0")} / ${text(financialsSummary.missing_count, "0")}`],
+          ["Caution / stress", `${text(financialsSummary.caution_count, "0")} / ${text(financialsSummary.stress_count, "0")}`],
+          ["Top stress", text(financialsSummary.top_stress_symbols)],
+          ["Summary", text(financialsIntelligence.executive_summary)],
+        ]} />
+      </Panel>
       <Panel title="Live position concentration" subtitle="Calculated from the latest Portfolio holdings and current prices, not from a stale nightly copy.">
         <DecisionTable
           rows={holdings}

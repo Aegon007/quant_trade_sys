@@ -30,6 +30,8 @@ from quant_core.notifications import notification_config
 from quant_core.llm import openai_compatible
 from quant_core.llm import explainer as llm_explainer
 from quant_core.llm import decision_brief
+from quant_core.fundamentals import financials as financials_config
+from quant_core.models.foundation import config as foundation_model_config
 from quant_core.models.multi_horizon import config as multi_horizon_config
 from quant_core.models.multi_horizon import governance as multi_horizon_governance
 from quant_core.models.multi_horizon import snapshot as multi_horizon_snapshot
@@ -510,6 +512,24 @@ def save_multi_horizon_settings(config: Mapping) -> dict:
         "message": "multi-horizon model config saved",
         "path": path,
         "multi_horizon_config": multi_horizon_config.load_multi_horizon_config(path=path),
+    }
+
+
+def save_foundation_model_settings(config: Mapping) -> dict:
+    path = foundation_model_config.save_foundation_model_config(config)
+    return {
+        "message": "foundation model config saved",
+        "path": path,
+        "foundation_model_config": foundation_model_config.load_foundation_model_config(path=path),
+    }
+
+
+def save_financials_settings(config: Mapping) -> dict:
+    path = financials_config.save_financials_config(config)
+    return {
+        "message": "financials intelligence config saved",
+        "path": path,
+        "financials_config": financials_config.load_financials_config(path=path),
     }
 
 

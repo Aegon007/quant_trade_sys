@@ -1,0 +1,61 @@
+{
+  "backend_priority": [
+    "chronos",
+    "timesfm",
+    "moment"
+  ],
+  "backends": {
+    "chronos": {
+      "batch_size": 8,
+      "context_length": 512,
+      "device": "auto",
+      "enabled": true,
+      "model_name": "amazon/chronos-bolt-small",
+      "quantile_levels": [
+        0.1,
+        0.5,
+        0.9
+      ],
+      "supports_covariates": false,
+      "torch_dtype": "auto"
+    },
+    "moment": {
+      "enabled": false,
+      "model_name": "AutonLab/MOMENT-1-large",
+      "supports_covariates": false
+    },
+    "proxy": {
+      "enabled": false,
+      "lookback_days": 756,
+      "trend_adjustment_weight": 0.35
+    },
+    "timesfm": {
+      "enabled": false,
+      "model_name": "google/timesfm-2.5-200m-pytorch",
+      "supports_covariates": true
+    }
+  },
+  "decision": {
+    "core_max_weight_pct": 70.0,
+    "minimum_core_weight_delta_pct": 3.0,
+    "minimum_risk_free_outperformance_probability": 0.52,
+    "minimum_upside_probability": 0.55,
+    "satellite_max_weight_pct": 5.0
+  },
+  "default_backend": "auto",
+  "enabled": true,
+  "allow_development_proxy": false,
+  "growth_benchmark": "QQQ",
+  "history_period": "10y",
+  "horizons": [
+    63,
+    126,
+    252
+  ],
+  "market_benchmark": "SPY",
+  "maximum_symbols": 100,
+  "model_id": "foundation_quant_engine",
+  "require_real_backend": true,
+  "risk_free_benchmark": "BIL",
+  "schema_version": 1
+}

@@ -35,6 +35,8 @@ export default function ResearchModels() {
   const jobs = useSnapshot<Dict>("/api/job-status");
   const payload = asDict(data?.payload);
   const snapshot = asDict(payload.multi_horizon_snapshot);
+  const foundationSnapshot = asDict(payload.foundation_model_snapshot);
+  const foundationConfig = asDict(payload.foundation_config);
   const validation = asDict(payload.validation);
   const candidate = asDict(validation.candidate);
   const baseline = asDict(validation.relative_strength_baseline);
@@ -182,15 +184,15 @@ export default function ResearchModels() {
   return (
     <SnapshotFrame snapshot={data} loading={loading} error={error} onReload={reload}>
       <MetricStrip items={[
-        { label: "Model status", value: text(snapshot.status ?? asDict(snapshot.model).status, "MODEL_NOT_READY"), hint: text(asDict(snapshot.model).trained_at, "No checkpoint") },
+        { label: "Model status", value: text(snapshot.status ?? asDict(snapshot.model).status, "MODEL_NOT_READY"), hint: text(asDict(snapshot.model).backend_family ?? asDict(snapshot.model).model_family, "No backend") },
         { label: "Validation", value: text(validation.status, "PENDING"), hint: `${text(validation.fold_count, "0")} walk-forward folds` },
-        { label: "MoE routing", value: asDict(candidate.moe).collapsed ? "COLLAPSED" : "STABLE", hint: "Expert usage is monitored" },
+        { label: "Foundation backend", value: text(asDict(snapshot.model).backend, text(foundationConfig.default_backend, "auto")), hint: text(asDict(snapshot.model).authority, "governed") },
         { label: "Lifecycle", value: text(lifecycle.status, "RESEARCH"), hint: "Promotion is manual only" },
       ]} />
 
       <Panel
-        title="Finance multi-asset Transformer"
-        subtitle="Patch temporal encoder, cross-asset attention, sparse regime experts, and multi-horizon quantile heads."
+        title="Foundation quant engine"
+        subtitle="Time-series foundation-model interface with market sentiment, AI capex/systemic risk, event risk, and portfolio discipline overlays. Legacy neural models are benchmark-only."
         action={
           <div className="button-row">
             <button className="quiet-button" disabled={downloadingReport} onClick={downloadTrainingReport}>
@@ -203,11 +205,19 @@ export default function ResearchModels() {
               {downloading ? "Preparing ZIP..." : "Download raw ZIP"}
             </button>
             <button disabled={launching || isTraining} onClick={trainModel}>
-              {launching ? "Starting..." : isTraining ? "Training in progress..." : "Train and validate model"}
+              {launching ? "Starting..." : isTraining ? "Training in progress..." : "Train legacy benchmark"}
             </button>
           </div>
         }
       >
+        <Facts rows={[
+          ["Snapshot source", text(foundationSnapshot.status ? "foundation_model_snapshot" : "multi_horizon_compat")],
+          ["Backend family", text(asDict(snapshot.model).backend_family ?? asDict(snapshot.model).model_family, "UNKNOWN")],
+          ["Backend", text(asDict(snapshot.model).backend, "-")],
+          ["Authority", text(asDict(snapshot.model).authority, "governed")],
+          ["Risk appetite", text(asDict(snapshot.market_sentiment).risk_appetite_state, "-")],
+          ["AI capex stress", text(asDict(snapshot.systemic_risk).ai_capex_stress, "-")],
+        ]} />
         <div className="training-progress">
           <div className="training-progress-copy">
             <Status value={jobState || "IDLE"} />

@@ -16,12 +16,21 @@ def default_model_registry() -> dict:
         "schema_version": 1,
         "models": [
             {
-                "model_id": "finance_multi_asset_transformer",
-                "display_name": "Finance Multi-Asset Transformer",
+                "model_id": "foundation_quant_engine",
+                "display_name": "Foundation Quant Engine",
                 "role": "primary_quant_decision",
-                "adapter_path": "quant_core.models.multi_horizon.pipeline.run_multi_horizon_job",
+                "adapter_path": "quant_core.models.foundation.pipeline.run_foundation_job",
                 "enabled": True,
                 "is_default": True,
+                "params": {"horizons": [63, 126, 252], "history_period": "10y", "backend": "auto"},
+            },
+            {
+                "model_id": "finance_multi_asset_transformer",
+                "display_name": "Legacy Finance Multi-Asset Transformer",
+                "role": "legacy_benchmark",
+                "adapter_path": "quant_core.models.multi_horizon.pipeline.run_multi_horizon_job",
+                "enabled": False,
+                "is_default": False,
                 "params": {"horizons": [63, 126, 252], "history_period": "10y"},
             }
         ],

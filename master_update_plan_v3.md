@@ -1,9 +1,11 @@
 # Quant Trade System Master Update Plan V3
 
 > 模型规范优先级：V3 定义系统架构和产品主线；
-> `multi_horizon_model_upgrade_plan.md` 定义当前神经模型的详细目标、
-> 标签、验证门槛和 checkpoint 晋升规则。模型专项文档更新时，V3
-> 必须同步记录不可违反的产品与治理约束。
+> `multi_horizon_model_upgrade_plan.md` 定义模型专项路线。当前模型路线
+> 已从旧 self-trained multi-horizon engine 切换为 foundation-model-first：
+> 时间序列 foundation model 负责预测分布，市场情绪、财报现金流/capex/债务
+> 压力、AI capex/systemic risk、新闻事件和纪律层负责风险调整与最终动作融合。
+> 旧模型只允许作为 benchmark / regression test，不再作为默认生产方向。
 
 ## 0. 文档定位
 
@@ -49,11 +51,28 @@ V3 后续所有改造都应遵守五条约束：
 
 ### 0.2 Stage 3 模型交付约束
 
-- 项目随代码发布一个经过哈希校验的 `SHADOW` bootstrap checkpoint，解决新机器冷启动问题。
-- bootstrap 模型只允许推理和积累影子样本，不因“随代码发布”而自动获得生产权限。
+- 默认生产方向必须使用真实时间序列 foundation backend。当前首选为 Chronos-Bolt；
+  未安装依赖或权重时系统必须显示 `MODEL_UNAVAILABLE`，不能用 proxy 伪装模型输出。
+- `proxy` 只允许显式开发调试，必须手动开启 `allow_development_proxy`，不能作为默认建议来源。
 - 长周期模型训练池排除杠杆、反向和波动率战术产品；这些产品只进入盘中 tactical overlay。
 - walk-forward 必须分别报告 core ETF 与 satellite 指标，并显式比较预训练候选、scratch 和简单规则基准。
 - 只有验证为 `PASS` 且经过手动批准的模型才能恢复真实动作权限。
+
+### 0.3 财报与基本面情报层
+
+V3 需要把财报和基本面压力变成系统一等输入，而不是只靠价格和新闻。
+
+正式要求：
+
+- 夜间流程必须生成 `financials_intelligence` 快照。
+- 首个数据源为 `yfinance` 财务报表接口；未来可替换为 FMP、Finnhub 或付费源。
+- 系统至少抽取 `free_cash_flow`、`operating_cash_flow`、`capital_expenditure`、`total_debt`、
+  `revenue`、`net_income`，并计算 `free_cash_flow_margin`、`capex_to_operating_cash_flow`、
+  `debt_to_operating_cash_flow`、`revenue_growth`、`debt_growth`。
+- ETF 或无覆盖标的的缺失数据必须标记为 `MISSING`，不能被解释为看空。
+- systemic risk 必须消费财报压力，尤其关注 AI 基建链条里的 capex 强度、现金流转弱和债务压力。
+- LLM 可以把结构化财报压力转成可读摘要，但不能直接生成买卖动作。
+- Dashboard、Risk & Discipline、Settings、nightly report、Slack/Email 摘要都必须展示或消费该层信息。
 
 ---
 

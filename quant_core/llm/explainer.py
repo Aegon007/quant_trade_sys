@@ -811,6 +811,62 @@ def explain_discipline_review(
     )
 
 
+def build_financials_intelligence_messages(*, financials_payload: Mapping):
+    payload = dict(financials_payload or {})
+    summary = dict(payload.get("summary", {}) or {})
+    top_stress = list(payload.get("top_stress", []) or [])[:8]
+    symbol_rows = []
+    for row in list(payload.get("symbols", []) or [])[:25]:
+        row = dict(row or {})
+        symbol_rows.append(
+            {
+                "symbol": row.get("symbol"),
+                "status": row.get("status"),
+                "fiscal_period": row.get("fiscal_period"),
+                "metrics": dict(row.get("metrics", {}) or {}),
+                "warnings": list(row.get("warnings", []) or [])[:3],
+            }
+        )
+    prompt = (
+        "请基于下面的公司财报/基本面结构化数据，生成一段务实的中文风险摘要。\n"
+        "任务重点：识别现金流、capex、债务、营收增长是否对未来持仓或加仓构成压力。\n"
+        "注意：ETF 或无数据标的的缺失数据不能被当成负面基本面；只能说明覆盖缺失。\n\n"
+        f"覆盖摘要：{json.dumps(summary, ensure_ascii=False)}\n"
+        f"压力最高标的：{json.dumps(top_stress, ensure_ascii=False, default=str)}\n"
+        f"财报数据：{json.dumps(symbol_rows, ensure_ascii=False, default=str)}\n\n"
+        "输出要求：\n"
+        "1. 先给一句总判断。\n"
+        "2. 用 3-5 个短要点说明哪些标的需要谨慎、原因是什么。\n"
+        "3. 单独说明数据覆盖不足的地方。\n"
+        "4. 不要给直接买卖指令，不要编造未提供的财报事实。"
+    )
+    return [
+        {
+            "role": "system",
+            "content": "You are a financial-statement risk analyst. Use only supplied structured financial metrics. Do not invent facts.",
+        },
+        {"role": "user", "content": prompt},
+    ]
+
+
+def analyze_financials_intelligence(
+    *,
+    financials_payload: Mapping,
+    notification_config: Mapping,
+    cache_path: str = DEFAULT_EXPLANATION_CACHE_FILE,
+    urlopen=None,
+):
+    return _run_messages_with_cache(
+        cache_kind="financials_intelligence_analysis",
+        cache_payload=dict(financials_payload or {}),
+        messages=build_financials_intelligence_messages(financials_payload=financials_payload),
+        notification_config=notification_config,
+        complexity="analysis",
+        cache_path=cache_path,
+        urlopen=urlopen,
+    )
+
+
 def narrate_news_summary(
     *,
     summary_payload: Mapping,

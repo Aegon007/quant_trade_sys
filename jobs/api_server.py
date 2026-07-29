@@ -110,6 +110,18 @@ def create_app():
     def multi_horizon():
         return loader.load_snapshot_response("multi-horizon", loader.SNAPSHOT_PATHS["multi-horizon"])
 
+    @app.get("/api/foundation-model")
+    def foundation_model():
+        return loader.load_snapshot_response("foundation-model", loader.SNAPSHOT_PATHS["foundation-model"])
+
+    @app.get("/api/market-sentiment")
+    def market_sentiment():
+        return loader.load_snapshot_response("market-sentiment", loader.SNAPSHOT_PATHS["market-sentiment"])
+
+    @app.get("/api/systemic-risk")
+    def systemic_risk():
+        return loader.load_snapshot_response("systemic-risk", loader.SNAPSHOT_PATHS["systemic-risk"])
+
     @app.get("/api/research-models")
     def research_models():
         return loader.load_research_models_response()
@@ -127,6 +139,13 @@ def create_app():
         return loader.load_snapshot_response(
             "news-intelligence",
             loader.SNAPSHOT_PATHS["news-intelligence"],
+        )
+
+    @app.get("/api/financials-intelligence")
+    def financials_intelligence():
+        return loader.load_snapshot_response(
+            "financials-intelligence",
+            loader.SNAPSHOT_PATHS["financials-intelligence"],
         )
 
     @app.get("/api/decision-brief")
@@ -294,6 +313,22 @@ def create_app():
         return api_actions.run_with_job_status(
             "settings-multi-horizon-config",
             lambda: api_actions.save_multi_horizon_settings(dict(payload or {})),
+            run_async=False,
+        )
+
+    @app.post("/api/actions/save-foundation-model-config")
+    def save_foundation_model_config(payload: dict):
+        return api_actions.run_with_job_status(
+            "settings-foundation-model-config",
+            lambda: api_actions.save_foundation_model_settings(dict(payload or {})),
+            run_async=False,
+        )
+
+    @app.post("/api/actions/save-financials-config")
+    def save_financials_config(payload: dict):
+        return api_actions.run_with_job_status(
+            "settings-financials-config",
+            lambda: api_actions.save_financials_settings(dict(payload or {})),
             run_async=False,
         )
 

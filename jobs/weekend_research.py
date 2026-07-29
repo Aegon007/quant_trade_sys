@@ -22,6 +22,7 @@ from quant_core.research import weekend_research as wr
 from quant_core.snapshots import system_snapshot as ss
 from quant_core.ledger import transactions as tx
 from quant_core.analytics.signal_scoreboard import build_signal_scoreboard
+from quant_core.models.foundation import pipeline as foundation_pipeline
 from quant_core.models.multi_horizon import pipeline as mh_pipeline
 from quant_core.models.multi_horizon import governance as mh_governance
 from strategies import ui as su
@@ -61,7 +62,7 @@ def run_weekend_research(
     slack_sender = slack_sender or nch.send_slack_message
     email_sender = email_sender or nch.send_email_message
     message_router = message_router or dr.deliver_message
-    multi_horizon_runner = multi_horizon_runner or mh_pipeline.run_multi_horizon_job
+    multi_horizon_runner = multi_horizon_runner or foundation_pipeline.run_foundation_job
 
     history_period = schedule["history_period"]
     data = du.load_data()
@@ -77,7 +78,7 @@ def run_weekend_research(
     )
     multi_horizon_snapshot = multi_horizon_runner(
         data=data,
-        train=mh_pipeline.model_training_due(now=now),
+        train=False,
         risk_regime=str(getattr(risk_gate, "regime", None) or "NORMAL"),
         now=now,
     )

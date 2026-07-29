@@ -37,9 +37,13 @@ SNAPSHOT_PATHS = {
     "plan-quality": qpaths.PLAN_QUALITY_SNAPSHOT_FILE,
     "strategy-governance": qpaths.STRATEGY_REGISTRY_STATE_FILE,
     "strategy-validation": qpaths.STRATEGY_VALIDATION_SNAPSHOT_FILE,
+    "foundation-model": qpaths.FOUNDATION_MODEL_SNAPSHOT_FILE,
+    "market-sentiment": qpaths.MARKET_SENTIMENT_SNAPSHOT_FILE,
+    "systemic-risk": qpaths.SYSTEMIC_RISK_SNAPSHOT_FILE,
     "multi-horizon": qpaths.MULTI_HORIZON_SNAPSHOT_FILE,
     "model-governance": qpaths.MULTI_HORIZON_GOVERNANCE_FILE,
     "news-intelligence": qpaths.NEWS_INTELLIGENCE_FILE,
+    "financials-intelligence": qpaths.FINANCIALS_INTELLIGENCE_FILE,
     "decision-brief": qpaths.DECISION_BRIEF_FILE,
     "reports-latest": str(qpaths.PROJECT_ROOT / "reports" / "nightly_report_latest.json"),
 }
@@ -351,7 +355,13 @@ def load_risk_response(*, now: Optional[datetime] = None) -> dict:
     data = _load_portfolio_payload()
     account, positions = _live_position_context(data)
     discipline, errors = safe_read_json(qpaths.DISCIPLINE_SNAPSHOT_FILE)
+    market_sentiment, market_sentiment_errors = safe_read_json(qpaths.MARKET_SENTIMENT_SNAPSHOT_FILE)
+    systemic_risk, systemic_risk_errors = safe_read_json(qpaths.SYSTEMIC_RISK_SNAPSHOT_FILE)
+    financials_intelligence, financials_errors = safe_read_json(qpaths.FINANCIALS_INTELLIGENCE_FILE)
     discipline = discipline if isinstance(discipline, dict) else {}
+    market_sentiment = market_sentiment if isinstance(market_sentiment, dict) else {}
+    systemic_risk = systemic_risk if isinstance(systemic_risk, dict) else {}
+    financials_intelligence = financials_intelligence if isinstance(financials_intelligence, dict) else {}
     holdings = list(positions.values())
     analyzed = portfolio_risk.analyze_portfolio_risk(holdings)
     max_single = float(account.get("max_single_position_pct") or 0.0)
@@ -409,6 +419,9 @@ def load_risk_response(*, now: Optional[datetime] = None) -> dict:
             "unpriced_symbols": analyzed.unpriced_symbols,
         },
         "risk_items": risk_items,
+        "market_sentiment": market_sentiment,
+        "systemic_risk": systemic_risk,
+        "financials_intelligence": financials_intelligence,
     }
     return build_api_response(
         name="risk",
@@ -427,7 +440,7 @@ def load_risk_response(*, now: Optional[datetime] = None) -> dict:
             ]),
         },
         items=risk_items,
-        warnings=errors,
+        warnings=[*errors, *market_sentiment_errors, *systemic_risk_errors, *financials_errors],
         data_quality={"status": "OK" if not errors else "PARTIAL"},
         payload=payload,
         generated_at=now_iso(now),
@@ -548,7 +561,10 @@ def load_dashboard_response(*, now: Optional[datetime] = None) -> dict:
     market_monitor_payload, _ = safe_read_json(qpaths.MARKET_MONITOR_SNAPSHOT_FILE)
     strategy_governance_payload, _ = safe_read_json(qpaths.STRATEGY_REGISTRY_STATE_FILE)
     news_intelligence_payload, _ = safe_read_json(qpaths.NEWS_INTELLIGENCE_FILE)
+    financials_intelligence_payload, _ = safe_read_json(qpaths.FINANCIALS_INTELLIGENCE_FILE)
     decision_brief_payload, _ = safe_read_json(qpaths.DECISION_BRIEF_FILE)
+    market_sentiment_payload, _ = safe_read_json(qpaths.MARKET_SENTIMENT_SNAPSHOT_FILE)
+    systemic_risk_payload, _ = safe_read_json(qpaths.SYSTEMIC_RISK_SNAPSHOT_FILE)
     multi_horizon_payload = _load_gated_multi_horizon_snapshot()
     job_status = job_registry.load_job_status()
 
@@ -561,7 +577,10 @@ def load_dashboard_response(*, now: Optional[datetime] = None) -> dict:
     market_monitor_payload = market_monitor_payload if isinstance(market_monitor_payload, dict) else {}
     strategy_governance_payload = strategy_governance_payload if isinstance(strategy_governance_payload, dict) else {}
     news_intelligence_payload = news_intelligence_payload if isinstance(news_intelligence_payload, dict) else {}
+    financials_intelligence_payload = financials_intelligence_payload if isinstance(financials_intelligence_payload, dict) else {}
     decision_brief_payload = decision_brief_payload if isinstance(decision_brief_payload, dict) else {}
+    market_sentiment_payload = market_sentiment_payload if isinstance(market_sentiment_payload, dict) else {}
+    systemic_risk_payload = systemic_risk_payload if isinstance(systemic_risk_payload, dict) else {}
 
     change_items = []
     for key in ("high_items", "medium_items", "items"):
@@ -621,6 +640,13 @@ def load_dashboard_response(*, now: Optional[datetime] = None) -> dict:
         "news_intelligence_status": news_intelligence_payload.get("status"),
         "news_market_risk_level": news_intelligence_payload.get("market_risk_level"),
         "news_impact_count": len(list(news_intelligence_payload.get("portfolio_impacts", []) or [])),
+        "financials_intelligence_status": financials_intelligence_payload.get("status"),
+        "financials_covered_count": dict(financials_intelligence_payload.get("summary", {}) or {}).get("covered_count"),
+        "financials_stress_count": dict(financials_intelligence_payload.get("summary", {}) or {}).get("stress_count"),
+        "risk_appetite_state": market_sentiment_payload.get("risk_appetite_state"),
+        "market_sentiment_score": market_sentiment_payload.get("market_sentiment_score"),
+        "ai_capex_stress": systemic_risk_payload.get("ai_capex_stress"),
+        "systemic_risk_score": systemic_risk_payload.get("systemic_risk_score"),
         "decision_brief_status": decision_brief_payload.get("status"),
         "decision_brief_generated_at": decision_brief_payload.get("generated_at"),
     }
@@ -636,6 +662,9 @@ def load_dashboard_response(*, now: Optional[datetime] = None) -> dict:
         "strategy_governance_snapshot": strategy_governance_payload,
         "multi_horizon_snapshot": multi_horizon_payload,
         "news_intelligence": news_intelligence_payload,
+        "financials_intelligence": financials_intelligence_payload,
+        "market_sentiment": market_sentiment_payload,
+        "systemic_risk": systemic_risk_payload,
         "decision_brief": decision_brief_payload,
         "job_status": job_status,
     }
@@ -796,6 +825,8 @@ def load_settings_response(*, now: Optional[datetime] = None) -> dict:
     schedule = load_runtime_schedule()
     notification_config = ncfg.load_notification_config()
     model_registry, _ = safe_read_json(qpaths.MODEL_REGISTRY_CONFIG_FILE)
+    foundation_config, _ = safe_read_json(qpaths.FOUNDATION_MODEL_CONFIG_FILE)
+    financials_config, _ = safe_read_json(qpaths.FINANCIALS_CONFIG_FILE)
     multi_horizon_config, _ = safe_read_json(qpaths.MULTI_HORIZON_MODEL_CONFIG_FILE)
     core_etf_universe, _ = safe_read_json(qpaths.CORE_ETF_UNIVERSE_FILE)
     event_source_config, _ = safe_read_json(qpaths.EVENT_SOURCES_CONFIG_FILE)
@@ -805,6 +836,8 @@ def load_settings_response(*, now: Optional[datetime] = None) -> dict:
         "runtime_schedule": schedule,
         "notification_config": _sanitize_notification_config(notification_config if isinstance(notification_config, dict) else {}),
         "model_registry": model_registry if isinstance(model_registry, dict) else {},
+        "foundation_model_config": foundation_config if isinstance(foundation_config, dict) else {},
+        "financials_config": financials_config if isinstance(financials_config, dict) else {},
         "multi_horizon_config": multi_horizon_config if isinstance(multi_horizon_config, dict) else {},
         "core_etf_universe": core_etf_universe if isinstance(core_etf_universe, dict) else {},
         "event_source_config": event_source_config if isinstance(event_source_config, dict) else {},
@@ -828,15 +861,19 @@ def load_settings_response(*, now: Optional[datetime] = None) -> dict:
 
 def load_research_models_response(*, now: Optional[datetime] = None) -> dict:
     snapshot, snapshot_errors = safe_read_json(qpaths.MULTI_HORIZON_SNAPSHOT_FILE)
+    foundation_snapshot, foundation_errors = safe_read_json(qpaths.FOUNDATION_MODEL_SNAPSHOT_FILE)
     validation, validation_errors = safe_read_json(qpaths.MULTI_HORIZON_VALIDATION_FILE)
     registry, registry_errors = safe_read_json(qpaths.MODEL_REGISTRY_CONFIG_FILE)
     config, config_errors = safe_read_json(qpaths.MULTI_HORIZON_MODEL_CONFIG_FILE)
+    foundation_config, foundation_config_errors = safe_read_json(qpaths.FOUNDATION_MODEL_CONFIG_FILE)
     governance, governance_errors = safe_read_json(qpaths.MULTI_HORIZON_GOVERNANCE_FILE)
     bootstrap_manifest, bootstrap_errors = safe_read_json(qpaths.MULTI_HORIZON_BOOTSTRAP_MANIFEST_FILE)
     snapshot = snapshot if isinstance(snapshot, dict) else {}
+    foundation_snapshot = foundation_snapshot if isinstance(foundation_snapshot, dict) else {}
     validation = validation if isinstance(validation, dict) else {}
     registry = registry if isinstance(registry, dict) else {}
     config = config if isinstance(config, dict) else {}
+    foundation_config = foundation_config if isinstance(foundation_config, dict) else {}
     governance = governance if isinstance(governance, dict) else {}
     if "promotion_blockers" not in governance:
         governance["promotion_blockers"] = mh_governance.promotion_blockers(validation)
@@ -844,9 +881,11 @@ def load_research_models_response(*, now: Optional[datetime] = None) -> dict:
     snapshot = mh_governance.apply_production_gate(snapshot, governance)
     errors = [
         *snapshot_errors,
+        *foundation_errors,
         *validation_errors,
         *registry_errors,
         *config_errors,
+        *foundation_config_errors,
         *governance_errors,
         *bootstrap_errors,
     ]
@@ -869,8 +908,10 @@ def load_research_models_response(*, now: Optional[datetime] = None) -> dict:
         data_quality={"status": "MISSING" if snapshot_errors else "OK"},
         payload={
             "multi_horizon_snapshot": snapshot,
+            "foundation_model_snapshot": foundation_snapshot,
             "validation": validation,
             "model_registry": registry,
+            "foundation_config": foundation_config,
             "config": config,
             "governance": governance,
             "bootstrap_manifest": bootstrap_manifest,

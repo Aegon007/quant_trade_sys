@@ -75,6 +75,11 @@ export default function Dashboard() {
   const newsSource = asDict(newsIntelligence.source_status);
   const decisionBrief = asDict(payload.decision_brief);
   const briefLlm = asDict(decisionBrief.llm);
+  const marketSentiment = asDict(payload.market_sentiment);
+  const systemicRisk = asDict(payload.systemic_risk);
+  const financialsIntelligence = asDict(payload.financials_intelligence);
+  const financialsSummary = asDict(financialsIntelligence.summary);
+  const modelInfo = asDict(model.model);
   const [refreshingBrief, setRefreshingBrief] = useState(false);
   const [briefError, setBriefError] = useState("");
   const modelStatus = text(data?.summary.multi_horizon_status ?? model.status ?? asDict(model.model).status, "MODEL_NOT_READY");
@@ -129,9 +134,50 @@ export default function Dashboard() {
       <MetricStrip items={[
         { label: "Total capital", value: formatCurrency(account.total_capital), hint: `Cash ${formatCurrency(account.cash_available)}` },
         { label: "Exposure", value: formatPercent(account.exposure_pct), hint: `${text(data?.summary.holding_count, "0")} positions` },
-        { label: "Discipline", value: text(discipline.regime, "UNKNOWN"), hint: `Risk ${text(discipline.risk_regime, "UNKNOWN")}` },
-        { label: "Model conflicts", value: text(modelSummary.conflict_count, "0"), hint: "Attractive long term, weak timing" },
+        { label: "Model", value: text(modelInfo.backend_family ?? modelInfo.model_family, "UNKNOWN"), hint: `${text(modelInfo.backend, "no backend")} · ${text(modelInfo.authority, "governed")}` },
+        { label: "AI capex stress", value: text(systemicRisk.ai_capex_stress, "UNKNOWN"), hint: `Score ${text(systemicRisk.systemic_risk_score, "-")}` },
+        { label: "Financials", value: text(financialsIntelligence.status, "NO DATA"), hint: `${text(financialsSummary.covered_count, "0")} covered · ${text(financialsSummary.stress_count, "0")} stress` },
       ]} />
+
+      <div className="split-layout">
+        <Panel title="Market sentiment" subtitle="Breadth, volatility, risk appetite, and event tone are used as model covariates or risk overlay.">
+          <Facts rows={[
+            ["Risk appetite", <Status value={marketSentiment.risk_appetite_state ?? "UNKNOWN"} />],
+            ["Sentiment score", text(marketSentiment.market_sentiment_score, "-")],
+            ["Breadth", <Status value={marketSentiment.breadth_state ?? "UNKNOWN"} />],
+            ["Confidence", formatPercent(marketSentiment.sentiment_confidence)],
+            ["Drivers", text(marketSentiment.main_sentiment_drivers)],
+          ]} />
+        </Panel>
+        <Panel title="Systemic risk early warning" subtitle="AI capex, market concentration, correlation, news pressure, and risk-off conditions.">
+          <Facts rows={[
+            ["AI capex stress", <Status value={systemicRisk.ai_capex_stress ?? "UNKNOWN"} />],
+            ["Systemic score", text(systemicRisk.systemic_risk_score, "-")],
+            ["AI correlation", text(systemicRisk.ai_supply_chain_correlation, "Unavailable")],
+            ["Hard financial data", <Status value={asDict(systemicRisk.data_freshness).hard_financial_data ?? "MISSING"} />],
+            ["Confidence", formatPercent(systemicRisk.confidence)],
+            ["Drivers", text(systemicRisk.top_drivers)],
+          ]} />
+        </Panel>
+      </div>
+
+      <Panel
+        title="Financial statement intelligence"
+        subtitle={`Cash-flow, capex, debt, and revenue-growth stress · ${text(financialsIntelligence.status, "NOT_READY")} · ${text(asDict(financialsIntelligence.llm).model, "structured fallback")}`}
+      >
+        <div className={`news-brief ${Number(financialsSummary.stress_count ?? 0) > 0 ? "negative" : ""}`}>
+          {readableNewsLines(financialsIntelligence.executive_summary).length
+            ? readableNewsLines(financialsIntelligence.executive_summary).map((line, index) => <p key={index}>{line}</p>)
+            : <p>Run the nightly pipeline to build statement-aware financial intelligence.</p>}
+          <div>
+            <Status value={financialsSummary.hard_financial_data ?? "MISSING"} />
+            <span>{text(financialsSummary.covered_count, "0")} covered</span>
+            <span>{text(financialsSummary.caution_count, "0")} caution</span>
+            <span>{text(financialsSummary.stress_count, "0")} stress</span>
+            <span>{text(financialsIntelligence.generated_at, "-")}</span>
+          </div>
+        </div>
+      </Panel>
 
       <Panel title="Approved actions" subtitle="Only fused, risk-approved actions appear here. Expand any row for the full horizon distribution.">
         <DecisionTable rows={approved} columns={actionColumns} emptyText="No approved trades in the latest model snapshot." />

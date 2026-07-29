@@ -73,6 +73,8 @@ export default function Settings() {
   const { data, error, loading, reload } = useSnapshot<Dict>("/api/settings");
   const payload = asDict(data?.payload);
   const schedule = asDict(payload.runtime_schedule);
+  const foundationConfig = asDict(payload.foundation_model_config);
+  const financialsConfig = asDict(payload.financials_config);
   const modelConfig = asDict(payload.multi_horizon_config);
   const coreEtfUniverse = asDict(payload.core_etf_universe);
   const eventSourceConfig = asDict(payload.event_source_config);
@@ -423,9 +425,21 @@ export default function Settings() {
         value={eventSourceConfig}
         onSave={async (value) => { await postApi("/api/actions/save-event-sources", value); reload(); }}
       />
+      <JsonEditor
+        title="Foundation model engine"
+        subtitle="Primary model direction. Default requires a real Chronos backend; development proxy is disabled unless explicitly enabled."
+        value={foundationConfig}
+        onSave={async (value) => { await postApi("/api/actions/save-foundation-model-config", value); reload(); }}
+      />
+      <JsonEditor
+        title="Financial statement intelligence"
+        subtitle="Company cash-flow, capex, debt, and revenue-growth stress thresholds. Missing ETF data is reported as missing, not bearish."
+        value={financialsConfig}
+        onSave={async (value) => { await postApi("/api/actions/save-financials-config", value); reload(); }}
+      />
       <Panel
-        title="Model training policy"
-        subtitle="Controls whether final training uses pretrained weights or scratch initialization after walk-forward comparison."
+        title="Legacy model training policy"
+        subtitle="Benchmark-only legacy neural model controls. The foundation engine above is the primary product direction."
       >
         <div className="settings-form-grid">
           <Field label="Initialization policy" hint="auto_long_horizon prioritizes 252d Top 3, Rank IC, and BIL/SPY outperformance.">
@@ -457,12 +471,12 @@ export default function Settings() {
       <div className="split-layout editors">
         <JsonEditor
           title="Multi-horizon model"
-          subtitle="Advanced: universe size, architecture, training cadence, and artifact paths."
+          subtitle="Legacy benchmark config. Keep only for regression tests or comparison against the foundation engine."
           value={modelConfig}
           onSave={async (value) => { await postApi("/api/actions/save-multi-horizon-config", value); reload(); }}
         />
       </div>
-      <Panel title="Model roles" subtitle="The multi-horizon Transformer is the sole production decision model.">
+      <Panel title="Model roles" subtitle="Foundation Quant Engine is the default decision engine. Legacy models remain disabled unless they add verified incremental value.">
         <DecisionTable rows={asArray(registry.models)} columns={[
           { label: "Model", render: (row) => text(row.display_name ?? row.model_id) },
           { label: "Role", render: (row) => text(row.role) },

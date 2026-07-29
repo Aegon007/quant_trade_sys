@@ -350,7 +350,22 @@ def build_nightly_report(snapshot: Mapping) -> str:
     market_monitor_snapshot = dict(snapshot.get("market_monitor_snapshot", {}) or {})
     strategy_governance_snapshot = dict(snapshot.get("strategy_governance_snapshot", {}) or {})
     multi_horizon_snapshot = dict(snapshot.get("multi_horizon_snapshot", {}) or {})
+    market_sentiment = dict(
+        snapshot.get("market_sentiment")
+        or multi_horizon_snapshot.get("market_sentiment")
+        or {}
+    )
+    systemic_risk = dict(
+        snapshot.get("systemic_risk")
+        or multi_horizon_snapshot.get("systemic_risk")
+        or {}
+    )
     news_intelligence = dict(snapshot.get("news_intelligence", {}) or {})
+    financials_intelligence = dict(
+        snapshot.get("financials_intelligence")
+        or multi_horizon_snapshot.get("financials_intelligence")
+        or {}
+    )
     decision_brief = dict(snapshot.get("decision_brief", {}) or {})
     intraday_event_summary = dict(snapshot.get("intraday_event_summary", {}) or {})
     change_feed = dict(snapshot.get("change_feed", {}) or {})
@@ -362,8 +377,10 @@ def build_nightly_report(snapshot: Mapping) -> str:
         model_info = dict(multi_horizon_snapshot.get("model", {}) or {})
         action_counts = dict(model_summary.get("action_counts", {}) or {})
         lines_model = (
-            "Multi-horizon model: "
+            "Quant model: "
             f"status={multi_horizon_snapshot.get('status') or model_info.get('status') or 'UNKNOWN'} "
+            f"family={model_info.get('backend_family') or model_info.get('model_family') or 'UNKNOWN'} "
+            f"backend={model_info.get('backend') or '-'} "
             f"version={model_info.get('version') or model_info.get('trained_at') or 'untrained'} "
             f"symbols={int(_float(model_summary.get('symbol_count'), 0) or 0)} "
             f"accumulate={int(_float(action_counts.get('ACCUMULATE'), 0) or 0)} "
@@ -371,7 +388,7 @@ def build_nightly_report(snapshot: Mapping) -> str:
             f"conflicts={int(_float(model_summary.get('conflict_count'), 0) or 0)}"
         )
     else:
-        lines_model = "Multi-horizon model: status=MISSING"
+        lines_model = "Quant model: status=MISSING"
 
     lines = [
         "Nightly Portfolio Report",
@@ -383,6 +400,37 @@ def build_nightly_report(snapshot: Mapping) -> str:
         f"Daily recap: trades={int(_float(recap.get('trade_count'), 0) or 0)}, buys={int(_float(recap.get('buy_count'), 0) or 0)}, sells={int(_float(recap.get('sell_count'), 0) or 0)}, events={int(_float(recap.get('portfolio_event_count'), 0) or 0)}, realized P/L={_format_money(recap.get('realized_pl'))}",
         lines_model,
     ]
+
+    if market_sentiment:
+        lines.append(
+            "Market sentiment: "
+            f"state={market_sentiment.get('risk_appetite_state') or 'UNKNOWN'} "
+            f"score={market_sentiment.get('market_sentiment_score') or '-'} "
+            f"breadth={market_sentiment.get('breadth_state') or 'UNKNOWN'}"
+        )
+    if systemic_risk:
+        lines.append(
+            "AI capex/systemic risk: "
+            f"state={systemic_risk.get('ai_capex_stress') or 'UNKNOWN'} "
+            f"score={systemic_risk.get('systemic_risk_score') or '-'} "
+            f"drivers={', '.join(list(systemic_risk.get('top_drivers', []) or [])[:3]) or '-'}"
+        )
+    if financials_intelligence:
+        financials_summary = dict(financials_intelligence.get("summary", {}) or {})
+        llm_meta = dict(financials_intelligence.get("llm", {}) or {})
+        lines.append(
+            "Financial statement intelligence: "
+            f"status={financials_intelligence.get('status') or 'UNKNOWN'} "
+            f"hard_data={financials_summary.get('hard_financial_data') or 'MISSING'} "
+            f"covered={int(_float(financials_summary.get('covered_count'), 0) or 0)} "
+            f"missing={int(_float(financials_summary.get('missing_count'), 0) or 0)} "
+            f"caution={int(_float(financials_summary.get('caution_count'), 0) or 0)} "
+            f"stress={int(_float(financials_summary.get('stress_count'), 0) or 0)} "
+            f"route={llm_meta.get('route_name') or 'structured'}"
+        )
+        financials_summary_text = str(financials_intelligence.get("executive_summary") or "").strip()
+        if financials_summary_text:
+            lines.append(f"Financial summary: {financials_summary_text}")
 
     symbols = ", ".join(recap.get("symbols", []) or [])
     if symbols:

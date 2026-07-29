@@ -14,8 +14,9 @@
 - ETF 代理意见：当 ETF 本身没有分析师评级时，系统会自动读取前十大持仓，并按权重聚合成分股分析师共识，生成 ETF 的代理买卖意见。
 - 仓位建议：结合当前持仓、目标仓位和回测结果，给出加仓、减仓、退出或观望建议。
 - 组合级建议：分析行业集中度和高相关股票组合，避免只看单只股票信号而忽略整体风险。
-- 神经量化引擎：默认模型为跨资产多周期 Transformer，以绝对收益、上涨概率和跑赢短期美债为主要训练目标，以跑赢 SPY 和横截面排名为辅助目标；短债总回报默认使用可配置的 `BIL` 代理。
-- 模型治理：周末执行 masked-patch 预训练和 purged walk-forward，检查绝对收益误差、上涨/跑赢短债概率校准、Top 3 相对短债及 SPY 的超额收益、Rank IC、分位数覆盖和 MoE 路由；任何 promotion 都必须人工确认。
+- Foundation 量化引擎：默认路线切换为真实 `foundation-model-first`。当前默认后端为 Chronos-Bolt；未安装真实后端或权重未下载时，系统会显示 `MODEL_UNAVAILABLE` 并停止生成模型交易建议，不再使用 proxy 冒充真实模型。
+- 风险因子增强：模型输出会叠加市场情绪、市场宽度、VIX 风险、新闻事件、财报现金流/capex/债务压力、AI capex / systemic risk 早期预警，再进入仓位纪律层。
+- 模型治理：旧跨资产多周期 Transformer 已降级为 `legacy_benchmark`，只用于回归测试或对照验证；任何候选模型成为正式建议来源仍必须经过验证和人工确认。
 - 新闻/事件系统：支持本地 `storage/state/market_events.json` 事件输入，并可通过事件源适配层自动抓取外部新闻事件。
 - 事件风控急刹车：可基于 FOMC/宏观事件和 VIX 高波动阈值触发临时风险收缩（限制仓位或暂停新增仓位）。
 - FinBERT 情绪分析：事件/新闻可选用 FinBERT 进行情绪打分；未安装时自动回退为关键词情绪规则。
@@ -56,12 +57,54 @@ pip install -r requirements.txt
 cd frontend && npm ci && cd ..
 ```
 
+#### 安装真实 Foundation Model 后端
+
+系统默认要求真实时间序列 foundation model。当前首选后端是 Chronos-Bolt。
+
+普通 macOS / x86 Linux：
+
+```bash
+source ~/venv/bin/activate
+pip install -r requirements.txt
+python -c "from chronos import BaseChronosPipeline; BaseChronosPipeline.from_pretrained('amazon/chronos-bolt-small', device_map='cpu'); print('chronos ready')"
+```
+
+Apple Silicon Mac 会由系统自动尝试 `mps`；如果 MPS 不可用会回到 CPU。Jetson 必须使用下面的 Jetson 专用安装流程，不能直接用普通依赖解析安装 Chronos。第一次运行会从 Hugging Face 下载模型权重，之后复用本机缓存。
+
+如果真实后端不可用：
+
+- `Research & Models` 会显示 `MODEL_UNAVAILABLE`。
+- 夜间模型快照会写入安装提示和 backend attempts。
+- 系统不会用 proxy 生成交易建议。
+- 如需临时开发调试，必须在 `storage/config/foundation_model.json` 中显式设置 `allow_development_proxy=true` 且开启 `backends.proxy.enabled=true`。
+
 #### Jetson PyTorch
 
 Jetson 使用 NVIDIA JetPack 自带 CUDA，不能依赖 PyPI 的通用 PyTorch wheel。`requirements.txt`
-会在 `aarch64` 上跳过 PyTorch，避免覆盖 NVIDIA 专用构建。请先按照
+会在 `aarch64` 上跳过 PyTorch 和 Chronos，避免 Chronos 的依赖解析覆盖 NVIDIA 专用 PyTorch。
+请先按照
 [NVIDIA Installing PyTorch for Jetson Platform](https://docs.nvidia.com/deeplearning/frameworks/install-pytorch-jetson-platform/index.html)
 安装与当前 JetPack 版本匹配的 PyTorch，再安装本项目依赖。
+
+Jetson 推荐安装顺序：
+
+```bash
+python3 -m venv ~/venv
+source ~/venv/bin/activate
+
+# Step 1: 按 NVIDIA 官方文档安装与你的 JetPack 匹配的 torch wheel。
+# 安装完成后先确认 CUDA 可用，再继续。
+python -c "import torch; print(torch.__version__); print(torch.version.cuda); print(torch.cuda.is_available())"
+
+# Step 2: 安装应用依赖，但不碰 torch / chronos。
+pip install -r requirements-jetson.txt
+
+# Step 3: 安装 Chronos 包本体，但禁止 pip 解析依赖，避免覆盖 NVIDIA torch。
+pip install --no-deps chronos-forecasting==2.2.2
+
+# Step 4: 预热下载模型权重。
+python -c "from chronos import BaseChronosPipeline; BaseChronosPipeline.from_pretrained('amazon/chronos-bolt-small', device_map='cuda'); print('chronos ready')"
+```
 
 在启动系统前可以这样确认后端环境确实看到了 GPU：
 
@@ -72,7 +115,8 @@ python -c "import sys, torch; print(sys.executable); print(torch.__version__); p
 
 如果 `torch.version.cuda` 是 `None`，当前安装的是 CPU-only PyTorch；如果它有版本号但
 `torch.cuda.is_available()` 仍为 `False`，则需要检查 JetPack/CUDA 兼容性或容器的
-NVIDIA runtime。不要在 Jetson 上再次运行 `pip install torch==...` 覆盖 NVIDIA wheel。
+NVIDIA runtime。不要在 Jetson 上运行 `pip install -U torch`、`pip install torch==...`
+或不带 `--no-deps` 的 `pip install chronos-forecasting`，这些都可能覆盖 NVIDIA wheel。
 
 ### 2. 启动应用
 
@@ -129,11 +173,11 @@ PYTHONPYCACHEPREFIX=/tmp/pycache ~/venv/bin/python -m unittest discover -s tests
 当前版本更偏向“少而硬”的交易辅助，而不是堆很多花哨模型。默认工作流如下：
 
 1. 白天后台刷新行情并运行大盘与紧急事件监控；页面只读取快照，不在切换标签时训练模型。
-2. 夜间使用已训练的多周期 Transformer 生成持仓、核心 ETF、卫星 Top 3 和次日计划；没有强信号时明确输出不交易。
-3. 模型默认使用 `10y` 历史、`252` 日 lookback 和 `63/126/252` 日目标。夜间只推理，不会每天盲目重训。
-4. 周末按 `retrain_interval_days` 检查是否需要重训，默认间隔 `30` 天；训练包含预训练与 walk-forward 验证。
-5. `Research & Models` 页面可以手动触发完整训练，并查看候选模型、从零训练版本和相对强弱基线的对比。
-6. 新训练版本先进入 shadow；只有 walk-forward 验证通过并在 `Research & Models` 手动晋升后，才可进入夜间正式交易建议。
+2. 夜间使用 Foundation Quant Engine 生成持仓、核心 ETF、卫星 Top 3 和次日计划；没有强信号时明确输出不交易。
+3. 默认 horizon 为 `63/126/252` 交易日，短债 hurdle 使用可配置的 `BIL`，并同时比较 `SPY/QQQ`。
+4. 周末研究继续做长窗口验证、候选池更新、策略治理和 legacy benchmark 对照，但旧模型不再是默认生产方向。
+5. `Research & Models` 页面展示当前 backend、foundation/legacy 状态、市场情绪和 AI capex/systemic risk；手动训练按钮现在只训练 legacy benchmark。
+6. 新 foundation backend 只有在验证和人工确认后才应获得更高建议权限；proxy backend 会明确标注为临时可用层。
 7. 夜间报告、盘前计划、风险和强信号仍可通过 Slack 与 Email 发送。
 
 ## 周末研究模式
@@ -303,12 +347,18 @@ journalctl --user -u quant-trade-system.service -f
 - `storage/state/market_events.json`：手工维护事件输入文件（可选）。
 - `storage/state/event_source_status.json`：最近一次财经新闻抓取的源级成功/失败状态。
 - `storage/state/news_intelligence.json`：夜间生成的组合相关新闻、分析师共识与 LLM 解读快照。
+- `storage/state/financials_intelligence.json`：夜间生成的财报现金流、capex、债务和营收增长压力快照。
 - `config/event_sources.json`：事件源配置，定义本地 mock 与自动抓取源（如 yfinance 新闻）。
 - `storage/state/transactions.json`：买入/卖出交易记录与组合动作事件记录（如转到关注、转到持仓等）。
+- `storage/state/foundation_model_snapshot.json`：Foundation Quant Engine 原生快照。
+- `storage/state/market_sentiment_snapshot.json`：市场情绪、宽度、VIX 和事件语气快照。
+- `storage/state/systemic_risk_snapshot.json`：AI capex / systemic risk 早期预警快照。
 - `storage/state/multi_horizon_snapshot.json`：前端、夜间计划和通知共同读取的统一多周期模型快照。
 - `storage/state/multi_horizon_validation.json`：walk-forward 绝对收益误差、上涨/跑赢短债概率校准、Top 3 对短债及 SPY 超额收益、分位数覆盖和 MoE 路由验证结果。
 - `storage/journals/multi_horizon_predictions.jsonl`：紧凑预测日志，用于未来 63/126/252 日实际结果归因。
-- `storage/config/multi_horizon_model.json`：模型结构、训练周期、候选池上限和 artifact 路径配置。
+- `storage/config/foundation_model.json`：foundation backend 优先级、horizon、benchmark、risk-free hurdle 和决策融合阈值配置。
+- `storage/config/financials_config.json`：财报数据源、覆盖数量和压力阈值配置。
+- `storage/config/multi_horizon_model.json`：legacy benchmark 模型结构、训练周期和 artifact 路径配置。
 - `model_artifacts/bootstrap/`：随代码发布的 `SHADOW` 冷启动 checkpoint 与 SHA-256 manifest；新电脑首次推理时会自动安装到本地 `trained_models/`。
 
 ## 策略与回测
@@ -322,7 +372,8 @@ journalctl --user -u quant-trade-system.service -f
 
 说明：
 
-- `finance_multi_asset_transformer` 是当前默认决策模型。
+- `foundation_quant_engine` 是当前默认决策模型入口。
+- `finance_multi_asset_transformer` 已降级为 `legacy_benchmark`，默认禁用。
 - bootstrap checkpoint 只提供冷启动推理和影子观察，不代表模型已通过生产晋升。
 - Research & Models 页面在训练期间每秒刷新任务状态，显示 CPU/CUDA/MPS 设备、epoch、loss、耗时、样本规模和最近训练日志。
 - 传统规则策略仍保留，主要用于做对照、解释和回测基线。
@@ -331,9 +382,26 @@ journalctl --user -u quant-trade-system.service -f
 
 离线基准只在周末研究任务中运行，用来回答“复杂模型是否真的优于简单规则”。它们不会生成日常生产信号，也不会阻塞多周期模型的训练、推理或页面读取。
 
-## 深度学习策略
+## 深度学习与 Foundation Model 路线
 
-当前主模型位于 `quant_core/models/multi_horizon/`。它以整个候选 universe 为一个跨资产学习问题，而不是为每只股票单独训练一个短线分类器。
+当前主模型入口位于 `quant_core/models/foundation/`。它把价格分布预测、市场情绪、AI capex/systemic risk、新闻事件和仓位纪律层分开处理，而不是让一个小型自训练模型独自回答所有问题。
+
+当前 backend 策略：
+
+- 优先级由 `storage/config/foundation_model.json` 控制。
+- TimesFM / Chronos / MOMENT 是可插拔候选 backend。
+- 当前默认后端为 `chronos`，默认模型为 `amazon/chronos-bolt-small`。
+- 如果依赖或权重尚未安装，系统会显示 `MODEL_UNAVAILABLE`，并停止生成模型交易建议。
+- `proxy` 仅允许显式开发调试，不再是默认运行路径。
+
+Chronos 验证命令：
+
+```bash
+source ~/venv/bin/activate
+python -c "from chronos import BaseChronosPipeline; BaseChronosPipeline.from_pretrained('amazon/chronos-bolt-small', device_map='cpu'); print('chronos ready')"
+```
+
+Legacy benchmark 位于 `quant_core/models/multi_horizon/`。它以整个候选 universe 为一个跨资产学习问题，但不再是默认生产方向。
 
 默认设备参数为：
 
@@ -349,7 +417,7 @@ journalctl --user -u quant-trade-system.service -f
 - 在 Apple Silicon Mac 且 PyTorch 支持 MPS 时使用 `mps`。
 - 其他环境自动回落到 `cpu`。
 
-当前默认训练参数：
+Legacy benchmark 默认训练参数：
 
 - 历史窗口：`10y`
 - 预测目标：`63/126/252` 交易日
@@ -358,10 +426,10 @@ journalctl --user -u quant-trade-system.service -f
 - masked-patch 预训练最多：`20` 轮
 - 预训练验证：按时间顺序保留尾部 `15%`，最少训练 `5` 轮，验证损失连续 `4` 轮无有效改善则提前停止
 - 设备：`auto`
-- 夜间模式：只推理
-- 周末模式：到期后重训并验证
+- 夜间模式：默认由 Foundation Quant Engine 推理
+- 周末模式：默认由 Foundation Quant Engine 刷新研究快照；legacy 训练仅作对照
 
-模型采用候选与生产双 checkpoint：
+Legacy benchmark 仍采用候选与生产双 checkpoint：
 
 - `trained_models/finance_multi_asset_transformer.pt`：最新训练候选模型。
 - `trained_models/finance_multi_asset_transformer_production.pt`：当前生产建议模型。
@@ -487,6 +555,7 @@ LLM / SLM 只负责转述、解释和整理结构化证据，不会直接生成�
 ### LLM 全局交易摘要
 
 - 夜间流水线会把账户资金、全部多周期模型信号、核心 ETF、卫星候选、纪律与风险、次日计划、Change Feed、新闻、分析师共识和数据健康统一交给远程 LLM 整理。
+- 夜间流水线会抓取可用的公司财务报表数据，将现金流、capex、债务和营收增长转换为 `financials_intelligence`，并交给 LLM 形成可读风险摘要。ETF 或缺失数据只标记为 `MISSING`，不会当成负面信号。
 - Dashboard 首页顶部展示同一份全局摘要，并提供手动刷新按钮。
 - 摘要必须明确区分“有动作”和“无强信号，保持不动”，同时列出信号冲突、可信度问题和失效条件。
 - 系统用不含时间戳的实质信号签名去重。普通价格抖动不会重复调用；新的高优先级变化或盘中紧急事件才会触发刷新。

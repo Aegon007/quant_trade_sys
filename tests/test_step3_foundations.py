@@ -110,12 +110,15 @@ class Step3FoundationsTests(unittest.TestCase):
         self.assertEqual(states["candidate_a"], "PROMOTION_WATCH")
         self.assertTrue(any(row["type"] == "DEFAULT_REVIEW" for row in snapshot["recommendations"]))
 
-    def test_model_registry_defaults_to_multi_horizon_transformer(self):
+    def test_model_registry_defaults_to_foundation_engine(self):
         with self.subTest("default config"):
             config = model_registry.default_model_registry()
-            self.assertEqual(config["models"][0]["model_id"], "finance_multi_asset_transformer")
+            self.assertEqual(config["models"][0]["model_id"], "foundation_quant_engine")
             self.assertTrue(config["models"][0]["is_default"])
-            self.assertEqual(len(config["models"]), 1)
+            self.assertEqual(config["models"][0]["adapter_path"], "quant_core.models.foundation.pipeline.run_foundation_job")
+            self.assertEqual(config["models"][1]["model_id"], "finance_multi_asset_transformer")
+            self.assertEqual(config["models"][1]["role"], "legacy_benchmark")
+            self.assertFalse(config["models"][1]["enabled"])
 
     def test_evidence_layer_collects_structured_sources(self):
         snapshot = evidence_collector.build_evidence_layer(

@@ -52,6 +52,7 @@ def build_decision_context(
     trade_plan: Optional[Mapping] = None,
     change_feed: Optional[Mapping] = None,
     news_intelligence: Optional[Mapping] = None,
+    financials_intelligence: Optional[Mapping] = None,
     market_monitor_snapshot: Optional[Mapping] = None,
     data_health_snapshot: Optional[Mapping] = None,
     plan_quality_snapshot: Optional[Mapping] = None,
@@ -78,6 +79,7 @@ def build_decision_context(
     plan = _dict(trade_plan)
     feed = _dict(change_feed)
     news = _dict(news_intelligence)
+    financials = _dict(financials_intelligence)
     monitor = _dict(market_monitor_snapshot)
     health = _dict(data_health_snapshot)
     quality = _dict(plan_quality_snapshot)
@@ -135,6 +137,12 @@ def build_decision_context(
             "executive_summary": news.get("executive_summary"),
             "portfolio_impacts": list(news.get("portfolio_impacts", []) or [])[:6],
         },
+        "financials": {
+            "status": financials.get("status"),
+            "summary": _dict(financials.get("summary")),
+            "executive_summary": financials.get("executive_summary"),
+            "top_stress": list(financials.get("stress", []) or [])[:8],
+        },
         "market_monitor": {
             "status": monitor.get("status"),
             "summary": _dict(monitor.get("summary")),
@@ -166,6 +174,7 @@ def build_current_decision_context(*, data: Optional[Mapping] = None, intraday_e
 
     portfolio_data = dict(data or data_storage.load_data() or {})
     news_intelligence = _read_json(qpaths.NEWS_INTELLIGENCE_FILE)
+    financials_intelligence = _read_json(qpaths.FINANCIALS_INTELLIGENCE_FILE)
     try:
         account = system_snapshot.build_account_snapshot(portfolio_data)
     except (KeyError, TypeError, ValueError):
@@ -179,6 +188,7 @@ def build_current_decision_context(*, data: Optional[Mapping] = None, intraday_e
         trade_plan=_read_json(qpaths.NEXT_DAY_TRADE_PLAN_FILE),
         change_feed=_read_json(qpaths.CHANGE_FEED_FILE),
         news_intelligence=news_intelligence,
+        financials_intelligence=financials_intelligence,
         market_monitor_snapshot=_read_json(qpaths.MARKET_MONITOR_SNAPSHOT_FILE),
         data_health_snapshot=_read_json(qpaths.DATA_HEALTH_SNAPSHOT_FILE),
         plan_quality_snapshot=_read_json(qpaths.PLAN_QUALITY_SNAPSHOT_FILE),

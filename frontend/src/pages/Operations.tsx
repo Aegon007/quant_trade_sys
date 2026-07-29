@@ -39,8 +39,8 @@ const manualJobs: JobDefinition[] = [
   {
     key: "model",
     registryName: "manual-multi-horizon-training",
-    label: "Train neural model",
-    description: "Train and validate the multi-horizon neural candidate model.",
+    label: "Train legacy benchmark",
+    description: "Train the retired self-trained neural benchmark for comparison only.",
     endpoint: "/api/actions/train-multi-horizon",
   },
 ];

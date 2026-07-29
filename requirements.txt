@@ -16,3 +16,12 @@ backtrader==1.9.78.123
 # Jetson/aarch64 must use NVIDIA's PyTorch build matched to its JetPack release.
 torch==2.7.0; platform_machine != "aarch64"
 transformers==4.52.3
+
+# Real time-series foundation model backend. Model weights are downloaded from
+# Hugging Face on first use.
+#
+# IMPORTANT: do not install this line on Jetson/aarch64 through normal pip
+# dependency resolution, because chronos-forecasting depends on torch and pip
+# may replace NVIDIA's JetPack-compatible PyTorch wheel. Jetson users should
+# use requirements-jetson.txt and then install Chronos with --no-deps.
+chronos-forecasting==2.2.2; platform_machine != "aarch64"
