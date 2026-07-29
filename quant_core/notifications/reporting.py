@@ -9,6 +9,7 @@ from typing import Mapping, Optional
 from zoneinfo import ZoneInfo
 
 from quant_core import paths as qpaths
+from quant_core.events.news_intelligence import sanitize_news_narrative
 
 
 US_MARKET_TZ = ZoneInfo("America/New_York")
@@ -467,18 +468,19 @@ def build_nightly_report(snapshot: Mapping) -> str:
             f"route={llm_meta.get('route_name') or 'structured'} "
             f"model={llm_meta.get('model') or '-'}"
         )
-        executive_summary = str(news_intelligence.get("executive_summary") or "").strip()
+        executive_summary = sanitize_news_narrative(news_intelligence.get("executive_summary"))
         if executive_summary:
-            lines.append(f"News summary: {executive_summary}")
+            lines.append(f"News summary:\n{executive_summary}")
         for impact in list(news_intelligence.get("portfolio_impacts", []) or [])[:3]:
             impact = dict(impact or {})
+            impact_summary = sanitize_news_narrative(impact.get("summary"))
             lines.append(
-                "News impact: "
-                f"{impact.get('symbol') or '-'} "
-                f"{impact.get('direction') or 'NEUTRAL'} "
-                f"confidence={_format_pct(impact.get('confidence'))} "
-                f"action={impact.get('risk_action') or 'NONE'} | "
-                f"{str(impact.get('summary') or '').strip()}"
+                "- "
+                f"{impact.get('symbol') or '-'}: "
+                f"{impact.get('direction') or 'NEUTRAL'}, "
+                f"confidence {_format_pct(impact.get('confidence'))}, "
+                f"risk action {impact.get('risk_action') or 'NONE'}. "
+                f"{impact_summary}"
             )
 
     if decision_brief:

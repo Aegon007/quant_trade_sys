@@ -165,7 +165,7 @@ class ReportingTests(unittest.TestCase):
                 "news_intelligence": {
                     "status": "READY",
                     "market_risk_level": "HIGH",
-                    "executive_summary": "高利率压制风险偏好，MSFT 公司事件偏正面。",
+                    "executive_summary": "| 标的 | 影响 |\n|---|---|\n| MSFT | 公司事件偏正面 |",
                     "llm": {"route_name": "llm", "model": "gpt-test"},
                     "portfolio_impacts": [
                         {
@@ -215,6 +215,8 @@ class ReportingTests(unittest.TestCase):
         self.assertIn("News intelligence:", text)
         self.assertIn("gpt-test", text)
         self.assertIn("MSFT", text)
+        self.assertNotIn("|---", text)
+        self.assertIn("- MSFT:", text)
         self.assertIn("LLM decision brief:", text)
         self.assertIn("gpt-brief", text)
 

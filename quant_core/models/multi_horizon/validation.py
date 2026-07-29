@@ -422,7 +422,48 @@ def initialization_quality_score(report, *, primary_horizon: int) -> float:
     )
 
 
-def select_initialization(candidate, scratch, *, primary_horizon: int) -> dict:
+def long_horizon_initialization_score(report, *, primary_horizon: int) -> float:
+    row = dict(
+        dict(report or {}).get("horizons", {}).get(str(int(primary_horizon)), {}) or {}
+    )
+
+    def value(key, default=0.0):
+        try:
+            parsed = float(row.get(key))
+        except (TypeError, ValueError):
+            return float(default)
+        return parsed if np.isfinite(parsed) else float(default)
+
+    rank_ic = min(max(value("rank_ic", -1.0), -1.0), 1.0)
+    top_market = min(max(value("top_k_excess_return", -1.0), -1.0), 1.0)
+    top_risk_free = min(max(value("top_k_risk_free_excess_return", -1.0), -1.0), 1.0)
+    directional = value("directional_accuracy", 0.0)
+    risk_free_directional = value("risk_free_directional_accuracy", 0.0)
+    brier = value("brier_score", 1.0)
+    risk_free_brier = value("risk_free_brier_score", 1.0)
+    return_error = min(max(value("median_return_mae", 2.0), 0.0), 2.0)
+    return float(
+        1.5 * top_risk_free
+        + top_market
+        + rank_ic
+        + directional
+        + risk_free_directional
+        - brier
+        - risk_free_brier
+        - return_error
+    )
+
+
+def select_initialization(
+    candidate,
+    scratch,
+    *,
+    primary_horizon: int,
+    policy: str = "auto_composite",
+) -> dict:
+    policy = str(policy or "auto_composite").strip().lower()
+    if policy not in {"auto_long_horizon", "auto_composite", "force_scratch", "force_pretrained"}:
+        policy = "auto_composite"
     candidate_score = initialization_quality_score(
         candidate,
         primary_horizon=primary_horizon,
@@ -431,12 +472,36 @@ def select_initialization(candidate, scratch, *, primary_horizon: int) -> dict:
         scratch,
         primary_horizon=primary_horizon,
     )
-    initialization = "scratch" if scratch and scratch_score > candidate_score else "pretrained"
+    candidate_long_score = long_horizon_initialization_score(
+        candidate,
+        primary_horizon=primary_horizon,
+    )
+    scratch_long_score = long_horizon_initialization_score(
+        scratch,
+        primary_horizon=primary_horizon,
+    )
+    if policy == "force_scratch":
+        initialization = "scratch"
+    elif policy == "force_pretrained":
+        initialization = "pretrained"
+    elif policy == "auto_long_horizon":
+        initialization = "scratch" if scratch and scratch_long_score > candidate_long_score else "pretrained"
+    else:
+        initialization = "scratch" if scratch and scratch_score > candidate_score else "pretrained"
     return {
         "initialization": initialization,
-        "criterion": f"{int(primary_horizon)}d_composite_validation_quality",
+        "policy": policy,
+        "criterion": (
+            f"{int(primary_horizon)}d_long_horizon_trading_quality"
+            if policy == "auto_long_horizon"
+            else f"{int(primary_horizon)}d_composite_validation_quality"
+            if policy == "auto_composite"
+            else f"{policy}_manual_policy"
+        ),
         "candidate_score": candidate_score,
         "scratch_score": scratch_score,
+        "candidate_long_horizon_score": candidate_long_score,
+        "scratch_long_horizon_score": scratch_long_score,
     }
 
 
@@ -584,6 +649,7 @@ def walk_forward_validate_bundle(
     top_k: int = 3,
     max_folds: int = 3,
     compare_pretraining: bool = True,
+    initialization_policy: str = "auto_composite",
     asset_groups: Mapping[str, str] | None = None,
     progress_callback: Callable[[Mapping], None] | None = None,
 ) -> dict:
@@ -778,6 +844,7 @@ def walk_forward_validate_bundle(
         candidate,
         scratch,
         primary_horizon=primary_horizon,
+        policy=initialization_policy,
     )
     selected_initialization = selection["initialization"]
     gate_report = evaluate_promotion_gates(

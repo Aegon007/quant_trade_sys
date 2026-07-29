@@ -81,6 +81,8 @@ export default function Settings() {
   const notification = asDict(payload.notification_config);
   const registry = asDict(payload.model_registry);
   const [config, setConfig] = useState<Dict>({});
+  const [modelDraft, setModelDraft] = useState<Dict>({});
+  const [modelSaveResult, setModelSaveResult] = useState("");
   const [saving, setSaving] = useState(false);
   const [saveResult, setSaveResult] = useState("");
   const [testingRoute, setTestingRoute] = useState("");
@@ -90,11 +92,16 @@ export default function Settings() {
     setConfig(notification);
   }, [data?.generated_at]);
 
+  useEffect(() => {
+    setModelDraft(modelConfig);
+  }, [data?.generated_at]);
+
   const slack = asDict(config.slack);
   const email = asDict(config.email);
   const llm = asDict(config.llm);
   const slm = asDict(config.local_slm);
   const alerts = asDict(config.alert_settings);
+  const modelTraining = asDict(modelDraft.training);
   const remoteTestResult = text(llmTestResults.remote, "");
   const localTestResult = text(llmTestResults.local, "");
   const remoteStatus = remoteTestResult.startsWith("SUCCESS")
@@ -117,6 +124,16 @@ export default function Settings() {
       ...current,
       [section]: {
         ...asDict(current[section]),
+        [key]: value,
+      },
+    }));
+  }
+
+  function updateModelTraining(key: string, value: unknown) {
+    setModelDraft((current) => ({
+      ...current,
+      training: {
+        ...asDict(current.training),
         [key]: value,
       },
     }));
@@ -156,6 +173,17 @@ export default function Settings() {
       setSaveResult((exc as Error).message);
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function saveModelDraft() {
+    setModelSaveResult("");
+    try {
+      await postApi("/api/actions/save-multi-horizon-config", modelDraft);
+      setModelSaveResult("Saved. Retrain the model for this policy to take effect.");
+      await reload();
+    } catch (exc) {
+      setModelSaveResult((exc as Error).message);
     }
   }
 
@@ -395,6 +423,37 @@ export default function Settings() {
         value={eventSourceConfig}
         onSave={async (value) => { await postApi("/api/actions/save-event-sources", value); reload(); }}
       />
+      <Panel
+        title="Model training policy"
+        subtitle="Controls whether final training uses pretrained weights or scratch initialization after walk-forward comparison."
+      >
+        <div className="settings-form-grid">
+          <Field label="Initialization policy" hint="auto_long_horizon prioritizes 252d Top 3, Rank IC, and BIL/SPY outperformance.">
+            <select
+              value={text(modelTraining.initialization_policy, "auto_long_horizon")}
+              onChange={(event) => updateModelTraining("initialization_policy", event.target.value)}
+            >
+              <option value="auto_long_horizon">Auto: long-horizon trading quality</option>
+              <option value="auto_composite">Auto: composite validation quality</option>
+              <option value="force_scratch">Force scratch</option>
+              <option value="force_pretrained">Force pretrained</option>
+            </select>
+          </Field>
+          <Field label="Final epochs">
+            <input type="number" min="1" value={text(modelTraining.epochs, "30")} onChange={(event) => updateModelTraining("epochs", Number(event.target.value))} />
+          </Field>
+          <Field label="Walk-forward epochs">
+            <input type="number" min="1" value={text(modelTraining.walk_forward_epochs, "5")} onChange={(event) => updateModelTraining("walk_forward_epochs", Number(event.target.value))} />
+          </Field>
+          <Field label="Pretraining epochs">
+            <input type="number" min="1" value={text(modelTraining.pretraining_epochs, "20")} onChange={(event) => updateModelTraining("pretraining_epochs", Number(event.target.value))} />
+          </Field>
+        </div>
+        <div className="editor-footer">
+          <button onClick={saveModelDraft}>Save model training policy</button>
+          <span>{modelSaveResult || "Use force_scratch for a clean test when pretraining hurts 252d validation."}</span>
+        </div>
+      </Panel>
       <div className="split-layout editors">
         <JsonEditor
           title="Multi-horizon model"

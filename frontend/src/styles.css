@@ -537,6 +537,69 @@ nav button span { font-size: 0.68rem; opacity: .7; }
   color: var(--muted);
   font-size: .78rem;
 }
+.news-brief {
+  margin-bottom: 14px;
+  padding: 16px 18px;
+  border-left: 4px solid var(--forest);
+  background: color-mix(in srgb, var(--forest) 5%, transparent);
+}
+.news-brief.negative { border-left-color: var(--red); background: color-mix(in srgb, var(--red) 6%, transparent); }
+.news-brief p {
+  max-width: 1080px;
+  margin: 0 0 8px;
+  line-height: 1.65;
+}
+.news-brief p:last-of-type { margin-bottom: 0; }
+.news-brief > div {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-top: 12px;
+  color: var(--muted);
+  font-size: .78rem;
+}
+.news-impact-list {
+  display: grid;
+  gap: 8px;
+}
+.news-impact-row {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fffef9;
+}
+.news-impact-row summary {
+  display: grid;
+  grid-template-columns: 72px auto auto auto auto minmax(220px, 1fr);
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  cursor: pointer;
+  list-style: none;
+}
+.news-impact-row summary::-webkit-details-marker { display: none; }
+.news-impact-row summary b { font-weight: 950; letter-spacing: .03em; }
+.news-impact-row summary span { color: var(--muted); font-size: .78rem; }
+.news-impact-row summary em {
+  min-width: 0;
+  color: var(--ink);
+  font-style: normal;
+  line-height: 1.35;
+}
+.news-impact-row[open] summary { border-bottom: 1px dashed var(--line); background: #f8f5e9; }
+.news-evidence-list {
+  padding: 10px 14px 14px;
+}
+.news-evidence-list p {
+  display: grid;
+  grid-template-columns: 120px minmax(0, 1fr);
+  gap: 12px;
+  margin: 7px 0;
+  color: var(--muted);
+  font-size: .82rem;
+  line-height: 1.45;
+}
+.news-evidence-list p b { color: var(--ink); }
 
 @media (max-width: 1100px) {
   .app-shell { grid-template-columns: 200px minmax(0, 1fr); }
@@ -547,6 +610,8 @@ nav button span { font-size: 0.68rem; opacity: .7; }
   .three-layout { grid-template-columns: 1fr; }
   .settings-grid { grid-template-columns: 1fr; }
   .settings-toggle-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .news-impact-row summary { grid-template-columns: 64px auto auto minmax(0, 1fr); }
+  .news-impact-row summary span:nth-of-type(n+3) { display: none; }
 }
 
 @media (max-width: 820px) {

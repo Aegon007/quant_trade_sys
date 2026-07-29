@@ -83,6 +83,36 @@ class NewsIntelligenceTests(unittest.TestCase):
         self.assertTrue(msft["evidence"])
         self.assertEqual(msft["direction"], "MIXED")
 
+    def test_build_news_intelligence_sanitizes_markdown_table_summary(self):
+        event = self.MarketEvent(
+            event_id="news-1",
+            title="Microsoft raises cloud outlook",
+            event_type="earnings",
+            severity="high",
+            symbols=["MSFT"],
+            source="Company IR",
+            verified=True,
+            sentiment="positive",
+            confidence_score=0.9,
+        )
+
+        snapshot = self.module.build_news_intelligence(
+            events=[event],
+            portfolio_symbols=["MSFT"],
+            candidate_symbols=[],
+            analyst_cache={},
+            notification_config={"llm": {"enabled": True}},
+            llm_runner=lambda **kwargs: (
+                True,
+                "| 标的 | 影响 |\n|---|---|\n| MSFT | 云业务偏正面 |",
+                {"route_name": "llm", "model": "test-model"},
+            ),
+        )
+
+        self.assertNotIn("|---", snapshot["executive_summary"])
+        self.assertIn("标的: MSFT", snapshot["executive_summary"])
+        self.assertIn("影响: 云业务偏正面", snapshot["executive_summary"])
+
     def test_build_news_intelligence_falls_back_without_llm(self):
         event = self.MarketEvent(
             event_id="risk-1",

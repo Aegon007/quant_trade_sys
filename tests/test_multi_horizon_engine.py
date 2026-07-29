@@ -714,6 +714,74 @@ class MultiHorizonValidationTests(unittest.TestCase):
         self.assertEqual(selection["initialization"], "pretrained")
         self.assertGreater(selection["candidate_score"], selection["scratch_score"])
 
+    def test_initialization_selection_can_prioritize_long_horizon_trading_quality(self):
+        from quant_core.models.multi_horizon.validation import select_initialization
+
+        candidate = {
+            "horizons": {
+                "252": {
+                    "rank_ic": -0.19,
+                    "top_k_excess_return": 0.88,
+                    "top_k_risk_free_excess_return": 0.01,
+                    "directional_accuracy": 0.33,
+                    "risk_free_directional_accuracy": 0.36,
+                    "brier_score": 0.38,
+                    "risk_free_brier_score": 0.37,
+                    "median_return_mae": 0.70,
+                }
+            }
+        }
+        scratch = {
+            "horizons": {
+                "252": {
+                    "rank_ic": -0.05,
+                    "top_k_excess_return": 0.70,
+                    "top_k_risk_free_excess_return": 0.70,
+                    "directional_accuracy": 0.45,
+                    "risk_free_directional_accuracy": 0.46,
+                    "brier_score": 0.31,
+                    "risk_free_brier_score": 0.30,
+                    "median_return_mae": 0.40,
+                }
+            }
+        }
+
+        selection = select_initialization(
+            candidate,
+            scratch,
+            primary_horizon=252,
+            policy="auto_long_horizon",
+        )
+
+        self.assertEqual(selection["initialization"], "scratch")
+        self.assertEqual(selection["policy"], "auto_long_horizon")
+        self.assertGreater(
+            selection["scratch_long_horizon_score"],
+            selection["candidate_long_horizon_score"],
+        )
+
+    def test_initialization_selection_supports_force_policy(self):
+        from quant_core.models.multi_horizon.validation import select_initialization
+
+        candidate = {"horizons": {"252": {"top_k_risk_free_excess_return": 1.0}}}
+        scratch = {"horizons": {"252": {"top_k_risk_free_excess_return": -1.0}}}
+
+        forced_scratch = select_initialization(
+            candidate,
+            scratch,
+            primary_horizon=252,
+            policy="force_scratch",
+        )
+        forced_pretrained = select_initialization(
+            candidate,
+            scratch,
+            primary_horizon=252,
+            policy="force_pretrained",
+        )
+
+        self.assertEqual(forced_scratch["initialization"], "scratch")
+        self.assertEqual(forced_pretrained["initialization"], "pretrained")
+
     def test_unapproved_model_is_shadow_only_until_manual_promotion(self):
         from quant_core.models.multi_horizon.governance import (
             apply_production_gate,
@@ -950,6 +1018,12 @@ class MultiHorizonConfigTests(unittest.TestCase):
         self.assertEqual(config["risk_free_benchmark"], "SGOV")
         self.assertFalse(config["promotion"]["automatic"])
         self.assertFalse(config["traditional_ml_policy"]["production_enabled"])
+        self.assertEqual(config["training"]["initialization_policy"], "auto_long_horizon")
+
+        invalid = normalize_multi_horizon_config(
+            {"training": {"initialization_policy": "whatever"}}
+        )
+        self.assertEqual(invalid["training"]["initialization_policy"], "auto_long_horizon")
 
     def test_model_universe_prioritizes_owned_and_watched_symbols(self):
         from quant_core.models.multi_horizon.pipeline import build_model_universe

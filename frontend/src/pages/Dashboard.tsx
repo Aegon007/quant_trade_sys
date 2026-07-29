@@ -22,6 +22,37 @@ const actionColumns: DecisionColumn[] = [
   { label: "Target weight", render: (row) => text(modelDecision(row).target_weight_range_pct) },
 ];
 
+function readableNewsLines(value: unknown): string[] {
+  const lines = text(value, "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const cleaned: string[] = [];
+  let headers: string[] = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    const next = lines[index + 1] ?? "";
+    const cells = line.startsWith("|") ? line.replace(/^\||\|$/g, "").split("|").map((cell) => cell.trim()).filter(Boolean) : [];
+    const nextIsSeparator = /^\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?$/.test(next);
+    if (cells.length && nextIsSeparator) {
+      headers = cells;
+      index += 1;
+      continue;
+    }
+    if (/^\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?$/.test(line)) continue;
+    if (cells.length) {
+      if (headers.length === cells.length) {
+        cleaned.push(headers.map((header, cellIndex) => `${header}: ${cells[cellIndex]}`).join("；"));
+      } else {
+        cleaned.push(cells.join("；"));
+      }
+      continue;
+    }
+    cleaned.push(line.replace(/\|---|---\|/g, "").trim());
+  }
+  return cleaned.filter(Boolean);
+}
+
 export default function Dashboard() {
   const { data, error, loading, reload } = useSnapshot<Dict>("/api/dashboard");
   const payload = asDict(data?.payload);
@@ -110,38 +141,49 @@ export default function Dashboard() {
         title="Portfolio news intelligence"
         subtitle={`Evidence-backed summary · ${text(newsIntelligence.status, "NOT_READY")} · ${text(newsLlm.model, "structured only")}`}
       >
-        <div className={`notice ${text(newsIntelligence.market_risk_level, "").toUpperCase() === "HIGH" ? "negative" : ""}`}>
-          {text(newsIntelligence.executive_summary, "Run the nightly pipeline to build portfolio-aware news intelligence.")}
+        <div className={`news-brief ${text(newsIntelligence.market_risk_level, "").toUpperCase() === "HIGH" ? "negative" : ""}`}>
+          {readableNewsLines(newsIntelligence.executive_summary).length
+            ? readableNewsLines(newsIntelligence.executive_summary).map((line, index) => <p key={index}>{line}</p>)
+            : <p>Run the nightly pipeline to build portfolio-aware news intelligence.</p>}
+          <div>
+            <Status value={newsIntelligence.market_risk_level ?? "LOW"} />
+            <span>{text(newsSource.status, "UNKNOWN")} source</span>
+            <span>{text(newsLlm.route_name, "structured")} route</span>
+            <span>{text(newsIntelligence.generated_at, "-")}</span>
+          </div>
         </div>
-        <DecisionTable
-          rows={newsImpacts.slice(0, 6)}
-          columns={[
-            { label: "Symbol", className: "symbol-cell", render: (row) => text(row.symbol) },
-            { label: "Direction", render: (row) => <Status value={row.direction} /> },
-            { label: "Relevance", render: (row) => text(row.relevance_score) },
-            { label: "Confidence", render: (row) => formatPercent(row.confidence) },
-            { label: "Risk action", render: (row) => <Status value={row.risk_action} /> },
-            { label: "Evidence summary", render: (row) => text(row.summary) },
-          ]}
-          detail={(row) => (
-            <div className="decision-detail">
-              <div>
-                <h4>Source evidence</h4>
-                {asArray(row.evidence).map((item, index) => {
-                  const evidence = asDict(item);
-                  return <p key={index}><b>{text(evidence.source, "source")}</b><span>{text(evidence.title)}</span></p>;
-                })}
-              </div>
-              <div>
-                <h4>Provenance</h4>
-                <p><b>News source</b><span>{text(newsSource.status, "UNKNOWN")}</span></p>
-                <p><b>LLM route</b><span>{text(newsLlm.route_name, "structured")}</span></p>
-                <p><b>Generated</b><span>{text(newsIntelligence.generated_at)}</span></p>
-              </div>
-            </div>
-          )}
-          emptyText="No portfolio-relevant active news is available."
-        />
+        {newsImpacts.length ? (
+          <div className="news-impact-list">
+            {newsImpacts.slice(0, 5).map((item, index) => {
+              const row = asDict(item);
+              return (
+                <details key={`${text(row.symbol, "news")}-${index}`} className="news-impact-row">
+                  <summary>
+                    <b>{text(row.symbol)}</b>
+                    <Status value={row.direction} />
+                    <Status value={row.risk_action ?? "NONE"} />
+                    <span>Confidence {formatPercent(row.confidence)}</span>
+                    <span>Relevance {text(row.relevance_score)}</span>
+                    <em>{readableNewsLines(row.summary)[0] ?? text(row.summary)}</em>
+                  </summary>
+                  <div className="news-evidence-list">
+                    {asArray(row.evidence).map((entry, evidenceIndex) => {
+                      const evidence = asDict(entry);
+                      return (
+                        <p key={evidenceIndex}>
+                          <b>{text(evidence.source, "source")}</b>
+                          <span>{text(evidence.title)}</span>
+                        </p>
+                      );
+                    })}
+                  </div>
+                </details>
+              );
+            })}
+          </div>
+        ) : (
+          <div className="empty-state">No portfolio-relevant active news is available.</div>
+        )}
       </Panel>
 
       <div className="split-layout">

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Iterable, Mapping, Optional
@@ -13,10 +14,51 @@ from quant_core.llm import explainer
 DEFAULT_NEWS_INTELLIGENCE_FILE = qpaths.NEWS_INTELLIGENCE_FILE
 _NEGATIVE_SENTIMENTS = {"negative", "bearish", "risk_off"}
 _POSITIVE_SENTIMENTS = {"positive", "bullish", "risk_on"}
+_MARKDOWN_TABLE_SEPARATOR_RE = re.compile(r"^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$")
 
 
 def _symbol(value) -> str:
     return str(value or "").strip().upper()
+
+
+def _markdown_cells(line: str) -> list[str]:
+    stripped = line.strip()
+    if not stripped.startswith("|") or "|" not in stripped[1:]:
+        return []
+    return [cell.strip(" `*") for cell in stripped.strip("|").split("|")]
+
+
+def sanitize_news_narrative(value) -> str:
+    """Convert LLM markdown tables into chat/UI-friendly prose lines."""
+    raw_lines = str(value or "").splitlines()
+    cleaned = []
+    headers: list[str] = []
+    index = 0
+    while index < len(raw_lines):
+        line = raw_lines[index].strip()
+        if not line:
+            index += 1
+            continue
+        next_line = raw_lines[index + 1].strip() if index + 1 < len(raw_lines) else ""
+        cells = _markdown_cells(line)
+        if cells and _MARKDOWN_TABLE_SEPARATOR_RE.match(next_line):
+            headers = cells
+            index += 2
+            continue
+        if _MARKDOWN_TABLE_SEPARATOR_RE.match(line):
+            index += 1
+            continue
+        if cells:
+            if headers and len(headers) == len(cells):
+                pairs = [f"{header}: {cell}" for header, cell in zip(headers, cells) if cell]
+                cleaned.append("；".join(pairs))
+            else:
+                cleaned.append("；".join(cell for cell in cells if cell))
+            index += 1
+            continue
+        cleaned.append(line.replace("|---", "").replace("---|", "").strip())
+        index += 1
+    return "\n".join(line for line in cleaned if line).strip()
 
 
 def _confidence(event) -> float:
@@ -214,13 +256,14 @@ def build_news_intelligence(
         news_payload=structured_payload,
         notification_config=notification_config,
     )
-    fallback_summary = "；".join(row["summary"] for row in impacts[:3]) or summary_payload["overview"]
+    fallback_summary = sanitize_news_narrative("；".join(row["summary"] for row in impacts[:3]) or summary_payload["overview"])
+    executive_summary = sanitize_news_narrative(text) if ok else fallback_summary
     return {
         "schema_version": 1,
         "generated_at": now.isoformat(),
         "status": "READY" if ok else "STRUCTURED_ONLY",
         "market_risk_level": structured_payload["market_risk_level"],
-        "executive_summary": str(text or "").strip() if ok else fallback_summary,
+        "executive_summary": executive_summary,
         "portfolio_impacts": impacts,
         "analyst_context": analyst_context,
         "structured_summary": summary_payload,

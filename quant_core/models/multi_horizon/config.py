@@ -52,6 +52,7 @@ DEFAULT_CONFIG = {
         "pretraining_early_stopping_min_delta": 1e-4,
         "walk_forward_epochs": 5,
         "retrain_interval_days": 30,
+        "initialization_policy": "auto_long_horizon",
     },
     "artifacts": {
         "checkpoint_path": qpaths.MULTI_HORIZON_CHECKPOINT_FILE,
@@ -114,6 +115,10 @@ def normalize_multi_horizon_config(config: Mapping | None = None) -> dict:
         float(training.get("pretraining_early_stopping_min_delta", 1e-4)),
         0.0,
     )
+    policy = str(training.get("initialization_policy") or "auto_long_horizon").strip().lower()
+    if policy not in {"auto_long_horizon", "auto_composite", "force_scratch", "force_pretrained"}:
+        policy = "auto_long_horizon"
+    training["initialization_policy"] = policy
     normalized["promotion"]["automatic"] = False
     # Traditional models are offline controls only. Production admission
     # requires a future explicit governance change backed by ablation results.

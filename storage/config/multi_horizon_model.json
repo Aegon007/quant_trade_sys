@@ -60,7 +60,8 @@
     "pretraining_early_stopping_patience": 4,
     "pretraining_early_stopping_min_delta": 0.0001,
     "walk_forward_epochs": 5,
-    "retrain_interval_days": 30
+    "retrain_interval_days": 30,
+    "initialization_policy": "auto_long_horizon"
   },
   "artifacts": {
     "checkpoint_path": "trained_models/finance_multi_asset_transformer.pt",

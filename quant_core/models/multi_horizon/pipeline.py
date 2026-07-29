@@ -550,6 +550,7 @@ def run_multi_horizon_job(
             top_k=3,
             max_folds=3,
             compare_pretraining=True,
+            initialization_policy=str(training.get("initialization_policy", "auto_long_horizon")),
             asset_groups={
                 symbol: str(universe_report["asset_groups"].get(symbol) or "satellite")
                 for symbol in usable_symbols

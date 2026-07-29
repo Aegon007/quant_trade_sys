@@ -409,6 +409,19 @@ class LLMExplainerTests(unittest.TestCase):
         self.assertEqual(text, "组合新闻解释完成")
         self.assertEqual(meta["route_name"], "llm")
 
+    def test_portfolio_news_prompt_forbids_markdown_tables(self):
+        messages = self.module.build_portfolio_news_messages(
+            news_payload={
+                "overview": "两条重要事件。",
+                "portfolio_impacts": [{"symbol": "MSFT", "direction": "POSITIVE"}],
+                "analyst_context": {"records": []},
+            }
+        )
+
+        prompt = messages[-1]["content"]
+        self.assertIn("不要使用 markdown 表格", prompt)
+        self.assertIn("适合 Slack 聊天窗口阅读", prompt)
+
     def test_summarize_trading_system_prefers_remote_llm(self):
         def fake_urlopen(request, timeout=0):
             payload = {"choices": [{"message": {"content": "全局交易摘要完成"}}]}
