@@ -124,7 +124,31 @@ class ProjectFilesTests(unittest.TestCase):
             (ROOT / "config" / "strategies.json").read_text(encoding="utf-8")
         )
         self.assertNotIn("deep_tcn", {row.get("model_id") for row in model_registry.get("models", [])})
+        self.assertNotIn("finance_multi_asset_transformer", {row.get("model_id") for row in model_registry.get("models", [])})
         self.assertNotIn("deep_tcn", {row.get("id") for row in strategy_config.get("strategies", [])})
+
+    def test_retired_legacy_benchmark_artifacts_are_absent(self):
+        retired_files = [
+            ROOT / "storage" / "config" / "multi_horizon_model.json",
+            ROOT / "model_artifacts" / "bootstrap" / "finance_multi_asset_transformer.pt",
+            ROOT / "model_artifacts" / "bootstrap" / "manifest.json",
+        ]
+        for path in retired_files:
+            self.assertFalse(path.exists(), f"retired legacy benchmark artifact still exists: {path}")
+
+        server = (ROOT / "jobs" / "api_server.py").read_text(encoding="utf-8")
+        frontend = "\n".join(
+            path.read_text(encoding="utf-8")
+            for path in [
+                ROOT / "frontend" / "src" / "pages" / "Operations.tsx",
+                ROOT / "frontend" / "src" / "pages" / "Settings.tsx",
+                ROOT / "frontend" / "src" / "pages" / "ResearchModels.tsx",
+            ]
+        )
+        self.assertNotIn("/api/actions/train-multi-horizon", server)
+        self.assertNotIn("/api/actions/promote-multi-horizon", server)
+        self.assertNotIn("/api/actions/save-multi-horizon-config", server)
+        self.assertNotIn("Train legacy benchmark", frontend)
 
         runtime_paths = [
             ROOT / "quant_core",

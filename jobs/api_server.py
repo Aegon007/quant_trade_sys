@@ -14,7 +14,6 @@ from typing import Callable
 from quant_core.api import actions as api_actions
 from quant_core.api import snapshot_loader as loader
 from quant_core.diagnostics import build_diagnostics_bundle
-from quant_core.models.multi_horizon.export import build_training_analysis_bundle, build_training_analysis_report_html
 
 
 API_TITLE = "Quant Trade System Local API"
@@ -164,27 +163,6 @@ def create_app():
     def settings():
         return loader.load_settings_response()
 
-    @app.get("/api/downloads/training-analysis-bundle")
-    def training_analysis_bundle():
-        from fastapi.responses import StreamingResponse
-
-        filename = f"quant-training-analysis-{loader.now_iso()[:10]}.zip"
-        return StreamingResponse(
-            io.BytesIO(build_training_analysis_bundle()),
-            media_type="application/zip",
-            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
-        )
-
-    @app.get("/api/downloads/training-analysis-report")
-    def training_analysis_report():
-        from fastapi.responses import HTMLResponse
-
-        filename = f"quant-training-analysis-{loader.now_iso()[:10]}.html"
-        return HTMLResponse(
-            build_training_analysis_report_html(),
-            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
-        )
-
     @app.get("/api/downloads/diagnostics-bundle")
     def diagnostics_bundle():
         from fastapi.responses import StreamingResponse
@@ -222,24 +200,6 @@ def create_app():
             run_async=True,
         )
 
-    @app.post("/api/actions/train-multi-horizon")
-    def train_multi_horizon():
-        return api_actions.run_with_job_status(
-            "manual-multi-horizon-training",
-            api_actions.train_multi_horizon_model,
-            run_async=True,
-        )
-
-    @app.post("/api/actions/promote-multi-horizon")
-    def promote_multi_horizon(payload: dict):
-        return api_actions.run_with_job_status(
-            "manual-multi-horizon-promotion",
-            lambda: api_actions.promote_multi_horizon_model(
-                allow_initial_override=bool(dict(payload or {}).get("allow_initial_override", False))
-            ),
-            run_async=False,
-        )
-
     @app.post("/api/actions/test-llm")
     def test_llm(payload: dict):
         return api_actions.run_with_job_status(
@@ -269,14 +229,6 @@ def create_app():
         return api_actions.run_with_job_status(
             "llm-explain-risk",
             api_actions.explain_risk,
-            run_async=False,
-        )
-
-    @app.post("/api/actions/explain-training-analysis")
-    def explain_training_analysis():
-        return api_actions.run_with_job_status(
-            "llm-explain-training-analysis",
-            api_actions.explain_training_analysis,
             run_async=False,
         )
 
@@ -317,14 +269,6 @@ def create_app():
         return api_actions.run_with_job_status(
             "settings-notification-config",
             lambda: api_actions.save_notification_settings(dict(payload or {})),
-            run_async=False,
-        )
-
-    @app.post("/api/actions/save-multi-horizon-config")
-    def save_multi_horizon_config(payload: dict):
-        return api_actions.run_with_job_status(
-            "settings-multi-horizon-config",
-            lambda: api_actions.save_multi_horizon_settings(dict(payload or {})),
             run_async=False,
         )
 

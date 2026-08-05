@@ -65,6 +65,10 @@ DEFAULT_API_READY_TIMEOUT_SECONDS = 30.0
 DEFAULT_API_READY_POLL_SECONDS = 0.2
 
 
+def _job_status_now(value):
+    return value if isinstance(value, datetime) else None
+
+
 @dataclass(frozen=True)
 class ServiceSpec:
     name: str
@@ -287,16 +291,71 @@ def maybe_run_nightly_alerts(
     should_run: Callable[..., bool] = should_run_nightly_consensus_update,
     runner: Callable[..., object] = run_nightly_alerts,
     logger: Optional[logging.Logger] = None,
+    job_status_path: str = job_registry.DEFAULT_JOB_STATUS_FILE,
 ) -> bool:
     logger = logger or logging.getLogger(__name__)
     now = now or datetime.now()
     if isinstance(now, datetime) and not nr.is_us_market_nightly_cycle_trading_day(now):
         logger.info("Nightly trading alerts skipped because the nightly cycle day is not a US market trading day.")
+        job_registry.update_job_status(
+            "scheduled-nightly-run",
+            state="idle",
+            detail="skipped: non-trading nightly cycle day",
+            metadata={"stage": "idle", "progress_pct": 0},
+            path=job_status_path,
+            now=_job_status_now(now),
+        )
         return False
     if not should_run(now=now):
+        job_registry.update_job_status(
+            "scheduled-nightly-run",
+            state="idle",
+            detail="not due",
+            metadata={"stage": "idle", "progress_pct": 0},
+            path=job_status_path,
+            now=_job_status_now(now),
+        )
         return False
     logger.info("Nightly alerts are due; running scheduled job.")
-    runner(force=False, dry_run=False, now=now)
+    job_registry.update_job_status(
+        "scheduled-nightly-run",
+        state="running",
+        detail="scheduled nightly pipeline running",
+        metadata={"stage": "running", "progress_pct": 5},
+        path=job_status_path,
+        now=_job_status_now(now),
+    )
+    try:
+        result = runner(force=False, dry_run=False, now=now)
+    except Exception:
+        logger.exception("Scheduled nightly run failed.")
+        job_registry.update_job_status(
+            "scheduled-nightly-run",
+            state="failed",
+            detail="scheduled nightly pipeline failed; check terminal logs",
+            metadata={"stage": "failed"},
+            path=job_status_path,
+            now=_job_status_now(now),
+        )
+        raise
+    result_payload = dict(result or {}) if isinstance(result, dict) else {"result": str(result)}
+    trade_plan = dict(result_payload.get("trade_plan", {}) or {})
+    job_registry.update_job_status(
+        "scheduled-nightly-run",
+        state="completed",
+        detail="scheduled nightly pipeline completed",
+        metadata={
+            "stage": "completed",
+            "progress_pct": 100,
+            "result_summary": {
+                "decision": trade_plan.get("decision"),
+                "action_count": trade_plan.get("action_count"),
+                "generated_at": result_payload.get("generated_at"),
+            },
+        },
+        path=job_status_path,
+        now=_job_status_now(now),
+    )
     return True
 
 
@@ -609,6 +668,7 @@ def maybe_run_market_refresh(
     intraday_event_alert_state_path: str = im.DEFAULT_INTRADAY_EVENT_ALERT_STATE_FILE,
     environ=None,
     logger: Optional[logging.Logger] = None,
+    job_status_path: str = job_registry.DEFAULT_JOB_STATUS_FILE,
 ) -> bool:
     logger = logger or logging.getLogger(__name__)
     now = now or datetime.now()
@@ -616,6 +676,14 @@ def maybe_run_market_refresh(
     is_market_session = nr.is_us_market_session(now) if isinstance(now, datetime) else False
     if not is_trading_day:
         logger.info("Market cache refresh skipped on a non-trading day; weekend research scheduler remains active.")
+        job_registry.update_job_status(
+            "scheduled-market-refresh",
+            state="idle",
+            detail="skipped: non-trading day",
+            metadata={"stage": "idle", "progress_pct": 0},
+            path=job_status_path,
+            now=_job_status_now(now),
+        )
         return False
     data = loader()
     before_data = copy.deepcopy(data)
@@ -626,7 +694,23 @@ def maybe_run_market_refresh(
         force=False,
     )
     if not refreshed:
+        job_registry.update_job_status(
+            "scheduled-market-refresh",
+            state="idle",
+            detail="not due; cache still fresh",
+            metadata={"stage": "idle", "progress_pct": 0},
+            path=job_status_path,
+            now=_job_status_now(now),
+        )
         return False
+    job_registry.update_job_status(
+        "scheduled-market-refresh",
+        state="running",
+        detail="scheduled market refresh running",
+        metadata={"stage": "running", "progress_pct": 30},
+        path=job_status_path,
+        now=_job_status_now(now),
+    )
     saver(refreshed_data)
     try:
         data_health_snapshot = dhealth.build_data_health_snapshot(
@@ -921,6 +1005,26 @@ def maybe_run_market_refresh(
     else:
         logger.info("Hourly market summary skipped because no delivery channel is enabled.")
     logger.info("Market cache refresh completed.")
+    refreshed_symbols = {
+        str(item.get("symbol", "")).strip().upper()
+        for item in (refreshed_data.get("holdings", []) + refreshed_data.get("watchlist", []))
+        if item.get("symbol")
+    }
+    job_registry.update_job_status(
+        "scheduled-market-refresh",
+        state="completed",
+        detail="scheduled market refresh completed",
+        metadata={
+            "stage": "completed",
+            "progress_pct": 100,
+            "result_summary": {
+                "symbol_count": len(refreshed_symbols),
+                "prices_last_updated": refreshed_data.get("prices_last_updated"),
+            },
+        },
+        path=job_status_path,
+        now=_job_status_now(now),
+    )
     return True
 
 

@@ -75,7 +75,6 @@ export default function Settings() {
   const schedule = asDict(payload.runtime_schedule);
   const foundationConfig = asDict(payload.foundation_model_config);
   const financialsConfig = asDict(payload.financials_config);
-  const modelConfig = asDict(payload.multi_horizon_config);
   const coreEtfUniverse = asDict(payload.core_etf_universe);
   const eventSourceConfig = asDict(payload.event_source_config);
   const eventSourceStatus = asDict(payload.event_source_status);
@@ -83,8 +82,6 @@ export default function Settings() {
   const notification = asDict(payload.notification_config);
   const registry = asDict(payload.model_registry);
   const [config, setConfig] = useState<Dict>({});
-  const [modelDraft, setModelDraft] = useState<Dict>({});
-  const [modelSaveResult, setModelSaveResult] = useState("");
   const [saving, setSaving] = useState(false);
   const [saveResult, setSaveResult] = useState("");
   const [testingRoute, setTestingRoute] = useState("");
@@ -94,16 +91,11 @@ export default function Settings() {
     setConfig(notification);
   }, [data?.generated_at]);
 
-  useEffect(() => {
-    setModelDraft(modelConfig);
-  }, [data?.generated_at]);
-
   const slack = asDict(config.slack);
   const email = asDict(config.email);
   const llm = asDict(config.llm);
   const slm = asDict(config.local_slm);
   const alerts = asDict(config.alert_settings);
-  const modelTraining = asDict(modelDraft.training);
   const remoteTestResult = text(llmTestResults.remote, "");
   const localTestResult = text(llmTestResults.local, "");
   const remoteStatus = remoteTestResult.startsWith("SUCCESS")
@@ -126,16 +118,6 @@ export default function Settings() {
       ...current,
       [section]: {
         ...asDict(current[section]),
-        [key]: value,
-      },
-    }));
-  }
-
-  function updateModelTraining(key: string, value: unknown) {
-    setModelDraft((current) => ({
-      ...current,
-      training: {
-        ...asDict(current.training),
         [key]: value,
       },
     }));
@@ -175,17 +157,6 @@ export default function Settings() {
       setSaveResult((exc as Error).message);
     } finally {
       setSaving(false);
-    }
-  }
-
-  async function saveModelDraft() {
-    setModelSaveResult("");
-    try {
-      await postApi("/api/actions/save-multi-horizon-config", modelDraft);
-      setModelSaveResult("Saved. Retrain the model for this policy to take effect.");
-      await reload();
-    } catch (exc) {
-      setModelSaveResult((exc as Error).message);
     }
   }
 
@@ -437,46 +408,7 @@ export default function Settings() {
         value={financialsConfig}
         onSave={async (value) => { await postApi("/api/actions/save-financials-config", value); reload(); }}
       />
-      <Panel
-        title="Legacy model training policy"
-        subtitle="Benchmark-only legacy neural model controls. The foundation engine above is the primary product direction."
-      >
-        <div className="settings-form-grid">
-          <Field label="Initialization policy" hint="auto_long_horizon prioritizes 252d Top 3, Rank IC, and BIL/SPY outperformance.">
-            <select
-              value={text(modelTraining.initialization_policy, "auto_long_horizon")}
-              onChange={(event) => updateModelTraining("initialization_policy", event.target.value)}
-            >
-              <option value="auto_long_horizon">Auto: long-horizon trading quality</option>
-              <option value="auto_composite">Auto: composite validation quality</option>
-              <option value="force_scratch">Force scratch</option>
-              <option value="force_pretrained">Force pretrained</option>
-            </select>
-          </Field>
-          <Field label="Final epochs">
-            <input type="number" min="1" value={text(modelTraining.epochs, "30")} onChange={(event) => updateModelTraining("epochs", Number(event.target.value))} />
-          </Field>
-          <Field label="Walk-forward epochs">
-            <input type="number" min="1" value={text(modelTraining.walk_forward_epochs, "5")} onChange={(event) => updateModelTraining("walk_forward_epochs", Number(event.target.value))} />
-          </Field>
-          <Field label="Pretraining epochs">
-            <input type="number" min="1" value={text(modelTraining.pretraining_epochs, "20")} onChange={(event) => updateModelTraining("pretraining_epochs", Number(event.target.value))} />
-          </Field>
-        </div>
-        <div className="editor-footer">
-          <button onClick={saveModelDraft}>Save model training policy</button>
-          <span>{modelSaveResult || "Use force_scratch for a clean test when pretraining hurts 252d validation."}</span>
-        </div>
-      </Panel>
-      <div className="split-layout editors">
-        <JsonEditor
-          title="Multi-horizon model"
-          subtitle="Legacy benchmark config. Keep only for regression tests or comparison against the foundation engine."
-          value={modelConfig}
-          onSave={async (value) => { await postApi("/api/actions/save-multi-horizon-config", value); reload(); }}
-        />
-      </div>
-      <Panel title="Model roles" subtitle="Foundation Quant Engine is the default decision engine. Legacy models remain disabled unless they add verified incremental value.">
+      <Panel title="Model roles" subtitle="Foundation Quant Engine is the only registered decision engine. Old benchmark training controls have been removed.">
         <DecisionTable rows={asArray(registry.models)} columns={[
           { label: "Model", render: (row) => text(row.display_name ?? row.model_id) },
           { label: "Role", render: (row) => text(row.role) },

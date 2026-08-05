@@ -8,9 +8,7 @@ the frontend layer.
 from __future__ import annotations
 
 import traceback
-import shutil
 from datetime import datetime
-from pathlib import Path
 from threading import Thread
 from typing import Callable, Mapping, Optional
 
@@ -32,9 +30,6 @@ from quant_core.llm import explainer as llm_explainer
 from quant_core.llm import decision_brief
 from quant_core.fundamentals import financials as financials_config
 from quant_core.models.foundation import config as foundation_model_config
-from quant_core.models.multi_horizon import config as multi_horizon_config
-from quant_core.models.multi_horizon import governance as multi_horizon_governance
-from quant_core.models.multi_horizon import snapshot as multi_horizon_snapshot
 from quant_core.portfolio import actions as portfolio_actions
 from quant_core.snapshots import system_snapshot
 
@@ -228,61 +223,6 @@ def run_weekend_research_once() -> dict:
     return result if isinstance(result, dict) else {"message": "weekend research completed", "result": result}
 
 
-def train_multi_horizon_model() -> dict:
-    from quant_core.models.multi_horizon.pipeline import run_multi_horizon_job
-
-    result = run_multi_horizon_job(
-        train=True,
-        progress_callback=build_job_progress_callback("manual-multi-horizon-training"),
-    )
-    if not isinstance(result, dict):
-        return {"message": "multi-horizon training completed", "result": result}
-    if result.get("status") == "READY":
-        multi_horizon_governance.append_prediction_journal(result)
-    governance = multi_horizon_governance.refresh_model_governance(result)
-    gated = multi_horizon_governance.apply_production_gate(result, governance)
-    multi_horizon_snapshot.save_multi_horizon_snapshot(gated)
-    return gated
-
-
-def promote_multi_horizon_model(*, allow_initial_override: bool = False) -> dict:
-    snapshot = multi_horizon_snapshot.load_multi_horizon_snapshot()
-    governance = multi_horizon_governance.load_model_governance_snapshot()
-    config = multi_horizon_config.load_multi_horizon_config()
-    artifacts = dict(config.get("artifacts", {}) or {})
-    def artifact_path(value) -> Path:
-        path = Path(str(value))
-        return path if path.is_absolute() else qpaths.PROJECT_ROOT / path
-
-    candidate_path = artifact_path(artifacts["checkpoint_path"])
-    production_path = artifact_path(
-        artifacts.get("production_checkpoint_path") or qpaths.MULTI_HORIZON_PRODUCTION_CHECKPOINT_FILE
-    )
-    if not candidate_path.exists():
-        raise ValueError("Candidate model checkpoint is missing; train the model before deployment.")
-    production_path.parent.mkdir(parents=True, exist_ok=True)
-    temporary_production_path = production_path.with_suffix(production_path.suffix + ".pending")
-    shutil.copy2(candidate_path, temporary_production_path)
-    try:
-        promoted = multi_horizon_governance.approve_model_for_production(
-            snapshot,
-            governance,
-            allow_initial_override=allow_initial_override,
-        )
-        temporary_production_path.replace(production_path)
-    finally:
-        temporary_production_path.unlink(missing_ok=True)
-    gated = multi_horizon_governance.apply_production_gate(snapshot, promoted)
-    multi_horizon_snapshot.save_multi_horizon_snapshot(gated)
-    return {
-        "message": "multi-horizon model promoted to production",
-        "model_version": promoted.get("approved_model_version"),
-        "approval_mode": promoted.get("approval_mode"),
-        "production_checkpoint_path": str(production_path),
-        "governance": promoted,
-    }
-
-
 def test_llm_settings(*, route: str) -> dict:
     config = notification_config.apply_environment_overrides(
         notification_config.load_notification_config()
@@ -364,32 +304,6 @@ def explain_risk() -> dict:
     ok, text, meta = llm_explainer.explain_portfolio_risk(
         risk_payload=dict(risk_response.get("payload", {}) or {}),
         news_intelligence=news_intelligence,
-        notification_config=_llm_config(),
-    )
-    return {"ok": ok, "text": text, "meta": meta}
-
-
-def explain_training_analysis() -> dict:
-    snapshot, _ = snapshot_loader.safe_read_json(qpaths.MULTI_HORIZON_SNAPSHOT_FILE)
-    validation, _ = snapshot_loader.safe_read_json(qpaths.MULTI_HORIZON_VALIDATION_FILE)
-    governance, _ = snapshot_loader.safe_read_json(qpaths.MULTI_HORIZON_GOVERNANCE_FILE)
-    snapshot = snapshot if isinstance(snapshot, dict) else {}
-    validation = validation if isinstance(validation, dict) else {}
-    governance = governance if isinstance(governance, dict) else {}
-    if "promotion_blockers" not in governance:
-        governance["promotion_blockers"] = multi_horizon_governance.promotion_blockers(validation)
-    payload = {
-        "snapshot": {
-            "status": snapshot.get("status"),
-            "model": dict(snapshot.get("model", {}) or {}),
-            "summary": dict(snapshot.get("summary", {}) or {}),
-        },
-        "validation": validation,
-        "governance": governance,
-        "promotion_blockers": list(governance.get("promotion_blockers", []) or []),
-    }
-    ok, text, meta = llm_explainer.explain_training_analysis(
-        training_payload=payload,
         notification_config=_llm_config(),
     )
     return {"ok": ok, "text": text, "meta": meta}
@@ -506,15 +420,6 @@ def save_notification_settings(config: Mapping) -> dict:
     return {
         "message": "notification config saved",
         "notification_config": snapshot_loader._sanitize_notification_config(saved),
-    }
-
-
-def save_multi_horizon_settings(config: Mapping) -> dict:
-    path = multi_horizon_config.save_multi_horizon_config(config)
-    return {
-        "message": "multi-horizon model config saved",
-        "path": path,
-        "multi_horizon_config": multi_horizon_config.load_multi_horizon_config(path=path),
     }
 
 

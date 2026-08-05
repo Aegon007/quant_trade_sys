@@ -1194,7 +1194,7 @@ class MultiHorizonConfigTests(unittest.TestCase):
         self.assertEqual(events[-1]["stage"], "not_ready")
         self.assertEqual(events[-1]["progress_pct"], 100)
 
-    def test_default_registry_uses_foundation_engine_and_legacy_benchmark(self):
+    def test_default_registry_uses_foundation_engine_only(self):
         from quant_core.models.registry import default_model_registry
 
         registry = default_model_registry()
@@ -1202,9 +1202,7 @@ class MultiHorizonConfigTests(unittest.TestCase):
 
         self.assertTrue(by_id["foundation_quant_engine"]["is_default"])
         self.assertEqual(by_id["foundation_quant_engine"]["role"], "primary_quant_decision")
-        self.assertFalse(by_id["finance_multi_asset_transformer"]["is_default"])
-        self.assertFalse(by_id["finance_multi_asset_transformer"]["enabled"])
-        self.assertEqual(by_id["finance_multi_asset_transformer"]["role"], "legacy_benchmark")
+        self.assertEqual(set(by_id), {"foundation_quant_engine"})
 
 
 if __name__ == "__main__":

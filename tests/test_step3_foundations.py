@@ -134,9 +134,7 @@ class Step3FoundationsTests(unittest.TestCase):
             self.assertEqual(config["models"][0]["model_id"], "foundation_quant_engine")
             self.assertTrue(config["models"][0]["is_default"])
             self.assertEqual(config["models"][0]["adapter_path"], "quant_core.models.foundation.pipeline.run_foundation_job")
-            self.assertEqual(config["models"][1]["model_id"], "finance_multi_asset_transformer")
-            self.assertEqual(config["models"][1]["role"], "legacy_benchmark")
-            self.assertFalse(config["models"][1]["enabled"])
+            self.assertEqual(len(config["models"]), 1)
 
     def test_evidence_layer_collects_structured_sources(self):
         snapshot = evidence_collector.build_evidence_layer(

@@ -16,7 +16,7 @@
 - 组合级建议：分析行业集中度和高相关股票组合，避免只看单只股票信号而忽略整体风险。
 - Foundation 量化引擎：默认路线切换为真实 `foundation-model-first`。当前默认后端为 Chronos-Bolt；未安装真实后端或权重未下载时，系统会显示 `MODEL_UNAVAILABLE` 并停止生成模型交易建议，不再使用 proxy 冒充真实模型。
 - 风险因子增强：模型输出会叠加市场情绪、市场宽度、VIX 风险、新闻事件、财报现金流/capex/债务压力、AI capex / systemic risk 早期预警，再进入仓位纪律层。
-- 模型治理：旧跨资产多周期 Transformer 已降级为 `legacy_benchmark`，只用于回归测试或对照验证；任何候选模型成为正式建议来源仍必须经过验证和人工确认。
+- 模型治理：旧自训练 benchmark 已从前台、API 和模型注册表移除；当前只注册 `foundation_quant_engine`，旧 `multi_horizon` 命名仅作为共享信号快照兼容层保留。
 - 新闻/事件系统：支持本地 `storage/state/market_events.json` 事件输入，并可通过事件源适配层自动抓取外部新闻事件。
 - 事件风控急刹车：可基于 FOMC/宏观事件和 VIX 高波动阈值触发临时风险收缩（限制仓位或暂停新增仓位）。
 - FinBERT 情绪分析：事件/新闻可选用 FinBERT 进行情绪打分；未安装时自动回退为关键词情绪规则。
@@ -175,8 +175,8 @@ PYTHONPYCACHEPREFIX=/tmp/pycache ~/venv/bin/python -m unittest discover -s tests
 1. 白天后台刷新行情并运行大盘与紧急事件监控；页面只读取快照，不在切换标签时训练模型。
 2. 夜间使用 Foundation Quant Engine 生成持仓、核心 ETF、卫星 Top 3 和次日计划；没有强信号时明确输出不交易。
 3. 默认 horizon 为 `63/126/252` 交易日，短债 hurdle 使用可配置的 `BIL`，并同时比较 `SPY/QQQ`。
-4. 周末研究继续做长窗口验证、候选池更新、策略治理和 legacy benchmark 对照，但旧模型不再是默认生产方向。
-5. `Research & Models` 页面展示当前 backend、foundation/legacy 状态、市场情绪和 AI capex/systemic risk；手动训练按钮现在只训练 legacy benchmark。
+4. 周末研究继续做长窗口验证、候选池更新和策略治理，不再训练旧 benchmark。
+5. `Research & Models` 页面展示当前 foundation backend、统一信号快照、市场情绪和 AI capex/systemic risk，不再提供旧模型训练或 promote 操作。
 6. 新 foundation backend 只有在验证和人工确认后才应获得更高建议权限；proxy backend 会明确标注为临时可用层。
 7. 夜间报告、盘前计划、风险和强信号仍可通过 Slack 与 Email 发送。
 
@@ -358,8 +358,7 @@ journalctl --user -u quant-trade-system.service -f
 - `storage/journals/multi_horizon_predictions.jsonl`：紧凑预测日志，用于未来 63/126/252 日实际结果归因。
 - `storage/config/foundation_model.json`：foundation backend 优先级、horizon、benchmark、risk-free hurdle 和决策融合阈值配置。
 - `storage/config/financials_config.json`：财报数据源、覆盖数量和压力阈值配置。
-- `storage/config/multi_horizon_model.json`：legacy benchmark 模型结构、训练周期和 artifact 路径配置。
-- `model_artifacts/bootstrap/`：随代码发布的 `SHADOW` 冷启动 checkpoint 与 SHA-256 manifest；新电脑首次推理时会自动安装到本地 `trained_models/`。
+- 旧 `storage/config/multi_horizon_model.json` 和随代码发布的 legacy bootstrap checkpoint 已删除；新机器应通过 foundation backend 生成最新快照。
 
 ## 策略与回测
 
@@ -373,9 +372,8 @@ journalctl --user -u quant-trade-system.service -f
 说明：
 
 - `foundation_quant_engine` 是当前默认决策模型入口。
-- `finance_multi_asset_transformer` 已降级为 `legacy_benchmark`，默认禁用。
-- bootstrap checkpoint 只提供冷启动推理和影子观察，不代表模型已通过生产晋升。
-- Research & Models 页面在训练期间每秒刷新任务状态，显示 CPU/CUDA/MPS 设备、epoch、loss、耗时、样本规模和最近训练日志。
+- `finance_multi_asset_transformer` legacy benchmark 已从模型注册表、前台按钮和 API 操作中移除。
+- Research & Models 页面现在只展示 foundation 引擎状态、当前统一信号快照和只读验证归档。
 - 传统规则策略仍保留，主要用于做对照、解释和回测基线。
 - LightGBM、CatBoost、XGBoost 及其生产依赖已经删除；除非未来消融实验证明有稳定的增量经济价值，否则不会重新加入生产。
 - 长周期训练默认排除杠杆、反向与波动率战术产品；它们继续由盘中战术模块处理，不和普通股票、核心 ETF 共用长期 Top 3 排名。
@@ -401,7 +399,7 @@ source ~/venv/bin/activate
 python -c "from chronos import BaseChronosPipeline; BaseChronosPipeline.from_pretrained('amazon/chronos-bolt-small', device_map='cpu'); print('chronos ready')"
 ```
 
-Legacy benchmark 位于 `quant_core/models/multi_horizon/`。它以整个候选 universe 为一个跨资产学习问题，但不再是默认生产方向。
+旧自训练 benchmark 的用户入口已经移除。`quant_core/models/multi_horizon/` 目录当前仍保留部分共享结构：统一多周期快照、决策融合、验证归档和历史测试辅助。它不再作为可训练/可部署模型暴露给用户。
 
 默认设备参数为：
 
@@ -417,27 +415,11 @@ Legacy benchmark 位于 `quant_core/models/multi_horizon/`。它以整个候选 
 - 在 Apple Silicon Mac 且 PyTorch 支持 MPS 时使用 `mps`。
 - 其他环境自动回落到 `cpu`。
 
-Legacy benchmark 默认训练参数：
+当前模型运行方式：
 
-- 历史窗口：`10y`
-- 预测目标：`63/126/252` 交易日
-- lookback：`252` 交易日
-- 监督训练轮数：`30`
-- masked-patch 预训练最多：`20` 轮
-- 预训练验证：按时间顺序保留尾部 `15%`，最少训练 `5` 轮，验证损失连续 `4` 轮无有效改善则提前停止
-- 设备：`auto`
-- 夜间模式：默认由 Foundation Quant Engine 推理
-- 周末模式：默认由 Foundation Quant Engine 刷新研究快照；legacy 训练仅作对照
-
-Legacy benchmark 仍采用候选与生产双 checkpoint：
-
-- `trained_models/finance_multi_asset_transformer.pt`：最新训练候选模型。
-- `trained_models/finance_multi_asset_transformer_production.pt`：当前生产建议模型。
-- 训练和周末重训只更新候选模型，不会自动覆盖生产模型。
-- Walk-forward 验证通过后，可在 Research & Models 页面人工 Promote。
-- 尚无生产模型时，也可以使用带明确警告的首次人工部署；治理记录会标记
-  `INITIAL_MANUAL_OVERRIDE`，后续仍应由验证通过的新候选模型替换。
-- 自动 promotion 始终关闭。
+- 夜间模式：由 Foundation Quant Engine 推理并写入统一多周期快照。
+- 周末模式：由 Foundation Quant Engine 刷新研究快照、候选池和策略质量信息。
+- 系统不再维护 legacy candidate / production checkpoint，也不再提供 legacy promote 流程。
 
 Settings 页面中的 Remote LLM 和 Local SLM 状态在保存后只表示 `CONFIGURED`。
 点击对应的测试按钮并完成真实请求后，才会显示 `TESTED OK`；调用错误会直接显示

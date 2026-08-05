@@ -171,6 +171,27 @@ class RunAllTests(unittest.TestCase):
         self.assertTrue(result)
         self.assertEqual(calls, [{"force": False, "dry_run": False, "now": sentinel_now}])
 
+    def test_maybe_run_nightly_alerts_records_scheduled_completion(self):
+        now = datetime.fromisoformat("2026-05-11T23:30:00")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            status_path = Path(temp_dir) / "job_status.json"
+            result = self.module.maybe_run_nightly_alerts(
+                now=now,
+                should_run=lambda **kwargs: True,
+                runner=lambda **kwargs: {
+                    "generated_at": now.isoformat(),
+                    "trade_plan": {"decision": "ACTION", "action_count": 2},
+                },
+                job_status_path=str(status_path),
+            )
+            status_payload = json.loads(status_path.read_text(encoding="utf-8"))
+
+        self.assertTrue(result)
+        job = status_payload["jobs"]["scheduled-nightly-run"]
+        self.assertEqual(job["state"], "completed")
+        self.assertEqual(job["result_summary"]["decision"], "ACTION")
+        self.assertEqual(job["result_summary"]["action_count"], 2)
+
     def test_maybe_run_nightly_alerts_skips_when_not_due(self):
         calls = []
         sentinel_now = object()
@@ -183,6 +204,22 @@ class RunAllTests(unittest.TestCase):
 
         self.assertFalse(result)
         self.assertEqual(calls, [])
+
+    def test_maybe_run_nightly_alerts_records_idle_when_not_due(self):
+        now = object()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            status_path = Path(temp_dir) / "job_status.json"
+            result = self.module.maybe_run_nightly_alerts(
+                now=now,
+                should_run=lambda **kwargs: False,
+                runner=lambda **kwargs: None,
+                job_status_path=str(status_path),
+            )
+            status_payload = json.loads(status_path.read_text(encoding="utf-8"))
+
+        self.assertFalse(result)
+        self.assertEqual(status_payload["jobs"]["scheduled-nightly-run"]["state"], "idle")
+        self.assertEqual(status_payload["jobs"]["scheduled-nightly-run"]["detail"], "not due")
 
     def test_maybe_run_nightly_alerts_skips_weekend_cycle(self):
         calls = []
@@ -223,6 +260,31 @@ class RunAllTests(unittest.TestCase):
         self.assertEqual(calls, [("refresher", {"refresh_interval_seconds": 3600, "now": sentinel_now, "force": False})])
         self.assertEqual(len(saved), 1)
         self.assertEqual(saved[0]["prices_last_updated"], "2026-05-11T00:00:00")
+
+    def test_maybe_run_market_refresh_records_scheduled_completion(self):
+        now = datetime.fromisoformat("2026-05-11T10:30:00-04:00")
+        data_after = {
+            "holdings": [{"symbol": "AAPL", "current_price": 102.0}],
+            "watchlist": [{"symbol": "MSFT", "last_price": 400.0}],
+            "prices_last_updated": "2026-05-11T10:30:00-04:00",
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            status_path = Path(temp_dir) / "job_status.json"
+            result = self.module.maybe_run_market_refresh(
+                now=now,
+                loader=lambda: {"holdings": [{"symbol": "AAPL"}], "watchlist": [{"symbol": "MSFT"}]},
+                refresher=lambda payload, **kwargs: (data_after, True),
+                saver=lambda payload: None,
+                refresh_interval_seconds=3600,
+                config_loader=lambda: {"alert_settings": {"send_hourly_market_summary": False}},
+                job_status_path=str(status_path),
+            )
+            status_payload = json.loads(status_path.read_text(encoding="utf-8"))
+
+        self.assertTrue(result)
+        job = status_payload["jobs"]["scheduled-market-refresh"]
+        self.assertEqual(job["state"], "completed")
+        self.assertEqual(job["result_summary"]["symbol_count"], 2)
 
     def test_maybe_run_market_refresh_skips_when_not_needed(self):
         calls = []

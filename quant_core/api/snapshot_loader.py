@@ -864,7 +864,6 @@ def load_settings_response(*, now: Optional[datetime] = None) -> dict:
     model_registry, _ = safe_read_json(qpaths.MODEL_REGISTRY_CONFIG_FILE)
     foundation_config, _ = safe_read_json(qpaths.FOUNDATION_MODEL_CONFIG_FILE)
     financials_config, _ = safe_read_json(qpaths.FINANCIALS_CONFIG_FILE)
-    multi_horizon_config, _ = safe_read_json(qpaths.MULTI_HORIZON_MODEL_CONFIG_FILE)
     core_etf_universe, _ = safe_read_json(qpaths.CORE_ETF_UNIVERSE_FILE)
     event_source_config, _ = safe_read_json(qpaths.EVENT_SOURCES_CONFIG_FILE)
     event_source_status, _ = safe_read_json(qpaths.EVENT_SOURCE_STATUS_FILE)
@@ -875,7 +874,6 @@ def load_settings_response(*, now: Optional[datetime] = None) -> dict:
         "model_registry": model_registry if isinstance(model_registry, dict) else {},
         "foundation_model_config": foundation_config if isinstance(foundation_config, dict) else {},
         "financials_config": financials_config if isinstance(financials_config, dict) else {},
-        "multi_horizon_config": multi_horizon_config if isinstance(multi_horizon_config, dict) else {},
         "core_etf_universe": core_etf_universe if isinstance(core_etf_universe, dict) else {},
         "event_source_config": event_source_config if isinstance(event_source_config, dict) else {},
         "event_source_status": event_source_status if isinstance(event_source_status, dict) else {},
@@ -901,30 +899,18 @@ def load_research_models_response(*, now: Optional[datetime] = None) -> dict:
     foundation_snapshot, foundation_errors = safe_read_json(qpaths.FOUNDATION_MODEL_SNAPSHOT_FILE)
     validation, validation_errors = safe_read_json(qpaths.MULTI_HORIZON_VALIDATION_FILE)
     registry, registry_errors = safe_read_json(qpaths.MODEL_REGISTRY_CONFIG_FILE)
-    config, config_errors = safe_read_json(qpaths.MULTI_HORIZON_MODEL_CONFIG_FILE)
     foundation_config, foundation_config_errors = safe_read_json(qpaths.FOUNDATION_MODEL_CONFIG_FILE)
-    governance, governance_errors = safe_read_json(qpaths.MULTI_HORIZON_GOVERNANCE_FILE)
-    bootstrap_manifest, bootstrap_errors = safe_read_json(qpaths.MULTI_HORIZON_BOOTSTRAP_MANIFEST_FILE)
     snapshot = snapshot if isinstance(snapshot, dict) else {}
     foundation_snapshot = foundation_snapshot if isinstance(foundation_snapshot, dict) else {}
     validation = validation if isinstance(validation, dict) else {}
     registry = registry if isinstance(registry, dict) else {}
-    config = config if isinstance(config, dict) else {}
     foundation_config = foundation_config if isinstance(foundation_config, dict) else {}
-    governance = governance if isinstance(governance, dict) else {}
-    if "promotion_blockers" not in governance:
-        governance["promotion_blockers"] = mh_governance.promotion_blockers(validation)
-    bootstrap_manifest = bootstrap_manifest if isinstance(bootstrap_manifest, dict) else {}
-    snapshot = mh_governance.apply_production_gate(snapshot, governance)
     errors = [
         *snapshot_errors,
         *foundation_errors,
         *validation_errors,
         *registry_errors,
-        *config_errors,
         *foundation_config_errors,
-        *governance_errors,
-        *bootstrap_errors,
     ]
     model_age = _age_seconds(snapshot.get("generated_at"), now=now)
     model_stale = bool(model_age is not None and model_age > DEFAULT_SNAPSHOT_MAX_AGE_SECONDS)
@@ -939,7 +925,6 @@ def load_research_models_response(*, now: Optional[datetime] = None) -> dict:
             "fold_count": validation.get("fold_count"),
             "symbol_count": dict(snapshot.get("summary", {}) or {}).get("symbol_count"),
             "automatic_promotion": False,
-            "governance_status": governance.get("status"),
         },
         errors=errors,
         data_quality={"status": "MISSING" if snapshot_errors else "OK"},
@@ -949,9 +934,6 @@ def load_research_models_response(*, now: Optional[datetime] = None) -> dict:
             "validation": validation,
             "model_registry": registry,
             "foundation_config": foundation_config,
-            "config": config,
-            "governance": governance,
-            "bootstrap_manifest": bootstrap_manifest,
         },
         generated_at=snapshot.get("generated_at") or validation.get("generated_at") or now_iso(now),
     )

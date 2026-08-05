@@ -9,7 +9,7 @@ type JobDefinition = {
   registryName: string;
   label: string;
   description: string;
-  endpoint: string;
+  endpoint?: string;
   payload?: unknown;
 };
 
@@ -36,12 +36,26 @@ const manualJobs: JobDefinition[] = [
     description: "Run long-horizon research and strategy validation outside the trading loop.",
     endpoint: "/api/actions/run-weekend-research-once",
   },
+];
+
+const scheduledJobs: JobDefinition[] = [
   {
-    key: "model",
-    registryName: "manual-multi-horizon-training",
-    label: "Train legacy benchmark",
-    description: "Train the retired self-trained neural benchmark for comparison only.",
-    endpoint: "/api/actions/train-multi-horizon",
+    key: "auto-refresh",
+    registryName: "scheduled-market-refresh",
+    label: "Auto market refresh",
+    description: "System-triggered price/news/health refresh from jobs.run_all.",
+  },
+  {
+    key: "auto-nightly",
+    registryName: "scheduled-nightly-run",
+    label: "Auto nightly pipeline",
+    description: "System-triggered nightly report, plan, risk, and notification pipeline.",
+  },
+  {
+    key: "auto-weekend",
+    registryName: "weekend-research",
+    label: "Auto weekend research",
+    description: "System-triggered weekend research workflow.",
   },
 ];
 
@@ -82,6 +96,7 @@ export default function Operations() {
   }, [hasActiveJobs, health.reload, jobs.reload]);
 
   async function run(definition: JobDefinition) {
+    if (!definition.endpoint) return;
     const current = asDict(jobMap[definition.registryName]);
     if (isActive(current)) return;
     setSubmitting(definition.key);
@@ -138,7 +153,7 @@ export default function Operations() {
   }
 
   const taskRows = useMemo(
-    () => manualJobs.map((definition) => ({
+    () => [...manualJobs, ...scheduledJobs].map((definition) => ({
       ...definition,
       ...asDict(jobMap[definition.registryName]),
       name: definition.registryName,
@@ -182,6 +197,21 @@ export default function Operations() {
             );
           })}
         </div>
+      </Panel>
+
+      <Panel title="Automatic scheduler status" subtitle="These rows update even when the system triggers work without a manual button click.">
+        <DecisionTable rows={scheduledJobs.map((definition) => ({
+          ...definition,
+          ...asDict(jobMap[definition.registryName]),
+          name: definition.registryName,
+          display_state: asDict(jobMap[definition.registryName]).state ?? "not run",
+        }))} columns={[
+          { label: "Job", render: (row) => text(row.label ?? row.name) },
+          { label: "State", render: (row) => <Status value={row.display_state ?? row.state} /> },
+          { label: "Last detail", render: (row) => text(row.detail, "No scheduler event yet") },
+          { label: "Last updated", render: (row) => formatDate(row.updated_at) },
+          { label: "Elapsed", render: (row) => elapsed(row.elapsed_seconds) },
+        ]} />
       </Panel>
 
       <Panel title="Robinhood ledger import" subtitle="Append mode deduplicates. Rebuild mode backs up and replaces the local ledger.">
