@@ -420,7 +420,10 @@ def import_robinhood_csv_text(csv_text: str, *, filename: str = "", replace_exis
     reconciled: Optional[dict] = None
     reconcile_error = ""
     try:
-        reconciled = portfolio_actions.reconcile_portfolio_from_robinhood_imports(force_price_refresh=False)
+        reconciled = portfolio_actions.reconcile_portfolio_from_robinhood_imports(
+            force_price_refresh=False,
+            incremental_cash_records=None if replace_existing else list(imported.get("records", []) or []),
+        )
     except Exception as exc:
         reconcile_error = f"{type(exc).__name__}: {exc}"
     followup = build_robinhood_import_followup(imported)

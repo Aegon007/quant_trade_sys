@@ -557,6 +557,7 @@ def load_dashboard_response(*, now: Optional[datetime] = None) -> dict:
     discipline_payload, _ = safe_read_json(qpaths.DISCIPLINE_SNAPSHOT_FILE)
     change_payload, _ = safe_read_json(qpaths.CHANGE_FEED_FILE)
     data_health_payload, _ = safe_read_json(qpaths.DATA_HEALTH_SNAPSHOT_FILE)
+    trade_plan_payload, _ = safe_read_json(qpaths.NEXT_DAY_TRADE_PLAN_FILE)
     plan_quality_payload, _ = safe_read_json(qpaths.PLAN_QUALITY_SNAPSHOT_FILE)
     market_monitor_payload, _ = safe_read_json(qpaths.MARKET_MONITOR_SNAPSHOT_FILE)
     strategy_governance_payload, _ = safe_read_json(qpaths.STRATEGY_REGISTRY_STATE_FILE)
@@ -573,6 +574,7 @@ def load_dashboard_response(*, now: Optional[datetime] = None) -> dict:
     discipline_payload = discipline_payload if isinstance(discipline_payload, dict) else {}
     change_payload = change_payload if isinstance(change_payload, dict) else {}
     data_health_payload = data_health_payload if isinstance(data_health_payload, dict) else {}
+    trade_plan_payload = trade_plan_payload if isinstance(trade_plan_payload, dict) else {}
     plan_quality_payload = plan_quality_payload if isinstance(plan_quality_payload, dict) else {}
     market_monitor_payload = market_monitor_payload if isinstance(market_monitor_payload, dict) else {}
     strategy_governance_payload = strategy_governance_payload if isinstance(strategy_governance_payload, dict) else {}
@@ -604,6 +606,30 @@ def load_dashboard_response(*, now: Optional[datetime] = None) -> dict:
             or ""
         ).upper() not in ("", "HOLD", "WATCH")
     ]
+    model_candidate_actions = [
+        row for row in list(multi_horizon_payload.get("symbols", []) or [])
+        if str(dict(dict(row or {}).get("decision", {}) or {}).get("action") or "").strip().upper()
+        in ("ACCUMULATE", "PROBE", "TRIM", "EXIT")
+    ]
+    executable_plan_items = list(trade_plan_payload.get("items", []) or [])
+    blocked_plan_items = list(trade_plan_payload.get("blocked_items", []) or [])
+    trade_plan_decision = str(trade_plan_payload.get("decision") or "").strip().upper() or "UNKNOWN"
+    if executable_plan_items:
+        recommendation_consistency_status = "EXECUTABLE_ACTIONS"
+        recommendation_consistency_message = f"{len(executable_plan_items)} item(s) passed the nightly execution planner."
+    elif model_candidate_actions and blocked_plan_items:
+        recommendation_consistency_status = "CANDIDATES_BLOCKED"
+        recommendation_consistency_message = (
+            f"{len(model_candidate_actions)} model candidate action(s), but execution planner blocked them via discipline/risk gates."
+        )
+    elif model_candidate_actions:
+        recommendation_consistency_status = "CANDIDATES_ONLY"
+        recommendation_consistency_message = (
+            f"{len(model_candidate_actions)} model candidate action(s), but no executable next-day plan was produced."
+        )
+    else:
+        recommendation_consistency_status = "NO_ACTION"
+        recommendation_consistency_message = "No model candidate action and no executable next-day trade plan."
     summary = {
         "total_capital": account.get("total_capital"),
         "cash_available": account.get("cash_available"),
@@ -620,8 +646,12 @@ def load_dashboard_response(*, now: Optional[datetime] = None) -> dict:
             if str(dict(row or {}).get("state") or "").lower() == "started"
         ]),
         "data_health_status": data_health_payload.get("status") or dict(data_health_payload.get("summary", {}) or {}).get("status"),
+        "data_health_reason": dict(data_health_payload.get("summary", {}) or {}).get("health_reason"),
+        "data_health_action_required": dict(data_health_payload.get("summary", {}) or {}).get("action_required"),
+        "data_health_fallback_only": dict(data_health_payload.get("summary", {}) or {}).get("fallback_only"),
         "missing_price_count": dict(data_health_payload.get("summary", {}) or {}).get("missing_price_count"),
         "invalid_price_count": dict(data_health_payload.get("summary", {}) or {}).get("invalid_price_count"),
+        "stale_price_count": dict(data_health_payload.get("summary", {}) or {}).get("stale_price_count"),
         "plan_quality_status": plan_quality_payload.get("status") or dict(plan_quality_payload.get("summary", {}) or {}).get("status"),
         "plan_execution_rate": dict(plan_quality_payload.get("summary", {}) or {}).get("execution_rate"),
         "market_monitor_status": market_monitor_payload.get("status"),
@@ -649,6 +679,12 @@ def load_dashboard_response(*, now: Optional[datetime] = None) -> dict:
         "systemic_risk_score": systemic_risk_payload.get("systemic_risk_score"),
         "decision_brief_status": decision_brief_payload.get("status"),
         "decision_brief_generated_at": decision_brief_payload.get("generated_at"),
+        "model_candidate_action_count": len(model_candidate_actions),
+        "executable_plan_action_count": len(executable_plan_items),
+        "blocked_plan_count": len(blocked_plan_items),
+        "trade_plan_decision": trade_plan_decision,
+        "recommendation_consistency_status": recommendation_consistency_status,
+        "recommendation_consistency_message": recommendation_consistency_message,
     }
     payload = {
         "account": account,
@@ -657,6 +693,7 @@ def load_dashboard_response(*, now: Optional[datetime] = None) -> dict:
         "discipline_snapshot": discipline_payload,
         "change_feed": change_payload,
         "data_health_snapshot": data_health_payload,
+        "trade_plan": trade_plan_payload,
         "plan_quality_snapshot": plan_quality_payload,
         "market_monitor_snapshot": market_monitor_payload,
         "strategy_governance_snapshot": strategy_governance_payload,

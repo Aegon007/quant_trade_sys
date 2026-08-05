@@ -13,6 +13,7 @@ from typing import Callable
 
 from quant_core.api import actions as api_actions
 from quant_core.api import snapshot_loader as loader
+from quant_core.diagnostics import build_diagnostics_bundle
 from quant_core.models.multi_horizon.export import build_training_analysis_bundle, build_training_analysis_report_html
 
 
@@ -181,6 +182,17 @@ def create_app():
         filename = f"quant-training-analysis-{loader.now_iso()[:10]}.html"
         return HTMLResponse(
             build_training_analysis_report_html(),
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
+    @app.get("/api/downloads/diagnostics-bundle")
+    def diagnostics_bundle():
+        from fastapi.responses import StreamingResponse
+
+        filename = f"quant-diagnostics-{loader.now_iso()[:10]}.zip"
+        return StreamingResponse(
+            io.BytesIO(build_diagnostics_bundle()),
+            media_type="application/zip",
             headers={"Content-Disposition": f'attachment; filename="{filename}"'},
         )
 

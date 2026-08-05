@@ -70,6 +70,28 @@ def _normalize_price_cache(cache):
     return normalized
 
 
+def _derive_health_reason(
+    *,
+    tracked_count: int,
+    missing_count: int,
+    invalid_count: int,
+    stale_count: int,
+    fallback_symbols: int,
+    last_error: str,
+):
+    if tracked_count > 0 and missing_count + invalid_count >= tracked_count:
+        return "all_prices_missing_or_invalid", "check_data_source", False
+    if missing_count or invalid_count:
+        return "missing_or_invalid_prices", "check_data_source", False
+    if stale_count:
+        return "stale_prices", "refresh_market_data", False
+    if last_error:
+        return "source_error", "review_data_source_log", False
+    if fallback_symbols:
+        return "fallback_source_used", "review_primary_source", True
+    return "ok", "none", False
+
+
 def _timestamp_age_seconds(timestamp, *, now_ts: float):
     number = _safe_float(timestamp)
     if number is not None:
@@ -158,6 +180,7 @@ def build_data_health_snapshot(
     last_error = str(prices_status.get("last_error") or "").strip()
     issue_count = len(invalid_rows) + len(missing_rows) + len(stale_rows)
     tracked_count = len(symbol_rows)
+    usable_price_count = len([row for row in symbol_rows if row.get("status") == "OK"])
 
     if tracked_count > 0 and len(missing_rows) + len(invalid_rows) >= tracked_count:
         status = "BROKEN"
@@ -165,13 +188,27 @@ def build_data_health_snapshot(
         status = "DEGRADED"
     else:
         status = "OK"
+    health_reason, action_required, fallback_only = _derive_health_reason(
+        tracked_count=tracked_count,
+        missing_count=len(missing_rows),
+        invalid_count=len(invalid_rows),
+        stale_count=len(stale_rows),
+        fallback_symbols=fallback_symbols,
+        last_error=last_error,
+    )
 
     return {
         "generated_at": now.isoformat(),
         "status": status,
         "summary": {
             "status": status,
+            "health_reason": health_reason,
+            "action_required": action_required,
+            "fallback_only": fallback_only,
+            "price_data_usable": bool(tracked_count > 0 and len(missing_rows) == 0 and len(invalid_rows) == 0),
             "tracked_symbol_count": tracked_count,
+            "usable_price_count": usable_price_count,
+            "problem_symbol_count": issue_count,
             "missing_price_count": len(missing_rows),
             "invalid_price_count": len(invalid_rows),
             "stale_price_count": len(stale_rows),

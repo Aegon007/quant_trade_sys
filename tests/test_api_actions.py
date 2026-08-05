@@ -148,6 +148,7 @@ class ApiActionsTests(unittest.TestCase):
             "/api/research-models",
             "/api/downloads/training-analysis-bundle",
             "/api/downloads/training-analysis-report",
+            "/api/downloads/diagnostics-bundle",
             "/api/multi-horizon",
             "/api/reports/latest",
             "/api/news-intelligence",
@@ -259,6 +260,40 @@ class ApiActionsTests(unittest.TestCase):
         self.assertEqual(result["mode"], "replace")
         self.assertEqual(result["import"]["mode"], "replace")
         self.assertEqual(calls, [("replace", "csv", "activity.csv", True)])
+
+    def test_import_robinhood_csv_text_passes_new_append_records_for_cash_delta(self):
+        calls = []
+        original_import = self.actions.transactions.import_robinhood_activity_csv
+        original_reconcile = self.actions.portfolio_actions.reconcile_portfolio_from_robinhood_imports
+        original_followup = self.actions.build_robinhood_import_followup
+        self.addCleanup(setattr, self.actions.transactions, "import_robinhood_activity_csv", original_import)
+        self.addCleanup(setattr, self.actions.portfolio_actions, "reconcile_portfolio_from_robinhood_imports", original_reconcile)
+        self.addCleanup(setattr, self.actions, "build_robinhood_import_followup", original_followup)
+
+        imported_record = {
+            "record_type": "TRADE",
+            "event_type": "SELL",
+            "side": "SELL",
+            "symbol": "AAPL",
+            "shares": 1,
+            "price": 120,
+            "proceeds": 120,
+        }
+        self.actions.transactions.import_robinhood_activity_csv = (
+            lambda csv_text, *, filename="": {"mode": "append", "records": [imported_record]}
+        )
+
+        def fake_reconcile(**kwargs):
+            calls.append(kwargs)
+            return {"cash_available": 220.0}
+
+        self.actions.portfolio_actions.reconcile_portfolio_from_robinhood_imports = fake_reconcile
+        self.actions.build_robinhood_import_followup = lambda imported: {"message": "updated"}
+
+        result = self.actions.import_robinhood_csv_text("csv", filename="activity.csv", replace_existing=False)
+
+        self.assertEqual(result["reconciliation"]["cash_available"], 220.0)
+        self.assertEqual(calls[0]["incremental_cash_records"], [imported_record])
 
     def test_save_account_calibration_can_infer_cash_from_broker_total(self):
         saved = []

@@ -34,6 +34,39 @@ def _adjust_cash(account, delta: float):
     account["cash_available"] = updated_cash
 
 
+def _cash_delta_from_imported_records(records) -> float:
+    delta = 0.0
+    for row in list(records or []):
+        record = dict(row or {})
+        record_type = str(record.get("record_type") or "").strip().upper()
+        event_type = str(record.get("event_type") or "").strip().upper()
+        side = str(record.get("side") or "").strip().upper()
+        if record_type == "CASH_EVENT":
+            try:
+                delta += float(record.get("proceeds") or 0.0)
+            except (TypeError, ValueError):
+                continue
+            continue
+        if record_type != "TRADE":
+            continue
+        try:
+            shares = abs(float(record.get("shares") or 0.0))
+            price = float(record.get("price") or record.get("cost_basis") or 0.0)
+        except (TypeError, ValueError):
+            continue
+        if shares <= 0 or price <= 0:
+            continue
+        if event_type == "SELL" or side == "SELL":
+            proceeds = record.get("proceeds")
+            try:
+                delta += float(proceeds if proceeds is not None else shares * price)
+            except (TypeError, ValueError):
+                delta += shares * price
+        elif event_type == "BUY" or side == "BUY":
+            delta -= shares * price
+    return round(delta, 4)
+
+
 def _execution_price(holding_or_watch, price=None, symbol=None) -> float:
     return du.resolve_record_price(
         holding_or_watch,
@@ -328,7 +361,7 @@ def refresh_all_market_data(force_source_refresh: bool = False):
     return refreshed
 
 
-def reconcile_portfolio_from_robinhood_imports(*, force_price_refresh: bool = False):
+def reconcile_portfolio_from_robinhood_imports(*, force_price_refresh: bool = False, incremental_cash_records=None):
     data = du.load_data()
     result = pr.build_robinhood_reconciled_portfolio(
         tx.load_transactions(),
@@ -336,6 +369,24 @@ def reconcile_portfolio_from_robinhood_imports(*, force_price_refresh: bool = Fa
     )
     if int(result.get("imported_record_count", 0) or 0) <= 0:
         raise ValueError("No Robinhood imported records were found. Import Account activity CSV first.")
+
+    if incremental_cash_records:
+        account = dict(result.get("account", {}) or {})
+        existing_cash = dict(data.get("account", {}) or {}).get("cash_available")
+        cash_delta = _cash_delta_from_imported_records(incremental_cash_records)
+        result["incremental_cash_delta"] = cash_delta
+        if existing_cash is not None:
+            updated_cash = round(float(existing_cash) + cash_delta, 4)
+            if updated_cash >= 0:
+                account["cash_available"] = updated_cash
+                result["cash_available"] = updated_cash
+                result["cash_mode"] = "incremental_import_delta"
+            else:
+                result.setdefault("issues", []).append(
+                    "Imported Robinhood trade cash flow would make cash_available negative; "
+                    "preserved existing cash_available. Calibrate account cash from Portfolio if needed."
+                )
+        result["account"] = account
 
     data["account"] = result["account"]
     data["holdings"] = result["holdings"]

@@ -28,8 +28,26 @@ class Step3FoundationsTests(unittest.TestCase):
         self.assertEqual(snapshot["status"], "BROKEN")
         self.assertEqual(snapshot["summary"]["invalid_price_count"], 1)
         self.assertEqual(snapshot["summary"]["missing_price_count"], 1)
+        self.assertEqual(snapshot["summary"]["health_reason"], "all_prices_missing_or_invalid")
+        self.assertEqual(snapshot["summary"]["action_required"], "check_data_source")
+        self.assertFalse(snapshot["summary"]["price_data_usable"])
         self.assertIn("AAPL", snapshot["invalid_symbols"])
         self.assertIn("MSFT", snapshot["missing_symbols"])
+
+    def test_data_health_explains_fallback_only_degradation(self):
+        now = datetime.fromisoformat("2026-06-11T12:00:00")
+        snapshot = data_health.build_data_health_snapshot(
+            {"holdings": [{"symbol": "AAPL", "current_price": 100.0}], "watchlist": []},
+            data_sources={"prices": {"primary_symbols": 0, "fallback_symbols": 1}},
+            price_cache={"AAPL": {"price": 100.0, "timestamp": now.timestamp(), "source": "stooq"}},
+            now=now,
+        )
+
+        self.assertEqual(snapshot["status"], "DEGRADED")
+        self.assertEqual(snapshot["summary"]["health_reason"], "fallback_source_used")
+        self.assertEqual(snapshot["summary"]["action_required"], "review_primary_source")
+        self.assertTrue(snapshot["summary"]["fallback_only"])
+        self.assertTrue(snapshot["summary"]["price_data_usable"])
 
     def test_plan_quality_summarizes_reachable_missed_and_groups(self):
         snapshot = plan_quality.build_plan_quality_snapshot(

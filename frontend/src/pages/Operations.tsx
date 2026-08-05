@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { postApi } from "../api";
+import { downloadApi, postApi } from "../api";
 import { DecisionTable } from "../components/DecisionTable";
 import { Panel, Status } from "../components/Primitives";
 import { asArray, asDict, formatDate, text, useSnapshot, type Dict } from "../lib/data";
@@ -124,6 +124,19 @@ export default function Operations() {
     }
   }
 
+  async function downloadDiagnostics() {
+    setSubmitting("diagnostics");
+    setCommandResult("Diagnostics: building bundle...");
+    try {
+      await downloadApi("/api/downloads/diagnostics-bundle", "quant-diagnostics.zip");
+      setCommandResult("Diagnostics: bundle downloaded. Bring this zip back from Jetson when you want a deep diagnosis.");
+    } catch (exc) {
+      setCommandResult(`Diagnostics: ${exc instanceof Error ? exc.message : String(exc)}`);
+    } finally {
+      setSubmitting("");
+    }
+  }
+
   const taskRows = useMemo(
     () => manualJobs.map((definition) => ({
       ...definition,
@@ -182,6 +195,15 @@ export default function Operations() {
         </label>
       </Panel>
 
+      <Panel title="Portable diagnostics" subtitle="Download a safe snapshot bundle from the deployed machine. Secrets are excluded.">
+        <div className="notice">
+          Use this when Jetson shows degraded data health, stale recommendations, or inconsistent pages. The bundle includes data-health, price-cache summary, job status, plans, model snapshots, and change feed.
+        </div>
+        <button disabled={!!submitting} onClick={downloadDiagnostics}>
+          {submitting === "diagnostics" ? "Building diagnostics..." : "Download diagnostics bundle"}
+        </button>
+      </Panel>
+
       <Panel title="Detailed job history" subtitle="Persistent status survives page refreshes and browser restarts.">
         <DecisionTable rows={taskRows} columns={[
           { label: "Job", render: (row) => text(row.label ?? row.name) },
@@ -194,6 +216,11 @@ export default function Operations() {
       </Panel>
 
       <Panel title="Data-source health" subtitle="Refresh results become visible here as soon as the task completes.">
+        <div className="notice">
+          Status: <b>{text(asDict(health.data?.summary).data_health_status ?? asDict(asDict(health.data?.payload).summary).status, "UNKNOWN")}</b>
+          {" · "}Reason: <b>{text(asDict(asDict(health.data?.payload).summary).health_reason, "unknown")}</b>
+          {" · "}Action: <b>{text(asDict(asDict(health.data?.payload).summary).action_required, "none")}</b>
+        </div>
         <DecisionTable rows={healthRows} columns={[
           { label: "Symbol", className: "symbol-cell", render: (row) => text(row.symbol) },
           { label: "State", render: (row) => <Status value={row.status} /> },

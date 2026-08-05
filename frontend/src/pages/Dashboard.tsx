@@ -61,6 +61,9 @@ export default function Dashboard() {
   const modelSummary = asDict(model.summary);
   const modelSymbols = asArray(model.symbols).map(asDict);
   const approved = modelSymbols.filter((row) => ["ACCUMULATE", "PROBE", "TRIM", "EXIT"].includes(text(modelDecision(row).action, "").toUpperCase()));
+  const tradePlan = asDict(payload.trade_plan);
+  const planItems = asArray(tradePlan.items).map(asDict);
+  const blockedPlanItems = asArray(tradePlan.blocked_items).map(asDict);
   const conflicts = modelSymbols.filter((row) => {
     const longState = text(asDict(row.long_horizon).state, "").toUpperCase();
     const timingState = text(asDict(row.timing).state, "").toUpperCase();
@@ -85,9 +88,9 @@ export default function Dashboard() {
   const modelStatus = text(data?.summary.multi_horizon_status ?? model.status ?? asDict(model.model).status, "MODEL_NOT_READY");
   const headline = modelStatus !== "READY"
     ? "Train the long-horizon model before using trade recommendations."
-    : approved.length
-      ? `${approved.length} approved action${approved.length === 1 ? "" : "s"} require review.`
-      : "No strong action. Keep positions unchanged.";
+    : planItems.length
+      ? `${planItems.length} executable next-day plan item${planItems.length === 1 ? "" : "s"} require review.`
+      : "No executable action. Keep positions unchanged unless an intraday emergency alert fires.";
 
   async function refreshDecisionBrief() {
     setRefreshingBrief(true);
@@ -108,7 +111,7 @@ export default function Dashboard() {
         <div>
           <span className="eyebrow">Tomorrow's decision brief</span>
           <h2>{headline}</h2>
-          <p>Long-horizon ranking, entry timing, portfolio discipline, and risk gate are fused before an action reaches this list.</p>
+          <p>Model candidates are not execution orders. A trade reaches tomorrow's plan only after entry timing, portfolio discipline, risk gates, and invalidation rules agree.</p>
         </div>
         <Status value={modelStatus} />
       </section>
@@ -138,6 +141,20 @@ export default function Dashboard() {
         { label: "AI capex stress", value: text(systemicRisk.ai_capex_stress, "UNKNOWN"), hint: `Score ${text(systemicRisk.systemic_risk_score, "-")}` },
         { label: "Financials", value: text(financialsIntelligence.status, "NO DATA"), hint: `${text(financialsSummary.covered_count, "0")} covered · ${text(financialsSummary.stress_count, "0")} stress` },
       ]} />
+
+      <Panel
+        title="Recommendation consistency"
+        subtitle="This separates raw model candidates from the executable next-day trade plan."
+      >
+        <Facts rows={[
+          ["Consistency", <Status value={data?.summary.recommendation_consistency_status ?? "UNKNOWN"} />],
+          ["Explanation", text(data?.summary.recommendation_consistency_message, "-")],
+          ["Model candidates", text(data?.summary.model_candidate_action_count, "0")],
+          ["Executable plan items", text(data?.summary.executable_plan_action_count, "0")],
+          ["Blocked by risk/discipline", text(data?.summary.blocked_plan_count, "0")],
+          ["Trade plan decision", <Status value={data?.summary.trade_plan_decision ?? "UNKNOWN"} />],
+        ]} />
+      </Panel>
 
       <div className="split-layout">
         <Panel title="Market sentiment" subtitle="Breadth, volatility, risk appetite, and event tone are used as model covariates or risk overlay.">
@@ -179,8 +196,20 @@ export default function Dashboard() {
         </div>
       </Panel>
 
-      <Panel title="Approved actions" subtitle="Only fused, risk-approved actions appear here. Expand any row for the full horizon distribution.">
-        <DecisionTable rows={approved} columns={actionColumns} emptyText="No approved trades in the latest model snapshot." />
+      <Panel title="Tomorrow executable plan" subtitle="Only these rows passed the execution planner. If this is empty, the system's active recommendation is no trade.">
+        <DecisionTable rows={planItems} columns={[
+          { label: "Symbol", className: "symbol-cell", render: (row) => text(row.symbol) },
+          { label: "Plan", render: (row) => <Status value={row.plan_action} /> },
+          { label: "Buy zone", render: (row) => `${text(row.buy_zone_low, "-")} - ${text(row.buy_zone_high, "-")}` },
+          { label: "Risk break", render: (row) => text(row.risk_break_level, "-") },
+          { label: "Weight delta", render: (row) => text(row.plan_weight_delta_pct, "-") },
+          { label: "Valid until", render: (row) => text(row.plan_valid_until, "-") },
+        ]} emptyText={text(tradePlan.summary_reason, "No executable next-day plan is available.")} />
+      </Panel>
+
+      <Panel title="Model candidate actions" subtitle="These are raw long-horizon/timing candidates. They still need the execution planner before they become a trade plan.">
+        <DecisionTable rows={approved} columns={actionColumns} emptyText="No candidate trades in the latest model snapshot." />
+        {blockedPlanItems.length ? <div className="notice">Blocked candidate count: {blockedPlanItems.length}. Review risk and discipline before overriding.</div> : null}
       </Panel>
 
       <Panel
@@ -244,6 +273,8 @@ export default function Dashboard() {
           <Facts rows={[
             ["Model", <Status value={modelStatus} />],
             ["Data health", <Status value={asDict(dataHealth.summary).status ?? dataHealth.status ?? "UNKNOWN"} />],
+            ["Health reason", text(asDict(dataHealth.summary).health_reason, text(data?.summary.data_health_reason, "unknown"))],
+            ["Suggested fix", text(asDict(dataHealth.summary).action_required, text(data?.summary.data_health_action_required, "none"))],
             ["Plan quality", <Status value={asDict(planQuality.summary).status ?? planQuality.status ?? "UNKNOWN"} />],
             ["Last model run", text(model.generated_at)],
             ["Model version", text(asDict(model.model).version ?? asDict(model.model).trained_at)],

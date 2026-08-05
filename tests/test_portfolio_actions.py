@@ -381,6 +381,44 @@ class PortfolioActionsTests(unittest.TestCase):
         self.assertAlmostEqual(data["account"]["cash_available"], 860.0)
         self.assertEqual(data["watchlist"][0]["symbol"], "TSLA")
 
+    def test_reconcile_portfolio_from_robinhood_imports_applies_incremental_sell_cash_once(self):
+        self.data_utils.save_data(
+            {
+                "account": {
+                    "cash_available": 100.0,
+                    "min_cash_buffer_pct": 0.1,
+                    "max_single_position_pct": 0.2,
+                    "max_total_exposure_pct": 0.9,
+                },
+                "holdings": [{"symbol": "AAPL", "shares": 1.0, "cost": 80.0, "current_price": 120.0}],
+                "watchlist": [],
+            }
+        )
+        sell_record = {
+            "record_type": "TRADE",
+            "event_type": "SELL",
+            "side": "SELL",
+            "date": "2026-05-10 15:45:00",
+            "symbol": "AAPL",
+            "shares": 1.0,
+            "price": 120.0,
+            "proceeds": 120.0,
+            "source": "ROBINHOOD_ACCOUNT_ACTIVITY_CSV",
+        }
+        self.transactions.save_transactions([sell_record])
+
+        result = self.actions.reconcile_portfolio_from_robinhood_imports(
+            incremental_cash_records=[sell_record],
+        )
+        data = self.data_utils.load_data()
+
+        self.assertEqual(result["cash_mode"], "incremental_import_delta")
+        self.assertEqual(result["incremental_cash_delta"], 120.0)
+        self.assertAlmostEqual(result["cash_available"], 220.0)
+        self.assertAlmostEqual(data["account"]["cash_available"], 220.0)
+        self.assertEqual(data["holdings"], [])
+        self.assertEqual(data["watchlist"][0]["symbol"], "AAPL")
+
     def test_reconcile_portfolio_from_robinhood_imports_requires_imported_records(self):
         self.data_utils.save_data(
             {
