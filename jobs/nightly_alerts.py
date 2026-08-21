@@ -29,10 +29,12 @@ from quant_core.execution import plan_quality as pqual
 from quant_core.execution import post_close_review as pcr
 from quant_core.execution import decision_journal as djour
 from quant_core.execution import nightly_manifest as nman
+from quant_core.execution import decision_engine
 from quant_core.monitoring import intraday_journal as ij
 from quant_core.monitoring import market_monitor as mmonitor
 from quant_core.research import strategy_validation as sval
 from quant_core.research import strategy_governance as sgov
+from quant_core.research import correlation_research as corr_research
 from quant_core.snapshots import system_snapshot as ss
 from quant_core.ledger import transactions as tx
 from quant_core.analytics.signal_scoreboard import build_signal_scoreboard
@@ -167,6 +169,7 @@ def run_nightly_alerts(
     news_intelligence_path=ni.DEFAULT_NEWS_INTELLIGENCE_FILE,
     financials_intelligence_path=fin.DEFAULT_SNAPSHOT_FILE,
     decision_brief_path=db.DEFAULT_DECISION_BRIEF_FILE,
+    final_decision_path=decision_engine.DEFAULT_FINAL_DECISION_FILE,
     event_source_status_path=qpaths.EVENT_SOURCE_STATUS_FILE,
     event_refresher=None,
     news_intelligence_builder=None,
@@ -687,6 +690,19 @@ def run_nightly_alerts(
         mmonitor.save_market_monitor_snapshot(market_monitor_snapshot)
     except Exception:
         market_monitor_snapshot = {}
+    correlation_research_snapshot = corr_research.load_correlation_research_snapshot()
+    final_decision_snapshot = decision_engine.build_final_decision_snapshot(
+        account=account_snapshot,
+        trade_plan=trade_plan,
+        core_snapshot=core_etf_snapshot,
+        satellite_snapshot=satellite_candidate_snapshot,
+        discipline_snapshot=discipline_snapshot,
+        correlation_snapshot=correlation_research_snapshot,
+        data_health_snapshot=data_health_snapshot,
+        news_intelligence=news_intelligence,
+        now=now,
+    )
+    decision_engine.save_final_decision_snapshot(final_decision_snapshot, path=final_decision_path)
 
     snapshot = ss.build_system_snapshot(
         data=data,
@@ -721,6 +737,8 @@ def run_nightly_alerts(
         intraday_event_summary=intraday_event_summary,
         generated_at=now,
     )
+    snapshot["final_decision"] = final_decision_snapshot
+    snapshot["correlation_research_snapshot"] = correlation_research_snapshot
     manifest = nman.mark_step_started(
         manifest,
         step_name="monthly_discipline_review",
@@ -807,6 +825,8 @@ def run_nightly_alerts(
         plan_quality_snapshot=plan_quality_snapshot,
         analyst_context=dict(news_intelligence.get("analyst_context", {}) or {}),
     )
+    decision_context["final_decision"] = final_decision_snapshot
+    decision_context["weekend_correlation"] = correlation_research_snapshot
     manifest = nman.mark_step_started(
         manifest,
         step_name="decision_brief",
@@ -874,6 +894,7 @@ def run_nightly_alerts(
             "news_intelligence": news_intelligence,
             "financials_intelligence": financials_intelligence,
             "decision_brief": decision_brief,
+            "final_decision": final_decision_snapshot,
         }
 
     sent_results = ae.send_new_alerts(
@@ -1018,9 +1039,10 @@ def run_nightly_alerts(
         "discipline_snapshot": discipline_snapshot,
         "change_feed": change_feed,
         "multi_horizon_snapshot": multi_horizon_snapshot,
-            "news_intelligence": news_intelligence,
-            "financials_intelligence": financials_intelligence,
-            "decision_brief": decision_brief,
+        "news_intelligence": news_intelligence,
+        "financials_intelligence": financials_intelligence,
+        "decision_brief": decision_brief,
+        "final_decision": final_decision_snapshot,
         "manifest": manifest,
     }
 

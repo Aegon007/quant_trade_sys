@@ -155,6 +155,21 @@ def create_app():
             loader.SNAPSHOT_PATHS["decision-brief"],
         )
 
+    @app.get("/api/final-decision")
+    def final_decision():
+        return loader.load_snapshot_response(
+            "final-decision",
+            loader.SNAPSHOT_PATHS["final-decision"],
+        )
+
+    @app.get("/api/weekend-correlation")
+    def weekend_correlation():
+        return loader.load_snapshot_response(
+            "weekend-correlation",
+            loader.SNAPSHOT_PATHS["weekend-correlation"],
+            max_age_seconds=14 * 24 * 3600,
+        )
+
     @app.get("/api/job-status")
     def job_status():
         return loader.load_job_status_response()
@@ -278,6 +293,15 @@ def create_app():
             "settings-foundation-model-config",
             lambda: api_actions.save_foundation_model_settings(dict(payload or {})),
             run_async=False,
+        )
+
+    @app.post("/api/actions/warmup-foundation-model")
+    def warmup_foundation_model():
+        progress = api_actions.build_job_progress_callback("settings-foundation-model-warmup")
+        return api_actions.run_with_job_status(
+            "settings-foundation-model-warmup",
+            lambda: api_actions.warmup_foundation_model_backend(progress_callback=progress),
+            run_async=True,
         )
 
     @app.post("/api/actions/save-financials-config")

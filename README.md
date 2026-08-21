@@ -10,11 +10,13 @@
 - 观察列表：维护关注股票、备注，并显示模型估算的上涨预期价区间。
 - 实时行情：通过 Yahoo Finance 获取持仓和观察列表价格，并使用本地缓存减少重复请求；应用运行时会自动刷新过期价格。
 - 多周期决策：对持仓、核心 ETF 和卫星候选统一输出 `63/126/252` 交易日的上涨概率、绝对收益/价格区间、跑赢短债与 SPY 的概率、短期时机和最终仓位动作。
+- 核心 ETF 定投纪律：VOO/VTI/QQQ/QQQM 这类长期核心 ETF 不再完全依赖模型喊 `ATTRACTIVE`。当风险未封锁、长期核心 ETF 明显低于目标底仓时，系统可输出 `DCA_ACCUMULATE`，用于纪律化补齐底仓或回调定投。
+- 卫星仓行业动量 overlay：半导体链候选会结合 SMH/SOXX 与 SPY 的相对强度；当行业 ETF 和个股同时确认强势时，可把中性 watch 信号升级为 `PROBE`，避免 foundation model 对急速板块扩散反应过慢。
 - 分析师共识增强：夜间抓取分析师买卖共识；当看多或看空比例超过 `90%` 且样本充足时，增强关注列表提示为“强烈买入”或“强烈卖出”。
 - ETF 代理意见：当 ETF 本身没有分析师评级时，系统会自动读取前十大持仓，并按权重聚合成分股分析师共识，生成 ETF 的代理买卖意见。
 - 仓位建议：结合当前持仓、目标仓位和回测结果，给出加仓、减仓、退出或观望建议。
 - 组合级建议：分析行业集中度和高相关股票组合，避免只看单只股票信号而忽略整体风险。
-- Foundation 量化引擎：默认路线切换为真实 `foundation-model-first`。当前默认后端为 Chronos-Bolt；未安装真实后端或权重未下载时，系统会显示 `MODEL_UNAVAILABLE` 并停止生成模型交易建议，不再使用 proxy 冒充真实模型。
+- Foundation 量化引擎：默认路线切换为真实 `foundation-model-first`。当前默认模型为 `amazon/chronos-2`；未安装真实后端或权重未下载时，系统会显示 `MODEL_UNAVAILABLE` 并停止生成模型交易建议，不再使用 proxy 冒充真实模型。
 - 风险因子增强：模型输出会叠加市场情绪、市场宽度、VIX 风险、新闻事件、财报现金流/capex/债务压力、AI capex / systemic risk 早期预警，再进入仓位纪律层。
 - 模型治理：旧自训练 benchmark 已从前台、API 和模型注册表移除；当前只注册 `foundation_quant_engine`，旧 `multi_horizon` 命名仅作为共享信号快照兼容层保留。
 - 新闻/事件系统：支持本地 `storage/state/market_events.json` 事件输入，并可通过事件源适配层自动抓取外部新闻事件。
@@ -59,14 +61,16 @@ cd frontend && npm ci && cd ..
 
 #### 安装真实 Foundation Model 后端
 
-系统默认要求真实时间序列 foundation model。当前首选后端是 Chronos-Bolt。
+系统默认要求真实时间序列 foundation model。当前生产默认后端是 Chronos-2。
+
+模型选择位于 `Settings -> Foundation model selection`。页面会显示当前配置模型、后端顺序、设备、context/batch、revision 和训练数据保留天数，并提供 `amazon/chronos-2` 与 `autogluon/chronos-2-small` 预设按钮。点击 `Save foundation model` 后，系统会先保存配置，再启动 `settings-foundation-model-warmup` 后台任务：先用 `local_files_only=True` 检查 Hugging Face 本地缓存，再按需下载缺失权重；随后真实加载 Chronos pipeline，并在页面显示 queued/running/completed/failed、stage、progress、model、cache status、cache path 和 device。默认缓存通常位于 `~/.cache/huggingface/hub`，实际路径以 Settings 页面显示为准。当前默认是 `amazon/chronos-2`；Jetson Orin Nano 8GB 如果内存压力较大，先降低 batch size 或切换到 `autogluon/chronos-2-small`。
 
 普通 macOS / x86 Linux：
 
 ```bash
 source ~/venv/bin/activate
 pip install -r requirements.txt
-python -c "from chronos import BaseChronosPipeline; BaseChronosPipeline.from_pretrained('amazon/chronos-bolt-small', device_map='cpu'); print('chronos ready')"
+python -c "from chronos import BaseChronosPipeline; BaseChronosPipeline.from_pretrained('amazon/chronos-2', device_map='cpu'); print('chronos ready')"
 ```
 
 Apple Silicon Mac 会由系统自动尝试 `mps`；如果 MPS 不可用会回到 CPU。Jetson 必须使用下面的 Jetson 专用安装流程，不能直接用普通依赖解析安装 Chronos。第一次运行会从 Hugging Face 下载模型权重，之后复用本机缓存。
@@ -103,7 +107,7 @@ pip install -r requirements-jetson.txt
 pip install --no-deps chronos-forecasting==2.2.2
 
 # Step 4: 预热下载模型权重。
-python -c "from chronos import BaseChronosPipeline; BaseChronosPipeline.from_pretrained('amazon/chronos-bolt-small', device_map='cuda'); print('chronos ready')"
+python -c "from chronos import BaseChronosPipeline; BaseChronosPipeline.from_pretrained('amazon/chronos-2', device_map='cuda'); print('chronos ready')"
 ```
 
 在启动系统前可以这样确认后端环境确实看到了 GPU：
@@ -388,7 +392,10 @@ journalctl --user -u quant-trade-system.service -f
 
 - 优先级由 `storage/config/foundation_model.json` 控制。
 - TimesFM / Chronos / MOMENT 是可插拔候选 backend。
-- 当前默认后端为 `chronos`，默认模型为 `amazon/chronos-bolt-small`。
+- 当前默认后端为 `chronos`，默认模型为 `amazon/chronos-2`。
+- `Settings -> Foundation model selection` 可以直接切换 `amazon/chronos-2` / `autogluon/chronos-2-small`，也可以手动填写 Hugging Face model id 和可选 revision。
+- `Research & Models` 会显示当前快照实际使用的 model name、revision、runtime device、forecast API、context length 和 batch size。
+- 每次 Foundation job 会把实际读取到的历史 OHLCV 归档到 `storage/state/foundation_training_observations.parquet`，按 `training_data.retention_days` 裁剪，作为未来 Chronos-2 fine-tune / LoRA 适配的数据基础。
 - 如果依赖或权重尚未安装，系统会显示 `MODEL_UNAVAILABLE`，并停止生成模型交易建议。
 - `proxy` 仅允许显式开发调试，不再是默认运行路径。
 
@@ -396,7 +403,7 @@ Chronos 验证命令：
 
 ```bash
 source ~/venv/bin/activate
-python -c "from chronos import BaseChronosPipeline; BaseChronosPipeline.from_pretrained('amazon/chronos-bolt-small', device_map='cpu'); print('chronos ready')"
+python -c "from chronos import BaseChronosPipeline; BaseChronosPipeline.from_pretrained('amazon/chronos-2', device_map='cpu'); print('chronos ready')"
 ```
 
 旧自训练 benchmark 的用户入口已经移除。`quant_core/models/multi_horizon/` 目录当前仍保留部分共享结构：统一多周期快照、决策融合、验证归档和历史测试辅助。它不再作为可训练/可部署模型暴露给用户。

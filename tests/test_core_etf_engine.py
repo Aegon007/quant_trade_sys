@@ -51,6 +51,46 @@ class CoreEtfEngineTests(unittest.TestCase):
         self.assertEqual(snapshot2["symbols"][0]["action"], "ACCUMULATE")
         self.assertGreater(snapshot2["symbols"][0]["target_weight_pct"], 0.0)
 
+    def test_build_core_etf_snapshot_dca_accumulates_underweight_long_term_core(self):
+        rotation_snapshot = {
+            "symbols": [
+                {
+                    "symbol": "QQQM",
+                    "enabled": True,
+                    "role": "growth",
+                    "long_term_core": True,
+                    "current_price": 210.0,
+                    "rotation_score": 55.0,
+                    "rotation_status": "WATCH",
+                    "confidence": 0.55,
+                    "expected_return_3m": 0.01,
+                    "expected_return_12m": 0.08,
+                    "ma50": 205.0,
+                    "rotation_backtest": {"excess_return": 0.0},
+                }
+            ]
+        }
+        snapshot = self.engine.build_core_etf_snapshot(
+            data={"holdings": [], "watchlist": []},
+            account_snapshot={"total_capital": 10000.0},
+            rotation_snapshot=rotation_snapshot,
+            policy={
+                "minimum_trade_value": 250.0,
+                "min_weight_change_pct": 3.0,
+                "action_confirmation_days": 2,
+                "core_dca": {
+                    "enabled": True,
+                    "symbols": ["VOO", "QQQM"],
+                    "minimum_rotation_score": 45.0,
+                    "target_floor_ratio": 0.55,
+                },
+            },
+            now=datetime(2026, 5, 13, 22, 0, 0),
+        )
+
+        self.assertEqual(snapshot["symbols"][0]["action"], "DCA_ACCUMULATE")
+        self.assertIn("定投目标底线", snapshot["symbols"][0]["signal_reason"])
+
     def test_build_core_etf_snapshot_risk_off_for_growth_moves_to_risk_exit(self):
         rotation_snapshot = {
             "symbols": [

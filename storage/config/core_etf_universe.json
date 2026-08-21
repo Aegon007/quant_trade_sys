@@ -22,24 +22,31 @@
       "long_term_core": true
     },
     {
+      "symbol": "QQQM",
+      "enabled": true,
+      "role": "growth",
+      "priority": 4,
+      "long_term_core": true
+    },
+    {
       "symbol": "SCHD",
       "enabled": true,
       "role": "dividend_quality",
-      "priority": 4,
+      "priority": 5,
       "long_term_core": true
     },
     {
       "symbol": "QUAL",
       "enabled": true,
       "role": "quality",
-      "priority": 5,
+      "priority": 6,
       "long_term_core": true
     },
     {
       "symbol": "SGOV",
       "enabled": true,
       "role": "cash_substitute",
-      "priority": 6,
+      "priority": 7,
       "long_term_core": true
     }
   ]

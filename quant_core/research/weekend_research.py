@@ -296,6 +296,25 @@ def build_weekend_research_report(snapshot: Mapping) -> str:
             f"Promotion watch: {int(_safe_float(governance_summary.get('promotion_watch_count'), 0) or 0)}"
         )
         lines.append("")
+    correlation_snapshot = dict(snapshot.get("correlation_research_snapshot", {}) or {})
+    correlation_summary = dict(correlation_snapshot.get("summary", {}) or {})
+    if correlation_summary:
+        lines.append("## Weekend Correlation Research")
+        lines.append("")
+        lines.append(
+            "- "
+            f"Status: {correlation_snapshot.get('status') or correlation_summary.get('status') or '—'} | "
+            f"High pairs: {int(_safe_float(correlation_summary.get('high_correlation_pair_count'), 0) or 0)} | "
+            f"Portfolio redundancy: {int(_safe_float(correlation_summary.get('portfolio_redundancy_count'), 0) or 0)} | "
+            f"Independent strength: {int(_safe_float(correlation_summary.get('independent_strength_count'), 0) or 0)}"
+        )
+        lines.append("- Role: 风险和机会线索，不直接产生买卖指令。")
+        for row in list(correlation_snapshot.get("portfolio_redundancy", []) or [])[:5]:
+            lines.append(
+                f"- Redundancy: {row.get('left')} / {row.get('right')} corr={float(_safe_float(row.get('correlation'), 0.0) or 0.0):.2f}, "
+                f"combined weight={float(_safe_float(row.get('combined_weight_pct'), 0.0) or 0.0):.1f}%"
+            )
+        lines.append("")
     evidence_layer = dict(snapshot.get("evidence_layer", {}) or {})
     evidence_rows = list(evidence_layer.get("evidence", []) or [])
     if evidence_rows:

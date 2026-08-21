@@ -17,9 +17,10 @@ DEFAULT_CORE_ETF_UNIVERSE = {
         {"symbol": "VOO", "enabled": True, "role": "broad_market", "priority": 1, "long_term_core": True},
         {"symbol": "VTI", "enabled": True, "role": "broad_market", "priority": 2, "long_term_core": True},
         {"symbol": "QQQ", "enabled": True, "role": "growth", "priority": 3, "long_term_core": True},
-        {"symbol": "SCHD", "enabled": True, "role": "dividend_quality", "priority": 4, "long_term_core": True},
-        {"symbol": "QUAL", "enabled": True, "role": "quality", "priority": 5, "long_term_core": True},
-        {"symbol": "SGOV", "enabled": True, "role": "cash_substitute", "priority": 6, "long_term_core": True},
+        {"symbol": "QQQM", "enabled": True, "role": "growth", "priority": 4, "long_term_core": True},
+        {"symbol": "SCHD", "enabled": True, "role": "dividend_quality", "priority": 5, "long_term_core": True},
+        {"symbol": "QUAL", "enabled": True, "role": "quality", "priority": 6, "long_term_core": True},
+        {"symbol": "SGOV", "enabled": True, "role": "cash_substitute", "priority": 7, "long_term_core": True},
     ]
 }
 
@@ -46,6 +47,14 @@ DEFAULT_ENGINE_POLICY = {
     "top3_promotion_confirmation_days": 2,
     "top3_demotion_confirmation_days": 2,
     "minimum_top3_residency_days": 2,
+    "core_dca": {
+        "enabled": True,
+        "symbols": ["VOO", "VTI", "QQQ", "QQQM"],
+        "minimum_rotation_score": 45.0,
+        "target_floor_ratio": 0.55,
+        "target_mid_ratio": 0.72,
+        "dip_buy_drawdown_pct": -3.0,
+    },
 }
 
 DEFAULT_ROTATION_SNAPSHOT_FILE = qpaths.CORE_ETF_SNAPSHOT_FILE
@@ -157,6 +166,20 @@ def normalize_engine_policy(config) -> dict:
     ):
         value = _safe_float(config.get(key), payload[key])
         payload[key] = int(value) if "days" in key else float(value)
+    dca = dict(config.get("core_dca", {}) or {})
+    default_dca = dict(DEFAULT_ENGINE_POLICY["core_dca"])
+    payload["core_dca"] = {
+        "enabled": bool(dca.get("enabled", default_dca["enabled"])),
+        "symbols": [
+            str(symbol or "").strip().upper()
+            for symbol in list(dca.get("symbols", default_dca["symbols"]) or [])
+            if str(symbol or "").strip()
+        ],
+        "minimum_rotation_score": float(_safe_float(dca.get("minimum_rotation_score"), default_dca["minimum_rotation_score"])),
+        "target_floor_ratio": float(_safe_float(dca.get("target_floor_ratio"), default_dca["target_floor_ratio"])),
+        "target_mid_ratio": float(_safe_float(dca.get("target_mid_ratio"), default_dca["target_mid_ratio"])),
+        "dip_buy_drawdown_pct": float(_safe_float(dca.get("dip_buy_drawdown_pct"), default_dca["dip_buy_drawdown_pct"])),
+    }
     return payload
 
 

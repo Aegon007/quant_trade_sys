@@ -7,16 +7,18 @@
   "backends": {
     "chronos": {
       "batch_size": 8,
-      "context_length": 512,
+      "context_length": 2048,
+      "cross_learning": false,
       "device": "auto",
       "enabled": true,
-      "model_name": "amazon/chronos-bolt-small",
+      "model_name": "amazon/chronos-2",
       "quantile_levels": [
         0.1,
         0.5,
         0.9
       ],
-      "supports_covariates": false,
+      "revision": "",
+      "supports_covariates": true,
       "torch_dtype": "auto"
     },
     "moment": {
@@ -55,7 +57,27 @@
   "market_benchmark": "SPY",
   "maximum_symbols": 100,
   "model_id": "foundation_quant_engine",
+  "model_presets": {
+    "chronos_2": {
+      "backend": "chronos",
+      "label": "Chronos-2",
+      "model_name": "amazon/chronos-2",
+      "parameter_count": "120M",
+      "profile": "Default universal forecasting model with multivariate/covariate support."
+    },
+    "chronos_2_small": {
+      "backend": "chronos",
+      "label": "Chronos-2 Small",
+      "model_name": "autogluon/chronos-2-small",
+      "parameter_count": "28M",
+      "profile": "Small Chronos-2 variant for constrained local inference."
+    }
+  },
   "require_real_backend": true,
   "risk_free_benchmark": "BIL",
-  "schema_version": 1
+  "schema_version": 1,
+  "training_data": {
+    "enabled": true,
+    "retention_days": 1825
+  }
 }

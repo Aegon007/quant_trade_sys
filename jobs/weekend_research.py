@@ -19,6 +19,7 @@ from quant_core.research import strategy_validation as sval
 from quant_core.research import strategy_governance as sgov
 from quant_core.research import evidence_collector as evid
 from quant_core.research import weekend_research as wr
+from quant_core.research import correlation_research as corr_research
 from quant_core.snapshots import system_snapshot as ss
 from quant_core.ledger import transactions as tx
 from quant_core.analytics.signal_scoreboard import build_signal_scoreboard
@@ -120,6 +121,23 @@ def run_weekend_research(
 
     satellite_snapshot = mh_pipeline.build_satellite_snapshot_from_model(multi_horizon_snapshot)
     cpool.save_satellite_candidate_pool_snapshot(satellite_snapshot)
+    correlation_symbols = []
+    for row in list(data.get("holdings", []) or []) + list(data.get("watchlist", []) or []):
+        symbol = str(row.get("symbol") or "").strip().upper()
+        if symbol:
+            correlation_symbols.append(symbol)
+    for row in list(core_rotation_snapshot.get("symbols", []) or []) + list(satellite_snapshot.get("candidate_pool", []) or [])[:100]:
+        symbol = str(row.get("symbol") or "").strip().upper()
+        if symbol:
+            correlation_symbols.append(symbol)
+    correlation_snapshot = corr_research.build_correlation_research_snapshot(
+        symbols=correlation_symbols,
+        holdings=list(data.get("holdings", []) or []),
+        load_history_fn=qa.get_historical_data,
+        now=now,
+        period=history_period,
+    )
+    corr_research.save_correlation_research_snapshot(correlation_snapshot)
     # Disabled rule strategies remain useful as offline controls, never as production signals.
     strategies = su.load_strategies(include_disabled=True)
     runtime_strategy = _runtime_strategy(strategies[0], history_period="2y") if strategies else None
@@ -204,6 +222,10 @@ def run_weekend_research(
         evidence_layer=evidence_layer,
     )
     snapshot["multi_horizon_snapshot"] = multi_horizon_snapshot
+    snapshot["correlation_research_snapshot"] = correlation_snapshot
+    snapshot["summary"]["correlation_research_status"] = correlation_snapshot.get("status")
+    snapshot["summary"]["high_correlation_pair_count"] = dict(correlation_snapshot.get("summary", {}) or {}).get("high_correlation_pair_count")
+    snapshot["summary"]["portfolio_redundancy_count"] = dict(correlation_snapshot.get("summary", {}) or {}).get("portfolio_redundancy_count")
     snapshot["summary"]["multi_horizon_status"] = dict(multi_horizon_snapshot or {}).get("status")
     snapshot["summary"]["multi_horizon_validation_status"] = dict(dict(multi_horizon_snapshot or {}).get("training", {}) or {}).get("validation_status")
     wr.save_weekend_research_snapshot(snapshot, path=snapshot_path)

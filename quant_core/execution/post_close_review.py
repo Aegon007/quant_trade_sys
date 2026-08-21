@@ -123,7 +123,7 @@ def _plan_opportunity(item: Mapping, market_day_range: Optional[Mapping]) -> dic
     reachable = session_low <= zone_high and session_high >= zone_low
     result["plan_zone_reachable"] = bool(reachable)
     action = str(item.get("plan_action") or "").strip().upper()
-    if action in {"ADD", "ACCUMULATE", "PROBE"}:
+    if action in {"ADD", "ACCUMULATE", "DCA_ACCUMULATE", "PROBE"}:
         max_chase_price = _safe_float(item.get("max_chase_price"))
         invalidated_before_entry = False
         if max_chase_price is not None and session_low is not None and session_low > max_chase_price:

@@ -58,8 +58,8 @@ export function formatDate(value: unknown): string {
   if (!raw) return "-";
   const date = new Date(raw);
   if (Number.isNaN(date.getTime())) return raw;
-  return date.toLocaleString([], {
-    month: "short",
+  return date.toLocaleString("zh-CN", {
+    month: "2-digit",
     day: "numeric",
     hour: "2-digit",
     minute: "2-digit",

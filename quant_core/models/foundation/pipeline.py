@@ -12,6 +12,7 @@ from quant_core.data import storage as data_storage
 from quant_core.models.foundation.backends import select_backend
 from quant_core.models.foundation.config import load_foundation_model_config, normalize_foundation_model_config
 from quant_core.models.foundation.fusion import classify_long_horizon, classify_timing, fuse_foundation_decision
+from quant_core.models.foundation.training_data import append_training_observations
 from quant_core.models.multi_horizon.pipeline import (
     _current_weights_pct,
     _load_default_universes,
@@ -41,6 +42,40 @@ def _latest_moving_average(frame: pd.DataFrame | None, window: int):
     return float(close.tail(window).mean())
 
 
+SEMICONDUCTOR_SYMBOLS = {
+    "AMD",
+    "AMAT",
+    "ARM",
+    "ASML",
+    "AVGO",
+    "INTC",
+    "KLAC",
+    "LRCX",
+    "MU",
+    "NVDA",
+    "QCOM",
+    "SMCI",
+    "TSM",
+}
+
+
+def _close_series(frame: pd.DataFrame | None) -> pd.Series:
+    if not isinstance(frame, pd.DataFrame) or frame.empty or "Close" not in frame.columns:
+        return pd.Series(dtype=float)
+    return pd.to_numeric(frame["Close"], errors="coerce").dropna().sort_index()
+
+
+def _trailing_return(frame: pd.DataFrame | None, lookback: int):
+    close = _close_series(frame)
+    if len(close) <= lookback:
+        return None
+    start = float(close.iloc[-lookback - 1])
+    end = float(close.iloc[-1])
+    if start <= 0:
+        return None
+    return end / start - 1.0
+
+
 def _asset_type(symbol: str, *, core_symbols: set[str]) -> str:
     return "core_etf" if symbol in core_symbols else "satellite_stock"
 
@@ -63,13 +98,80 @@ def _long_horizon_payload(forecast: Mapping) -> dict:
 def _score_satellite(row: Mapping) -> float:
     long = dict(row.get("long_horizon", {}) or {})
     decision = dict(row.get("shadow_decision", {}) or row.get("decision", {}) or {})
+    sector = dict(row.get("sector_momentum", {}) or {})
     expected = float(long.get("expected_return") or 0.0)
     beat_rf = float(long.get("risk_free_outperformance_probability") or 0.0)
     confidence = float(decision.get("confidence") or 0.0)
+    sector_boost = float(sector.get("score_boost") or 0.0)
     penalty = 0.0
     if decision.get("risk_overrides"):
         penalty += 20.0
-    return round(expected * 100.0 + beat_rf * 45.0 + confidence * 25.0 - penalty, 2)
+    return round(expected * 100.0 + beat_rf * 45.0 + confidence * 25.0 + sector_boost - penalty, 2)
+
+
+def _sector_momentum(symbol: str, histories: Mapping[str, pd.DataFrame], *, market_symbol: str) -> dict:
+    symbol = str(symbol or "").strip().upper()
+    if symbol not in SEMICONDUCTOR_SYMBOLS:
+        return {"sector": "UNKNOWN", "state": "NOT_APPLICABLE", "score_boost": 0.0}
+    market_21 = _trailing_return(histories.get(market_symbol), 21) or 0.0
+    market_63 = _trailing_return(histories.get(market_symbol), 63) or 0.0
+    sector_21 = max(_trailing_return(histories.get("SMH"), 21) or -999.0, _trailing_return(histories.get("SOXX"), 21) or -999.0)
+    sector_63 = max(_trailing_return(histories.get("SMH"), 63) or -999.0, _trailing_return(histories.get("SOXX"), 63) or -999.0)
+    asset_21 = _trailing_return(histories.get(symbol), 21) or 0.0
+    asset_63 = _trailing_return(histories.get(symbol), 63) or 0.0
+    sector_relative_21 = sector_21 - market_21 if sector_21 > -900.0 else 0.0
+    sector_relative_63 = sector_63 - market_63 if sector_63 > -900.0 else 0.0
+    asset_relative_21 = asset_21 - market_21
+    asset_relative_63 = asset_63 - market_63
+    score_boost = 0.0
+    reasons = []
+    if sector_relative_21 >= 0.025 and sector_relative_63 >= 0.04:
+        score_boost += 14.0
+        reasons.append("SEMI_SECTOR_CONFIRMATION")
+    if asset_relative_21 >= 0.03 and asset_relative_63 >= 0.05:
+        score_boost += 12.0
+        reasons.append("ASSET_RELATIVE_STRENGTH")
+    if asset_21 >= 0.08:
+        score_boost += 6.0
+        reasons.append("SHORT_TERM_MOMENTUM_EXPANSION")
+    state = "STRONG" if score_boost >= 20.0 else "POSITIVE" if score_boost >= 10.0 else "NEUTRAL"
+    return {
+        "sector": "SEMICONDUCTOR",
+        "benchmark_symbols": ["SMH", "SOXX"],
+        "state": state,
+        "score_boost": round(score_boost, 2),
+        "asset_return_21d": asset_21,
+        "asset_return_63d": asset_63,
+        "asset_relative_21d": asset_relative_21,
+        "asset_relative_63d": asset_relative_63,
+        "sector_relative_21d": sector_relative_21,
+        "sector_relative_63d": sector_relative_63,
+        "reason_codes": reasons,
+    }
+
+
+def _apply_sector_overlay(decision: Mapping, sector_momentum: Mapping, *, asset_type: str, current_weight_pct: float) -> dict:
+    updated = dict(decision or {})
+    if str(asset_type or "").lower() == "core_etf":
+        return updated
+    if updated.get("risk_overrides"):
+        return updated
+    state = str(dict(sector_momentum or {}).get("state") or "").upper()
+    if state != "STRONG":
+        return updated
+    action = str(updated.get("action") or "WATCH").upper()
+    reason_codes = list(updated.get("reason_codes", []) or [])
+    reason_codes.extend([code for code in list(dict(sector_momentum or {}).get("reason_codes", []) or []) if code not in reason_codes])
+    if action in {"WATCH", "HOLD"} and float(current_weight_pct or 0.0) <= 0.0:
+        current_range = list(updated.get("target_weight_range_pct", []) or [])
+        current_high = float(current_range[-1] if current_range else 0.0)
+        updated["action"] = "PROBE"
+        updated["action_strength"] = "MODERATE"
+        updated["target_weight_range_pct"] = [1.0, max(current_high, 3.0)]
+        updated["suggested_trade_size_pct"] = max(float(updated.get("suggested_trade_size_pct") or 0.0), 1.0)
+        updated["primary_reason"] = "SECTOR_MOMENTUM_CONFIRMED"
+    updated["reason_codes"] = reason_codes
+    return updated
 
 
 def _summary(rows: list[dict], *, backend_name: str) -> dict:
@@ -89,6 +191,20 @@ def _summary(rows: list[dict], *, backend_name: str) -> dict:
         "conflict_count": conflict_count,
         "model_family": "FOUNDATION_MODEL",
         "backend": backend_name,
+    }
+
+
+def _backend_model_metadata(backend, forecasts: Mapping | None = None) -> dict:
+    forecasts = dict(forecasts or {})
+    first_forecast = next((dict(row or {}) for row in forecasts.values() if isinstance(row, Mapping)), {})
+    return {
+        "model_name": getattr(backend, "model_name", None) or first_forecast.get("model_name"),
+        "revision": getattr(backend, "revision", None) or first_forecast.get("revision"),
+        "runtime_device": getattr(backend, "_runtime_device", None) or first_forecast.get("runtime_device"),
+        "context_length": getattr(backend, "context_length", None),
+        "batch_size": getattr(backend, "batch_size", None),
+        "cross_learning": getattr(backend, "cross_learning", None),
+        "forecast_api": first_forecast.get("forecast_api"),
     }
 
 
@@ -138,7 +254,7 @@ def run_foundation_job(
     risk_free_symbol = str(normalized.get("risk_free_benchmark") or "BIL").upper()
     market_symbol = str(normalized.get("market_benchmark") or "SPY").upper()
     growth_symbol = str(normalized.get("growth_benchmark") or "QQQ").upper()
-    history_symbols = list(dict.fromkeys([*symbols, market_symbol, growth_symbol, "VOO", "^VIX"]))
+    history_symbols = list(dict.fromkeys([*symbols, market_symbol, growth_symbol, "VOO", "SMH", "SOXX", "^VIX"]))
     if progress_callback:
         progress_callback({"stage": "foundation_history", "detail": f"Loading history for {len(history_symbols)} symbols", "progress_pct": 12})
     histories, failures = load_histories(
@@ -148,6 +264,26 @@ def run_foundation_job(
         load_history_fn=load_history_fn,
     )
     usable_symbols = [symbol for symbol in symbols if symbol in histories]
+    training_data_snapshot = {}
+    training_config = dict(normalized.get("training_data", {}) or {})
+    if bool(training_config.get("enabled", True)):
+        if progress_callback:
+            progress_callback({"stage": "foundation_training_data", "detail": "Archiving foundation-model training observations", "progress_pct": 18})
+        try:
+            training_data_snapshot = append_training_observations(
+                histories,
+                symbols=[*usable_symbols, risk_free_symbol, market_symbol, growth_symbol, "VOO", "^VIX"],
+                captured_at=now,
+                model_name=str(dict(dict(normalized.get("backends", {}) or {}).get("chronos", {}) or {}).get("model_name") or ""),
+                retention_days=int(training_config.get("retention_days") or 1825),
+                path=qpaths.FOUNDATION_TRAINING_OBSERVATIONS_FILE,
+            )
+        except Exception as exc:
+            training_data_snapshot = {
+                "status": "FAILED",
+                "message": f"{type(exc).__name__}: {exc}",
+                "retention_days": int(training_config.get("retention_days") or 1825),
+            }
     news_intelligence = {}
     try:
         news_intelligence = json.loads(Path(qpaths.NEWS_INTELLIGENCE_FILE).read_text(encoding="utf-8"))
@@ -176,6 +312,7 @@ def run_foundation_job(
 
     backend, attempts = select_backend(normalized)
     capabilities = backend.capabilities()
+    backend_model_meta = _backend_model_metadata(backend)
     if progress_callback:
         progress_callback({"stage": "foundation_backend", "detail": f"Using backend {backend.name}", "progress_pct": 35})
     if capabilities.status != "READY":
@@ -189,6 +326,7 @@ def run_foundation_job(
                 "model_family": "FOUNDATION_MODEL",
                 "backend": backend.name,
                 "backend_family": capabilities.model_family,
+                **{key: value for key, value in backend_model_meta.items() if value not in {None, ""}},
                 "status": capabilities.status,
                 "version": f"{normalized['model_id']}:unavailable:{now.date().isoformat()}",
                 "trained_at": None,
@@ -198,6 +336,7 @@ def run_foundation_job(
             "market_sentiment": market_sentiment,
             "systemic_risk": systemic_risk,
             "financials_intelligence": financials_intelligence,
+            "training_data": training_data_snapshot,
             "backend_attempts": attempts,
             "symbols": [],
             "core_etfs": [],
@@ -213,7 +352,7 @@ def run_foundation_job(
                 "installation_hint": (
                     "~/venv/bin/pip install chronos-forecasting && "
                     "~/venv/bin/python -c \"from chronos import BaseChronosPipeline; "
-                    "BaseChronosPipeline.from_pretrained('amazon/chronos-bolt-small', device_map='cpu')\""
+                    "BaseChronosPipeline.from_pretrained('amazon/chronos-2', device_map='cpu')\""
                 ),
             },
             "data_quality": {
@@ -240,6 +379,7 @@ def run_foundation_job(
         horizons=list(normalized["horizons"]),
         benchmarks={"risk_free": risk_free_symbol, "market": market_symbol, "growth": growth_symbol},
     )
+    backend_model_meta = _backend_model_metadata(backend, forecasts)
 
     core_symbols = {
         str(dict(row or {}).get("symbol") or "").strip().upper()
@@ -268,6 +408,8 @@ def run_foundation_job(
             average_200=_latest_moving_average(history, 200),
         )
         asset_type = _asset_type(symbol, core_symbols=core_symbols)
+        current_weight_pct = float(current_weights.get(symbol, 0.0))
+        sector_momentum = _sector_momentum(symbol, histories, market_symbol=market_symbol)
         max_weight = (
             float(decision_config.get("core_max_weight_pct") or 70.0)
             if asset_type == "core_etf"
@@ -277,11 +419,17 @@ def run_foundation_job(
             symbol=symbol,
             asset_type=asset_type,
             forecast_row=forecast,
-            current_weight_pct=float(current_weights.get(symbol, 0.0)),
+            current_weight_pct=current_weight_pct,
             market_sentiment=market_sentiment,
             systemic_risk=systemic_risk,
             risk_regime=risk_regime,
             max_weight_pct=max_weight,
+        )
+        decision = _apply_sector_overlay(
+            decision,
+            sector_momentum,
+            asset_type=asset_type,
+            current_weight_pct=current_weight_pct,
         )
         row = {
             "symbol": symbol,
@@ -294,7 +442,7 @@ def run_foundation_job(
                 "capabilities": capabilities.__dict__,
             },
             "latest_price": forecast.get("latest_price"),
-            "current_weight_pct": float(current_weights.get(symbol, 0.0)),
+            "current_weight_pct": current_weight_pct,
             "list_type": (
                 "holding"
                 if symbol in holding_symbols
@@ -304,6 +452,7 @@ def run_foundation_job(
             ),
             "long_horizon": _long_horizon_payload(forecast),
             "timing": {"state": timing_state},
+            "sector_momentum": sector_momentum,
             "decision_fusion": {
                 "market_sentiment_state": market_sentiment.get("risk_appetite_state"),
                 "systemic_risk_state": systemic_risk.get("ai_capex_stress"),
@@ -343,6 +492,7 @@ def run_foundation_job(
             "model_family": "FOUNDATION_MODEL",
             "backend": backend.name,
             "backend_family": capabilities.model_family,
+            **{key: value for key, value in backend_model_meta.items() if value not in {None, ""}},
             "status": capabilities.status,
             "version": f"{normalized['model_id']}:{backend.name}:{now.date().isoformat()}",
             "trained_at": now.isoformat(),
@@ -352,6 +502,7 @@ def run_foundation_job(
         "market_sentiment": market_sentiment,
         "systemic_risk": systemic_risk,
         "financials_intelligence": financials_intelligence,
+        "training_data": training_data_snapshot,
         "backend_attempts": attempts,
         "symbols": rows,
         "core_etfs": core_rows,

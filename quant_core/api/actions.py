@@ -30,6 +30,7 @@ from quant_core.llm import explainer as llm_explainer
 from quant_core.llm import decision_brief
 from quant_core.fundamentals import financials as financials_config
 from quant_core.models.foundation import config as foundation_model_config
+from quant_core.models.foundation import backends as foundation_backends
 from quant_core.portfolio import actions as portfolio_actions
 from quant_core.snapshots import system_snapshot
 
@@ -56,6 +57,12 @@ def _result_summary(payload) -> dict:
         "decision",
         "action_count",
         "generated_at",
+        "backend",
+        "model_name",
+        "revision",
+        "runtime_device",
+        "cache_status",
+        "cache_path",
     )
     summary = {
         key: payload.get(key)
@@ -429,6 +436,196 @@ def save_foundation_model_settings(config: Mapping) -> dict:
         "message": "foundation model config saved",
         "path": path,
         "foundation_model_config": foundation_model_config.load_foundation_model_config(path=path),
+    }
+
+
+def warmup_foundation_model_backend(
+    *,
+    progress_callback: Callable[[Mapping], None] | None = None,
+) -> dict:
+    """Download and load the configured foundation backend once.
+
+    This is intentionally separate from a full nightly run: the Settings page
+    needs to prove that the selected model can actually be resolved and loaded
+    before the user trusts downstream recommendations.
+    """
+
+    def report(stage: str, detail: str, progress_pct: float, **metadata) -> None:
+        if progress_callback:
+            progress_callback(
+                {
+                    "stage": stage,
+                    "detail": detail,
+                    "progress_pct": round(float(progress_pct), 1),
+                    **metadata,
+                }
+            )
+
+    config = foundation_model_config.load_foundation_model_config()
+    report("foundation_warmup_config", "Loaded foundation model config", 5)
+    backend, attempts = foundation_backends.select_backend(config)
+    capabilities = backend.capabilities()
+    model_name = getattr(backend, "model_name", None)
+    revision = getattr(backend, "revision", None)
+    report(
+        "foundation_warmup_capabilities",
+        capabilities.message or f"Selected backend {backend.name}",
+        15,
+        backend=backend.name,
+        model_name=model_name,
+        revision=revision,
+        backend_status=capabilities.status,
+    )
+    if capabilities.status != "READY":
+        raise RuntimeError(capabilities.message or "Foundation backend is not ready.")
+    if backend.name != "chronos":
+        return {
+            "message": f"foundation backend {backend.name} is ready; no Chronos warmup required",
+            "backend": backend.name,
+            "model_name": model_name,
+            "revision": revision,
+            "cache_status": "NOT_APPLICABLE",
+            "attempts": attempts,
+        }
+
+    cache_path = ""
+    cache_status = "UNKNOWN"
+    try:
+        from huggingface_hub import snapshot_download
+
+        cache_path = snapshot_download(
+            repo_id=str(model_name),
+            revision=str(revision) if revision else None,
+            local_files_only=True,
+        )
+        cache_status = "CACHED"
+    except Exception as exc:
+        cache_status = "MISSING"
+        report(
+            "foundation_warmup_cache_check",
+            f"Local cache miss for {model_name}: {type(exc).__name__}: {exc}",
+            20,
+            backend=backend.name,
+            model_name=model_name,
+            revision=revision,
+            cache_status=cache_status,
+            cache_path=cache_path,
+        )
+    else:
+        report(
+            "foundation_warmup_cache_check",
+            f"Local cache ready for {model_name}",
+            25,
+            backend=backend.name,
+            model_name=model_name,
+            revision=revision,
+            cache_status=cache_status,
+            cache_path=cache_path,
+        )
+
+    report(
+        "foundation_warmup_download",
+        f"Downloading or verifying cached weights for {model_name}",
+        25,
+        backend=backend.name,
+        model_name=model_name,
+        revision=revision,
+        cache_status=cache_status,
+        cache_path=cache_path,
+    )
+    try:
+        from huggingface_hub import snapshot_download
+        from tqdm.auto import tqdm
+
+        last_pct = {"value": 25.0}
+
+        class JobTqdm(tqdm):
+            def update(self, n=1):  # type: ignore[override]
+                result = super().update(n)
+                total = float(self.total or 0.0)
+                if total > 0:
+                    raw_pct = 25.0 + min(max(float(self.n) / total, 0.0), 1.0) * 45.0
+                    pct = max(last_pct["value"], raw_pct)
+                    if pct - last_pct["value"] >= 2.0 or pct >= 70.0:
+                        last_pct["value"] = min(pct, 70.0)
+                        report(
+                            "foundation_warmup_download",
+                            f"Downloading or verifying cached weights for {model_name}",
+                            last_pct["value"],
+                            backend=backend.name,
+                            model_name=model_name,
+                            revision=revision,
+                            cache_status="DOWNLOADING" if cache_status != "CACHED" else "CACHED",
+                            cache_path=cache_path,
+                        )
+                return result
+
+        resolved_cache_path = snapshot_download(
+            repo_id=str(model_name),
+            revision=str(revision) if revision else None,
+            resume_download=True,
+            tqdm_class=JobTqdm,
+        )
+        cache_path = str(resolved_cache_path or cache_path)
+        cache_status = "CACHED" if cache_status == "CACHED" else "DOWNLOADED"
+    except ModuleNotFoundError:
+        report(
+            "foundation_warmup_download",
+            "huggingface_hub is unavailable; Chronos will download through from_pretrained instead",
+            45,
+            backend=backend.name,
+            model_name=model_name,
+            revision=revision,
+            cache_status="UNKNOWN",
+            cache_path=cache_path,
+        )
+    except Exception as exc:
+        report(
+            "foundation_warmup_download_failed",
+            f"Failed to download {model_name}: {type(exc).__name__}: {exc}",
+            100,
+            backend=backend.name,
+            model_name=model_name,
+            revision=revision,
+            cache_status="FAILED",
+            cache_path=cache_path,
+        )
+        raise
+
+    report(
+        "foundation_warmup_load",
+        f"Loading {model_name} into the configured runtime device",
+        75,
+        backend=backend.name,
+        model_name=model_name,
+        revision=revision,
+        cache_status=cache_status,
+        cache_path=cache_path,
+    )
+    if not isinstance(backend, foundation_backends.ChronosFoundationBackend):
+        raise RuntimeError("Selected Chronos backend is not a ChronosFoundationBackend instance.")
+    backend._load_pipeline()
+    runtime_device = getattr(backend, "_runtime_device", "unknown")
+    report(
+        "foundation_warmup_ready",
+        f"{model_name} is loaded on {runtime_device}",
+        100,
+        backend=backend.name,
+        model_name=model_name,
+        revision=revision,
+        runtime_device=runtime_device,
+        cache_status=cache_status,
+        cache_path=cache_path,
+    )
+    return {
+        "message": "foundation model warmed up",
+        "backend": backend.name,
+        "model_name": model_name,
+        "revision": revision,
+        "runtime_device": runtime_device,
+        "cache_status": cache_status,
+        "cache_path": cache_path,
+        "attempts": attempts,
     }
 
 

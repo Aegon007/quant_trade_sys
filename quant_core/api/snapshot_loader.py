@@ -16,6 +16,8 @@ from quant_core import paths as qpaths
 from quant_core.api.schemas import build_api_response, now_iso
 from quant_core.execution import plan_quality as pq
 from quant_core.execution import post_close_review as pcr
+from quant_core.execution import decision_engine
+from quant_core.execution import strategy_identity as sid
 from quant_core.jobs import job_registry
 from quant_core.ledger import transactions as tx
 from quant_core.notifications import notification_config as ncfg
@@ -45,6 +47,8 @@ SNAPSHOT_PATHS = {
     "news-intelligence": qpaths.NEWS_INTELLIGENCE_FILE,
     "financials-intelligence": qpaths.FINANCIALS_INTELLIGENCE_FILE,
     "decision-brief": qpaths.DECISION_BRIEF_FILE,
+    "final-decision": qpaths.FINAL_DECISION_SNAPSHOT_FILE,
+    "weekend-correlation": qpaths.WEEKEND_CORRELATION_RESEARCH_FILE,
     "reports-latest": str(qpaths.PROJECT_ROOT / "reports" / "nightly_report_latest.json"),
 }
 
@@ -317,6 +321,13 @@ def load_model_enriched_snapshot_response(
     for key in row_keys:
         if isinstance(payload.get(key), list):
             payload[key] = overlay_live_positions(payload[key], positions=positions)
+            payload[key] = [
+                sid.attach_signal_identity({
+                    **dict(row or {}),
+                    "strategy_source": "core_etf" if name == "core-etfs" else "satellite",
+                })
+                for row in payload[key]
+            ]
     payload["portfolio_context"] = account
     if name == "core-etfs":
         core_symbols = {
@@ -564,6 +575,8 @@ def load_dashboard_response(*, now: Optional[datetime] = None) -> dict:
     news_intelligence_payload, _ = safe_read_json(qpaths.NEWS_INTELLIGENCE_FILE)
     financials_intelligence_payload, _ = safe_read_json(qpaths.FINANCIALS_INTELLIGENCE_FILE)
     decision_brief_payload, _ = safe_read_json(qpaths.DECISION_BRIEF_FILE)
+    final_decision_payload, _ = safe_read_json(qpaths.FINAL_DECISION_SNAPSHOT_FILE)
+    correlation_payload, _ = safe_read_json(qpaths.WEEKEND_CORRELATION_RESEARCH_FILE)
     market_sentiment_payload, _ = safe_read_json(qpaths.MARKET_SENTIMENT_SNAPSHOT_FILE)
     systemic_risk_payload, _ = safe_read_json(qpaths.SYSTEMIC_RISK_SNAPSHOT_FILE)
     multi_horizon_payload = _load_gated_multi_horizon_snapshot()
@@ -581,6 +594,8 @@ def load_dashboard_response(*, now: Optional[datetime] = None) -> dict:
     news_intelligence_payload = news_intelligence_payload if isinstance(news_intelligence_payload, dict) else {}
     financials_intelligence_payload = financials_intelligence_payload if isinstance(financials_intelligence_payload, dict) else {}
     decision_brief_payload = decision_brief_payload if isinstance(decision_brief_payload, dict) else {}
+    final_decision_payload = final_decision_payload if isinstance(final_decision_payload, dict) else {}
+    correlation_payload = correlation_payload if isinstance(correlation_payload, dict) else {}
     market_sentiment_payload = market_sentiment_payload if isinstance(market_sentiment_payload, dict) else {}
     systemic_risk_payload = systemic_risk_payload if isinstance(systemic_risk_payload, dict) else {}
 
@@ -597,6 +612,18 @@ def load_dashboard_response(*, now: Optional[datetime] = None) -> dict:
         satellite_rows = list(multi_horizon_payload.get("satellite_top3", []) or [])
     core_payload["symbols"] = core_rows
     satellite_payload["top_recommendations"] = satellite_rows
+    if not final_decision_payload:
+        final_decision_payload = decision_engine.build_final_decision_snapshot(
+            account=account,
+            trade_plan=trade_plan_payload,
+            core_snapshot=core_payload,
+            satellite_snapshot=satellite_payload,
+            discipline_snapshot=discipline_payload,
+            correlation_snapshot=correlation_payload,
+            data_health_snapshot=data_health_payload,
+            news_intelligence=news_intelligence_payload,
+            now=now or datetime.now(),
+        )
     actionable_core = [
         row for row in core_rows
         if str(
@@ -609,9 +636,14 @@ def load_dashboard_response(*, now: Optional[datetime] = None) -> dict:
     model_candidate_actions = [
         row for row in list(multi_horizon_payload.get("symbols", []) or [])
         if str(dict(dict(row or {}).get("decision", {}) or {}).get("action") or "").strip().upper()
-        in ("ACCUMULATE", "PROBE", "TRIM", "EXIT")
+        in ("ACCUMULATE", "DCA_ACCUMULATE", "PROBE", "TRIM", "EXIT")
     ]
-    executable_plan_items = list(trade_plan_payload.get("items", []) or [])
+    executable_plan_items = [
+        sid.attach_signal_identity(dict(row or {}))
+        for row in list(trade_plan_payload.get("items", []) or [])
+    ]
+    if isinstance(trade_plan_payload, dict):
+        trade_plan_payload["items"] = executable_plan_items
     blocked_plan_items = list(trade_plan_payload.get("blocked_items", []) or [])
     trade_plan_decision = str(trade_plan_payload.get("decision") or "").strip().upper() or "UNKNOWN"
     if executable_plan_items:
@@ -685,6 +717,8 @@ def load_dashboard_response(*, now: Optional[datetime] = None) -> dict:
         "trade_plan_decision": trade_plan_decision,
         "recommendation_consistency_status": recommendation_consistency_status,
         "recommendation_consistency_message": recommendation_consistency_message,
+        "final_decision": final_decision_payload.get("final_decision"),
+        "system_identity": final_decision_payload.get("system_identity"),
     }
     payload = {
         "account": account,
@@ -703,6 +737,8 @@ def load_dashboard_response(*, now: Optional[datetime] = None) -> dict:
         "market_sentiment": market_sentiment_payload,
         "systemic_risk": systemic_risk_payload,
         "decision_brief": decision_brief_payload,
+        "final_decision": final_decision_payload,
+        "weekend_correlation": correlation_payload,
         "job_status": job_status,
     }
     generated_at = now_iso(now)

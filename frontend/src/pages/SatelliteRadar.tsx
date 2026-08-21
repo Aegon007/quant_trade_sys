@@ -14,13 +14,13 @@ function averageLastCell(row: Dict) {
 }
 
 const columns: DecisionColumn[] = [
-  { label: "Rank", render: (row, index) => text(row.satellite_rank ?? index + 1) },
-  { label: "Symbol", className: "symbol-cell", render: (row) => text(row.symbol) },
-  { label: "Long score", render: (row) => formatPercent(asDict(row.long_horizon).blended_rank ?? row.long_horizon_rank) },
+  { label: "排名", render: (row, index) => text(row.satellite_rank ?? index + 1) },
+  { label: "代码", className: "symbol-cell", render: (row) => text(row.symbol) },
+  { label: "长期分数", render: (row) => formatPercent(asDict(row.long_horizon).blended_rank ?? row.long_horizon_rank) },
   { label: "63 / 126 / 252", render: (row) => <HorizonStrip row={row} /> },
-  { label: "Timing", render: (row) => <Status value={asDict(row.timing).state ?? row.timing_state} /> },
-  { label: "Risk", render: (row) => <Status value={asDict(row.risk).regime ?? row.risk_level ?? "NORMAL"} /> },
-  { label: "State", render: (row) => <ActionStatus row={row} /> },
+  { label: "入场时机", render: (row) => <Status value={asDict(row.timing).state ?? row.timing_state} /> },
+  { label: "风险", render: (row) => <Status value={asDict(row.risk).regime ?? row.risk_level ?? "NORMAL"} /> },
+  { label: "状态", render: (row) => <ActionStatus row={row} /> },
 ];
 
 export default function SatelliteRadar() {
@@ -46,35 +46,35 @@ export default function SatelliteRadar() {
   return (
     <SnapshotFrame snapshot={data} loading={loading} error={error} onReload={reload}>
       <MetricStrip items={[
-        { label: "Top 3", value: top.map((row) => text(asDict(row).symbol, "")).filter(Boolean).join(", ") || "-", hint: "Maximum satellite shortlist" },
-        { label: "Approved entries", value: approved.length, hint: "No strong signal means no trade" },
-        { label: "Ranked pool", value: pool.length, hint: "Capped by model configuration" },
-        { label: "Current non-core", value: currentHoldings.length, hint: "Existing positions tracked separately from new candidates" },
+        { label: "前三候选", value: top.map((row) => text(asDict(row).symbol, "")).filter(Boolean).join(", ") || "-", hint: "最多保留三个卫星候选" },
+        { label: "通过买入", value: approved.length, hint: "没有强信号就不交易" },
+        { label: "候选池", value: pool.length, hint: "由模型配置限制容量" },
+        { label: "现有非核心持仓", value: currentHoldings.length, hint: "现有持仓与新候选分开跟踪" },
       ]} />
-      <Panel title="Current non-core holdings" subtitle="Existing positions are monitored here; they are intentionally excluded from the new-entry Top 3 competition.">
+      <Panel title="当前非核心持仓" subtitle="这些是已有卫星/非核心仓位，会被监控，但不会和新建仓前三候选混在一起。">
         <DecisionTable
           rows={currentHoldings}
           columns={[
-            { label: "Symbol", className: "symbol-cell", render: (row) => text(row.symbol) },
-            { label: "Account weight", render: (row) => formatPercent(row.current_weight_pct) },
-            { label: "Avg / Last", render: averageLastCell },
-            { label: "Value", render: (row) => formatCurrency(row.current_value, 2) },
-            { label: "Long score", render: (row) => formatPercent(asDict(row.long_horizon).blended_rank) },
-            { label: "Timing", render: (row) => <Status value={asDict(row.timing).state ?? row.timing_state} /> },
-            { label: "Action", render: (row) => <ActionStatus row={row} /> },
+            { label: "代码", className: "symbol-cell", render: (row) => text(row.symbol) },
+            { label: "账户权重", render: (row) => formatPercent(row.current_weight_pct) },
+            { label: "成本/现价", render: averageLastCell },
+            { label: "市值", render: (row) => formatCurrency(row.current_value, 2) },
+            { label: "长期分数", render: (row) => formatPercent(asDict(row.long_horizon).blended_rank) },
+            { label: "入场时机", render: (row) => <Status value={asDict(row.timing).state ?? row.timing_state} /> },
+            { label: "动作", render: (row) => <ActionStatus row={row} /> },
           ]}
-          emptyText="No current holdings sit outside the configured Core ETF universe."
+          emptyText="当前没有核心ETF池外的持仓。"
         />
       </Panel>
-      <Panel title="Top 3 satellite candidates" subtitle="These are the only non-core candidates eligible for a new-entry action.">
-        <DecisionTable rows={top} columns={columns} detail={detail} emptyText="No foundation Top 3 yet. Run the nightly pipeline or weekend research." />
+      <Panel title="前三卫星候选" subtitle="只有这些非核心候选有资格产生新建仓动作。">
+        <DecisionTable rows={top} columns={columns} detail={detail} emptyText="还没有基础模型前三结果。请运行夜间流程或周末研究。" />
       </Panel>
       <Panel
-        title="Ranked research funnel"
-        subtitle="Candidates outside Top 3 remain WATCH even when their raw score is attractive."
-        action={<input className="compact-input" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Filter symbol" />}
+        title="研究候选漏斗"
+        subtitle="前三以外的候选即使原始分数不错，也保持观察，不直接触发买入。"
+        action={<input className="compact-input" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="筛选代码" />}
       >
-        <DecisionTable rows={filteredPool} columns={columns} detail={detail} emptyText="No candidate pool is available." />
+        <DecisionTable rows={filteredPool} columns={columns} detail={detail} emptyText="当前没有候选池数据。" />
       </Panel>
     </SnapshotFrame>
   );

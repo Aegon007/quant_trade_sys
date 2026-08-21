@@ -159,21 +159,29 @@ class ChronosFoundationBackend:
     def __init__(
         self,
         *,
-        model_name: str = "amazon/chronos-bolt-small",
+        model_name: str = "amazon/chronos-2",
+        revision: str = "",
         device: str = "auto",
         torch_dtype: str = "auto",
-        context_length: int = 512,
+        context_length: int = 2048,
         batch_size: int = 8,
+        cross_learning: bool = False,
         quantile_levels: Sequence[float] | None = None,
     ):
-        self.model_name = str(model_name or "amazon/chronos-bolt-small").strip()
+        self.model_name = str(model_name or "amazon/chronos-2").strip()
+        self.revision = str(revision or "").strip()
         self.device = str(device or "auto").strip().lower()
         self.torch_dtype = str(torch_dtype or "auto").strip().lower()
-        self.context_length = max(int(context_length or 512), 64)
+        self.context_length = max(int(context_length or 2048), 64)
         self.batch_size = max(int(batch_size or 8), 1)
+        self.cross_learning = bool(cross_learning)
         self.quantile_levels = list(quantile_levels or [0.1, 0.5, 0.9])
         self._pipeline = None
         self._runtime_device = "unknown"
+
+    @property
+    def is_chronos2(self) -> bool:
+        return "chronos-2" in self.model_name.lower()
 
     def capabilities(self) -> BackendCapabilities:
         chronos_module = sys.modules.get("chronos")
@@ -214,7 +222,7 @@ class ChronosFoundationBackend:
             status="READY",
             supports_covariates=False,
             supports_quantiles=True,
-            message=f"Real Chronos backend ready: {self.model_name}",
+            message=f"Real Chronos backend ready: {self.model_name}{('@' + self.revision) if self.revision else ''}",
         )
 
     def _resolve_device(self, torch_module: Any) -> str:
@@ -264,6 +272,8 @@ class ChronosFoundationBackend:
             kwargs["device_map"] = device
         if dtype is not None:
             kwargs["torch_dtype"] = dtype
+        if self.revision:
+            kwargs["revision"] = self.revision
         try:
             pipeline = Pipeline.from_pretrained(self.model_name, **kwargs)
         except TypeError:
@@ -329,6 +339,15 @@ class ChronosFoundationBackend:
         forecasts: dict[str, dict] = {}
         if not contexts:
             return forecasts
+        if self.is_chronos2 and hasattr(pipeline, "predict_df"):
+            return self._forecast_with_predict_df(
+                pipeline,
+                histories,
+                symbols=context_symbols,
+                latest_prices=latest_prices,
+                horizons=horizons,
+                benchmarks=benchmarks,
+            )
 
         median_index = min(range(len(self.quantile_levels)), key=lambda idx: abs(float(self.quantile_levels[idx]) - 0.5))
         low_index = min(range(len(self.quantile_levels)), key=lambda idx: abs(float(self.quantile_levels[idx]) - 0.1))
@@ -391,8 +410,113 @@ class ChronosFoundationBackend:
                     "source_backend": self.name,
                     "runtime_device": self._runtime_device,
                     "model_name": self.model_name,
+                    "revision": self.revision or None,
                     "horizons": horizon_payload,
                 }
+        return forecasts
+
+    def _forecast_with_predict_df(
+        self,
+        pipeline,
+        histories: Mapping[str, pd.DataFrame],
+        *,
+        symbols: Sequence[str],
+        latest_prices: Mapping[str, float],
+        horizons: Sequence[int],
+        benchmarks: Mapping[str, str],
+    ) -> dict[str, dict]:
+        max_horizon = max(horizons)
+        rows = []
+        for symbol in symbols:
+            series = _close(histories.get(symbol)).tail(self.context_length)
+            if len(series) < 64:
+                continue
+            for timestamp, value in series.items():
+                rows.append(
+                    {
+                        "item_id": symbol,
+                        "timestamp": pd.Timestamp(timestamp).normalize(),
+                        "target": float(value),
+                    }
+                )
+        if not rows:
+            return {}
+        context_df = pd.DataFrame(rows).sort_values(["item_id", "timestamp"])
+        predictions = pipeline.predict_df(
+            context_df,
+            id_column="item_id",
+            timestamp_column="timestamp",
+            target="target",
+            prediction_length=max_horizon,
+            quantile_levels=self.quantile_levels,
+            batch_size=self.batch_size,
+            context_length=self.context_length,
+            cross_learning=self.cross_learning,
+            validate_inputs=False,
+        )
+        risk_free_symbol = str(benchmarks.get("risk_free") or "BIL").upper()
+        market_symbol = str(benchmarks.get("market") or "SPY").upper()
+        growth_symbol = str(benchmarks.get("growth") or "QQQ").upper()
+        risk_free = _close(histories.get(risk_free_symbol))
+        market = _close(histories.get(market_symbol))
+        growth = _close(histories.get(growth_symbol))
+        forecasts: dict[str, dict] = {}
+        low_key = str(self.quantile_levels[min(range(len(self.quantile_levels)), key=lambda idx: abs(float(self.quantile_levels[idx]) - 0.1))])
+        median_key = str(self.quantile_levels[min(range(len(self.quantile_levels)), key=lambda idx: abs(float(self.quantile_levels[idx]) - 0.5))])
+        high_key = str(self.quantile_levels[min(range(len(self.quantile_levels)), key=lambda idx: abs(float(self.quantile_levels[idx]) - 0.9))])
+        for symbol in symbols:
+            target_names = (
+                predictions["target_name"].astype(str)
+                if "target_name" in predictions.columns
+                else pd.Series(["target"] * len(predictions), index=predictions.index)
+            )
+            symbol_predictions = predictions[
+                (predictions["item_id"].astype(str).str.upper() == symbol)
+                & (target_names == "target")
+            ].reset_index(drop=True)
+            if len(symbol_predictions) < max_horizon:
+                continue
+            latest_price = float(latest_prices[symbol])
+            horizon_payload = {}
+            for horizon in horizons:
+                row = symbol_predictions.iloc[int(horizon) - 1]
+                p10_price = float(row.get(low_key))
+                p50_price = float(row.get(median_key))
+                p90_price = float(row.get(high_key))
+                mean_price = float(row.get("predictions", p50_price))
+                p10 = p10_price / latest_price - 1.0
+                p50 = p50_price / latest_price - 1.0
+                p90 = p90_price / latest_price - 1.0
+                rf_returns = _horizon_returns(risk_free, int(horizon))
+                market_returns = _horizon_returns(market, int(horizon))
+                growth_returns = _horizon_returns(growth, int(horizon))
+                rf_threshold = float(rf_returns.median()) if not rf_returns.empty else 0.01 * int(horizon) / 252.0
+                market_threshold = float(market_returns.median()) if not market_returns.empty else 0.0
+                growth_threshold = float(growth_returns.median()) if not growth_returns.empty else market_threshold
+                samples = np.array([p10, p50, p90, mean_price / latest_price - 1.0], dtype=float)
+                forecast_confidence = min(max(len(_close(histories.get(symbol))) / max(self.context_length, 1), 0.35), 0.9)
+                horizon_payload[str(horizon)] = {
+                    "return_range": {"p10": max(p10, -0.95), "p50": max(p50, -0.95), "p90": max(p90, -0.95)},
+                    "price_range": {"p10": p10_price, "p50": p50_price, "p90": p90_price},
+                    "positive_return_probability": float((samples > 0.0).mean()),
+                    "risk_free_outperformance_probability": float((samples > rf_threshold).mean()),
+                    "market_outperformance_probability": float((samples > market_threshold).mean()),
+                    "growth_outperformance_probability": float((samples > growth_threshold).mean()),
+                    "expected_return": p50,
+                    "forecast_confidence": round(forecast_confidence, 3),
+                    "sample_count": int(len(_horizon_returns(_close(histories.get(symbol)), int(horizon)))),
+                }
+            forecasts[symbol] = {
+                "symbol": symbol,
+                "latest_price": latest_price,
+                "source_backend": self.name,
+                "runtime_device": self._runtime_device,
+                "model_name": self.model_name,
+                "revision": self.revision or None,
+                "forecast_api": "predict_df",
+                "cross_learning": self.cross_learning,
+                "horizons": horizon_payload,
+            }
         return forecasts
 
 
@@ -459,11 +583,13 @@ def build_backend(name: str, config: Mapping | None = None) -> FoundationModelBa
         )
     if normalized == "chronos":
         return ChronosFoundationBackend(
-            model_name=str(config.get("model_name") or "amazon/chronos-bolt-small"),
+            model_name=str(config.get("model_name") or "amazon/chronos-2"),
+            revision=str(config.get("revision") or ""),
             device=str(config.get("device") or "auto"),
             torch_dtype=str(config.get("torch_dtype") or "auto"),
-            context_length=int(config.get("context_length") or 512),
+            context_length=int(config.get("context_length") or 2048),
             batch_size=int(config.get("batch_size") or 8),
+            cross_learning=bool(config.get("cross_learning", False)),
             quantile_levels=list(config.get("quantile_levels") or [0.1, 0.5, 0.9]),
         )
     if normalized == "moment":

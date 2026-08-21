@@ -11,7 +11,7 @@ from quant_core.llm import explainer
 
 
 DEFAULT_DECISION_BRIEF_FILE = qpaths.DECISION_BRIEF_FILE
-_ACTIONABLE = {"ACCUMULATE", "PROBE", "TRIM", "EXIT", "REDUCE"}
+_ACTIONABLE = {"ACCUMULATE", "DCA_ACCUMULATE", "PROBE", "TRIM", "EXIT", "REDUCE"}
 
 
 def _dict(value) -> dict:

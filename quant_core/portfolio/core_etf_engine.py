@@ -83,7 +83,7 @@ def _previous_row_map(previous_snapshot: Optional[Mapping]):
 
 def _action_bias(action: str) -> int:
     action = str(action or "").strip().upper()
-    if action == "ACCUMULATE":
+    if action in {"ACCUMULATE", "DCA_ACCUMULATE"}:
         return 1
     if action in {"TRIM", "RISK_EXIT"}:
         return -1
@@ -220,15 +220,47 @@ def _proposed_action(
     block_new_buys: bool,
     risk_regime: str,
     role: str,
+    symbol: str = "",
+    long_term_core: bool = False,
+    policy: Optional[Mapping] = None,
+    recent_return_3m: Optional[float] = None,
 ) -> tuple[str, str]:
     delta_pct = float(target_weight_pct or 0.0) - float(current_weight_pct or 0.0)
     trade_value = abs(delta_pct) * max(total_capital, 0.0) / 100.0
+    dca_policy = dict((policy or {}).get("core_dca", {}) or {})
+    dca_symbols = {
+        str(item or "").strip().upper()
+        for item in list(dca_policy.get("symbols", []) or [])
+        if str(item or "").strip()
+    }
+    is_dca_core = (
+        bool(dca_policy.get("enabled", True))
+        and bool(long_term_core)
+        and str(symbol or "").strip().upper() in dca_symbols
+    )
+    dca_floor_ratio = float(_safe_float(dca_policy.get("target_floor_ratio"), 0.55) or 0.55)
+    dca_mid_ratio = float(_safe_float(dca_policy.get("target_mid_ratio"), 0.72) or 0.72)
+    dca_min_score = float(_safe_float(dca_policy.get("minimum_rotation_score"), 45.0) or 45.0)
+    dip_buy_drawdown_pct = float(_safe_float(dca_policy.get("dip_buy_drawdown_pct"), -3.0) or -3.0)
+    dca_floor_weight = float(target_weight_pct or 0.0) * dca_floor_ratio
+    dca_mid_weight = float(target_weight_pct or 0.0) * dca_mid_ratio
+    recent_return_pct = float(recent_return_3m or 0.0) * 100.0 if recent_return_3m is not None else None
     if current_price is None or current_price <= 0:
         return "HOLD", "缺少最新价格，暂不生成 ETF 动作。"
     if block_new_buys and delta_pct > 0:
         return "PAUSE_BUY", "当前纪律层不允许新增仓位。"
     if risk_regime == "RISK_OFF" and role == "growth" and current_weight_pct > 0.0:
         return "RISK_EXIT", "风险状态偏高，成长型 ETF 进入风险退出模式。"
+    if is_dca_core and dca_min_score <= rotation_score < 72.0 and current_weight_pct < dca_floor_weight:
+        return "DCA_ACCUMULATE", "长期核心 ETF 低于定投目标底线，风险未封锁时应继续补齐底仓。"
+    if (
+        is_dca_core
+        and dca_min_score <= rotation_score < 72.0
+        and current_weight_pct < dca_mid_weight
+        and recent_return_pct is not None
+        and recent_return_pct <= dip_buy_drawdown_pct
+    ):
+        return "DCA_ACCUMULATE", "长期核心 ETF 出现可接受回调且低于目标中线，适合纪律化定投补仓。"
     if trade_value < minimum_trade_value:
         return "HOLD", "目标权重变化对应金额过小，避免无意义微调。"
     if delta_pct >= min_weight_change_pct:
@@ -256,7 +288,7 @@ def _confirmed_action(
     previous_proposed = str(previous_row.get("proposed_action") or previous_row.get("action") or "HOLD").upper()
     previous_support_days = int(_safe_float(previous_row.get("action_support_days"), 0) or 0)
     support_days = previous_support_days + 1 if previous_proposed == proposed_action else 1
-    if proposed_action in {"TRIM", "RISK_EXIT", "HOLD"}:
+    if proposed_action in {"TRIM", "RISK_EXIT", "HOLD", "DCA_ACCUMULATE"}:
         return proposed_action, support_days, action_reason
     if proposed_action == "PAUSE_BUY":
         return ("PAUSE_BUY" if support_days >= confirmation_days else "HOLD"), support_days, action_reason
@@ -369,6 +401,10 @@ def build_core_etf_snapshot(
             block_new_buys=block_new_buys,
             risk_regime=risk_regime,
             role=role,
+            symbol=symbol,
+            long_term_core=bool(rotation_row.get("long_term_core", True)),
+            policy=policy,
+            recent_return_3m=_safe_float(rotation_row.get("expected_return_3m")),
         )
         row_volatility = _safe_float(rotation_row.get("volatility"))
         effective_confirmation_days = confirmation_days + (
@@ -447,12 +483,12 @@ def build_core_etf_snapshot(
 
     rows.sort(
         key=lambda row: (
-            {"ACCUMULATE": 0, "TRIM": 1, "PAUSE_BUY": 2, "HOLD": 3, "RISK_EXIT": -1}.get(str(row.get("action") or "HOLD"), 9),
+            {"ACCUMULATE": 0, "DCA_ACCUMULATE": 1, "TRIM": 2, "PAUSE_BUY": 3, "HOLD": 4, "RISK_EXIT": -1}.get(str(row.get("action") or "HOLD"), 9),
             -float(row.get("rotation_score") or 0.0),
             row["symbol"],
         )
     )
-    accumulate = [row["symbol"] for row in rows if row.get("action") == "ACCUMULATE"]
+    accumulate = [row["symbol"] for row in rows if row.get("action") in {"ACCUMULATE", "DCA_ACCUMULATE"}]
     trims = [row["symbol"] for row in rows if row.get("action") in {"TRIM", "RISK_EXIT"}]
     return {
         "generated_at": now.isoformat(),

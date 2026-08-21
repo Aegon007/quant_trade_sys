@@ -38,5 +38,18 @@
   "candidate_persistence_days": 2,
   "top3_promotion_confirmation_days": 2,
   "top3_demotion_confirmation_days": 2,
-  "minimum_top3_residency_days": 2
+  "minimum_top3_residency_days": 2,
+  "core_dca": {
+    "enabled": true,
+    "symbols": [
+      "VOO",
+      "VTI",
+      "QQQ",
+      "QQQM"
+    ],
+    "minimum_rotation_score": 45.0,
+    "target_floor_ratio": 0.55,
+    "target_mid_ratio": 0.72,
+    "dip_buy_drawdown_pct": -3.0
+  }
 }

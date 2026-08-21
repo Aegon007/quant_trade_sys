@@ -1,6 +1,7 @@
 import type React from "react";
 import type { ApiEnvelope } from "../api";
 import { formatDate, text } from "../lib/data";
+import { zhStatus } from "../lib/i18n";
 
 function statusClass(value: unknown): string {
   const normalized = text(value).toLowerCase();
@@ -10,7 +11,7 @@ function statusClass(value: unknown): string {
 }
 
 export function Status({ value }: { value: unknown }) {
-  return <span className={`status ${statusClass(value)}`}>{text(value)}</span>;
+  return <span className={`status ${statusClass(value)}`}>{zhStatus(value)}</span>;
 }
 
 export function Panel({
@@ -44,7 +45,7 @@ export function MetricStrip({ items }: { items: Array<{ label: string; value: Re
       {items.map((item) => (
         <div key={item.label}>
           <span>{item.label}</span>
-          <strong>{item.value}</strong>
+          <strong>{typeof item.value === "string" || typeof item.value === "number" || typeof item.value === "boolean" ? zhStatus(item.value) : item.value}</strong>
           {item.hint ? <small>{item.hint}</small> : null}
         </div>
       ))}
@@ -70,12 +71,12 @@ export function SnapshotFrame({
       <div className="snapshot-line">
         <div>
           <Status value={snapshot?.freshness_status ?? (loading ? "LOADING" : "UNAVAILABLE")} />
-          <span>{snapshot ? `Updated ${formatDate(snapshot.generated_at)}` : "Waiting for snapshot"}</span>
+          <span>{snapshot ? `更新时间 ${formatDate(snapshot.generated_at)}` : "等待快照生成"}</span>
         </div>
-        <button className="quiet-button" type="button" onClick={onReload}>Refresh view</button>
+        <button className="quiet-button" type="button" onClick={onReload}>刷新页面</button>
       </div>
-      {error ? <div className="notice negative">API unavailable: {error}</div> : null}
-      {loading && !snapshot ? <div className="empty-state">Loading the latest snapshot...</div> : children}
+      {error ? <div className="notice negative">API 不可用：{error}</div> : null}
+      {loading && !snapshot ? <div className="empty-state">正在加载最新快照...</div> : children}
     </>
   );
 }
@@ -90,7 +91,7 @@ export function Facts({ rows }: { rows: Array<[string, React.ReactNode]> }) {
       {rows.map(([label, value]) => (
         <div key={label}>
           <dt>{label}</dt>
-          <dd>{value}</dd>
+          <dd>{typeof value === "string" || typeof value === "number" || typeof value === "boolean" ? zhStatus(value) : value}</dd>
         </div>
       ))}
     </dl>

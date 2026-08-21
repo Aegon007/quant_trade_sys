@@ -14,12 +14,12 @@ import {
 } from "../lib/data";
 
 const actionColumns: DecisionColumn[] = [
-  { label: "Symbol", className: "symbol-cell", render: (row) => text(row.symbol) },
-  { label: "Action", render: (row) => <ActionStatus row={row} /> },
-  { label: "Long horizon", render: (row) => <Status value={asDict(row.long_horizon).state} /> },
+  { label: "代码", className: "symbol-cell", render: (row) => text(row.symbol) },
+  { label: "动作", render: (row) => <ActionStatus row={row} /> },
+  { label: "长期判断", render: (row) => <Status value={asDict(row.long_horizon).state} /> },
   { label: "63 / 126 / 252", render: (row) => <HorizonStrip row={row} /> },
-  { label: "Timing", render: (row) => <Status value={asDict(row.timing).state} /> },
-  { label: "Target weight", render: (row) => text(modelDecision(row).target_weight_range_pct) },
+  { label: "入场时机", render: (row) => <Status value={asDict(row.timing).state} /> },
+  { label: "目标仓位", render: (row) => text(modelDecision(row).target_weight_range_pct) },
 ];
 
 function readableNewsLines(value: unknown): string[] {
@@ -60,7 +60,7 @@ export default function Dashboard() {
   const model = asDict(payload.multi_horizon_snapshot);
   const modelSummary = asDict(model.summary);
   const modelSymbols = asArray(model.symbols).map(asDict);
-  const approved = modelSymbols.filter((row) => ["ACCUMULATE", "PROBE", "TRIM", "EXIT"].includes(text(modelDecision(row).action, "").toUpperCase()));
+  const approved = modelSymbols.filter((row) => ["ACCUMULATE", "DCA_ACCUMULATE", "PROBE", "TRIM", "EXIT"].includes(text(modelDecision(row).action, "").toUpperCase()));
   const tradePlan = asDict(payload.trade_plan);
   const planItems = asArray(tradePlan.items).map(asDict);
   const blockedPlanItems = asArray(tradePlan.blocked_items).map(asDict);
@@ -77,6 +77,12 @@ export default function Dashboard() {
   const newsLlm = asDict(newsIntelligence.llm);
   const newsSource = asDict(newsIntelligence.source_status);
   const decisionBrief = asDict(payload.decision_brief);
+  const finalDecision = asDict(payload.final_decision);
+  const strategySections = asDict(finalDecision.strategy_sections);
+  const coreSection = asDict(strategySections.core_etf);
+  const satelliteSection = asDict(strategySections.satellite);
+  const riskSection = asDict(strategySections.risk_discipline);
+  const correlationSection = asDict(strategySections.weekend_correlation);
   const briefLlm = asDict(decisionBrief.llm);
   const marketSentiment = asDict(payload.market_sentiment);
   const systemicRisk = asDict(payload.systemic_risk);
@@ -86,11 +92,15 @@ export default function Dashboard() {
   const [refreshingBrief, setRefreshingBrief] = useState(false);
   const [briefError, setBriefError] = useState("");
   const modelStatus = text(data?.summary.multi_horizon_status ?? model.status ?? asDict(model.model).status, "MODEL_NOT_READY");
-  const headline = modelStatus !== "READY"
-    ? "Train the long-horizon model before using trade recommendations."
-    : planItems.length
-      ? `${planItems.length} executable next-day plan item${planItems.length === 1 ? "" : "s"} require review.`
-      : "No executable action. Keep positions unchanged unless an intraday emergency alert fires.";
+  const headline = text(finalDecision.final_decision, "") === "WAIT"
+    ? "建议等待：先处理数据或风险问题。"
+    : text(finalDecision.final_decision, "") === "STOP"
+      ? "纪律层停手：当前不应新增仓位。"
+      : text(finalDecision.final_decision, "") === "ACTION"
+        ? `有 ${planItems.length} 条明日可执行计划需要你复核。`
+        : modelStatus !== "READY"
+          ? "长期模型尚未就绪，暂不应使用交易建议。"
+          : "没有强交易信号。除非盘中出现紧急告警，否则建议保持仓位不动。";
 
   async function refreshDecisionBrief() {
     setRefreshingBrief(true);
@@ -109,25 +119,42 @@ export default function Dashboard() {
     <SnapshotFrame snapshot={data} loading={loading} error={error} onReload={reload}>
       <section className={`decision-brief ${approved.length ? "action" : ""}`}>
         <div>
-          <span className="eyebrow">Tomorrow's decision brief</span>
+          <span className="eyebrow">{text(finalDecision.system_identity, "明日决策简报")}</span>
           <h2>{headline}</h2>
-          <p>Model candidates are not execution orders. A trade reaches tomorrow's plan only after entry timing, portfolio discipline, risk gates, and invalidation rules agree.</p>
+          <p>{text(asArray(finalDecision.top_reasons)[0], "模型候选不是交易指令。只有当入场时机、组合纪律、风险门控和失效条件都通过后，才会进入明日计划。")}</p>
         </div>
-        <Status value={modelStatus} />
+        <Status value={finalDecision.final_decision ?? modelStatus} />
       </section>
 
+      <Panel title="统一策略视图" subtitle="系统现在只保留一个最终口径：核心ETF配置、卫星趋势雷达、风险纪律门控共同决定行动；周末相关性和LLM只提供线索/解释。">
+        <MetricStrip items={[
+          { label: "最终结论", value: text(finalDecision.final_decision, "UNKNOWN"), hint: text(finalDecision.generated_at, "-") },
+          { label: "核心ETF动作", value: text(coreSection.action_count, "0"), hint: text(coreSection.role, "长期主仓") },
+          { label: "卫星仓动作", value: text(satelliteSection.action_count, "0"), hint: text(satelliteSection.role, "前三候选") },
+          { label: "风险纪律", value: text(riskSection.regime, "UNKNOWN"), hint: `风险 ${text(riskSection.risk_regime, "UNKNOWN")}` },
+          { label: "相关性线索", value: text(correlationSection.high_correlation_pair_count, "0"), hint: "周末计算，不直接交易" },
+        ]} />
+        <Facts rows={[
+          ["系统主线", text(asDict(finalDecision.system_scope).primary, "核心ETF配置 + 卫星仓雷达 + 风险纪律层")],
+          ["排除范围", text(asDict(finalDecision.system_scope).excluded, "高频交易，不把统计套利作为主交易引擎")],
+          ["周末研究定位", text(asDict(finalDecision.system_scope).weekend_research_role, "相关性研究只输出风险和机会线索")],
+          ["可用现金", formatCurrency(asDict(finalDecision.capital).cash_available)],
+          ["当前暴露", formatPercent(asDict(finalDecision.capital).exposure_pct)],
+        ]} />
+      </Panel>
+
       <Panel
-        title="LLM portfolio decision summary"
-        subtitle={`All quant signals, portfolio controls, changes, and evidence · ${text(decisionBrief.status, "NOT READY")} · ${text(briefLlm.model, "structured fallback")}`}
-        action={<button className="quiet-button" disabled={refreshingBrief} onClick={refreshDecisionBrief}>{refreshingBrief ? "Refreshing..." : "Refresh LLM summary"}</button>}
+        title="LLM组合决策摘要"
+        subtitle={`汇总量化信号、仓位纪律、风险变化和证据 · ${text(decisionBrief.status, "NOT READY")} · ${text(briefLlm.model, "结构化兜底")}`}
+        action={<button className="quiet-button" disabled={refreshingBrief} onClick={refreshDecisionBrief}>{refreshingBrief ? "刷新中..." : "刷新LLM摘要"}</button>}
       >
         <div className={`llm-home-brief ${Number(decisionBrief.high_priority_change_count ?? 0) > 0 ? "alert" : ""}`}>
-          <p>{text(decisionBrief.executive_summary, "Run the nightly pipeline or refresh this summary after configuring the remote LLM.")}</p>
+          <p>{text(decisionBrief.executive_summary, "请先配置远程LLM，然后运行夜间流程或手动刷新摘要。")}</p>
           <div>
             <Status value={decisionBrief.trigger ?? "WAITING"} />
-            <span>{text(decisionBrief.approved_action_count, "0")} actions</span>
-            <span>{text(decisionBrief.conflict_count, "0")} conflicts</span>
-            <span>{text(decisionBrief.high_priority_change_count, "0")} high-priority changes</span>
+            <span>{text(decisionBrief.approved_action_count, "0")} 个动作</span>
+            <span>{text(decisionBrief.conflict_count, "0")} 个冲突</span>
+            <span>{text(decisionBrief.high_priority_change_count, "0")} 个高优先级变化</span>
             <span>{text(decisionBrief.generated_at, "-")}</span>
           </div>
         </div>
@@ -135,95 +162,95 @@ export default function Dashboard() {
       </Panel>
 
       <MetricStrip items={[
-        { label: "Total capital", value: formatCurrency(account.total_capital), hint: `Cash ${formatCurrency(account.cash_available)}` },
-        { label: "Exposure", value: formatPercent(account.exposure_pct), hint: `${text(data?.summary.holding_count, "0")} positions` },
-        { label: "Model", value: text(modelInfo.backend_family ?? modelInfo.model_family, "UNKNOWN"), hint: `${text(modelInfo.backend, "no backend")} · ${text(modelInfo.authority, "governed")}` },
-        { label: "AI capex stress", value: text(systemicRisk.ai_capex_stress, "UNKNOWN"), hint: `Score ${text(systemicRisk.systemic_risk_score, "-")}` },
-        { label: "Financials", value: text(financialsIntelligence.status, "NO DATA"), hint: `${text(financialsSummary.covered_count, "0")} covered · ${text(financialsSummary.stress_count, "0")} stress` },
+        { label: "总资产", value: formatCurrency(account.total_capital), hint: `现金 ${formatCurrency(account.cash_available)}` },
+        { label: "仓位暴露", value: formatPercent(account.exposure_pct), hint: `${text(data?.summary.holding_count, "0")} 个持仓` },
+        { label: "模型", value: text(modelInfo.backend_family ?? modelInfo.model_family, "UNKNOWN"), hint: `${text(modelInfo.backend, "无后端")} · ${text(modelInfo.authority, "受治理")}` },
+        { label: "AI资本开支压力", value: text(systemicRisk.ai_capex_stress, "UNKNOWN"), hint: `分数 ${text(systemicRisk.systemic_risk_score, "-")}` },
+        { label: "财务数据", value: text(financialsIntelligence.status, "NO DATA"), hint: `${text(financialsSummary.covered_count, "0")} 已覆盖 · ${text(financialsSummary.stress_count, "0")} 压力` },
       ]} />
 
       <Panel
-        title="Recommendation consistency"
-        subtitle="This separates raw model candidates from the executable next-day trade plan."
+        title="建议一致性"
+        subtitle="这里区分原始模型候选和真正可执行的明日交易计划。"
       >
         <Facts rows={[
-          ["Consistency", <Status value={data?.summary.recommendation_consistency_status ?? "UNKNOWN"} />],
-          ["Explanation", text(data?.summary.recommendation_consistency_message, "-")],
-          ["Model candidates", text(data?.summary.model_candidate_action_count, "0")],
-          ["Executable plan items", text(data?.summary.executable_plan_action_count, "0")],
-          ["Blocked by risk/discipline", text(data?.summary.blocked_plan_count, "0")],
-          ["Trade plan decision", <Status value={data?.summary.trade_plan_decision ?? "UNKNOWN"} />],
+          ["一致性", <Status value={data?.summary.recommendation_consistency_status ?? "UNKNOWN"} />],
+          ["解释", text(data?.summary.recommendation_consistency_message, "-")],
+          ["模型候选数", text(data?.summary.model_candidate_action_count, "0")],
+          ["可执行计划数", text(data?.summary.executable_plan_action_count, "0")],
+          ["被风险/纪律阻断", text(data?.summary.blocked_plan_count, "0")],
+          ["交易计划结论", <Status value={data?.summary.trade_plan_decision ?? "UNKNOWN"} />],
         ]} />
       </Panel>
 
       <div className="split-layout">
-        <Panel title="Market sentiment" subtitle="Breadth, volatility, risk appetite, and event tone are used as model covariates or risk overlay.">
+        <Panel title="市场情绪" subtitle="市场宽度、波动率、风险偏好和事件语气会作为模型协变量或风险覆盖层。">
           <Facts rows={[
-            ["Risk appetite", <Status value={marketSentiment.risk_appetite_state ?? "UNKNOWN"} />],
-            ["Sentiment score", text(marketSentiment.market_sentiment_score, "-")],
-            ["Breadth", <Status value={marketSentiment.breadth_state ?? "UNKNOWN"} />],
-            ["Confidence", formatPercent(marketSentiment.sentiment_confidence)],
-            ["Drivers", text(marketSentiment.main_sentiment_drivers)],
+            ["风险偏好", <Status value={marketSentiment.risk_appetite_state ?? "UNKNOWN"} />],
+            ["情绪分数", text(marketSentiment.market_sentiment_score, "-")],
+            ["市场宽度", <Status value={marketSentiment.breadth_state ?? "UNKNOWN"} />],
+            ["置信度", formatPercent(marketSentiment.sentiment_confidence)],
+            ["主要驱动", text(marketSentiment.main_sentiment_drivers)],
           ]} />
         </Panel>
-        <Panel title="Systemic risk early warning" subtitle="AI capex, market concentration, correlation, news pressure, and risk-off conditions.">
+        <Panel title="系统性风险预警" subtitle="跟踪AI资本开支、市场集中度、相关性、新闻压力和风险关闭状态。">
           <Facts rows={[
-            ["AI capex stress", <Status value={systemicRisk.ai_capex_stress ?? "UNKNOWN"} />],
-            ["Systemic score", text(systemicRisk.systemic_risk_score, "-")],
-            ["AI correlation", text(systemicRisk.ai_supply_chain_correlation, "Unavailable")],
-            ["Hard financial data", <Status value={asDict(systemicRisk.data_freshness).hard_financial_data ?? "MISSING"} />],
-            ["Confidence", formatPercent(systemicRisk.confidence)],
-            ["Drivers", text(systemicRisk.top_drivers)],
+            ["AI资本开支压力", <Status value={systemicRisk.ai_capex_stress ?? "UNKNOWN"} />],
+            ["系统性分数", text(systemicRisk.systemic_risk_score, "-")],
+            ["AI产业链相关性", text(systemicRisk.ai_supply_chain_correlation, "不可用")],
+            ["硬财务数据", <Status value={asDict(systemicRisk.data_freshness).hard_financial_data ?? "MISSING"} />],
+            ["置信度", formatPercent(systemicRisk.confidence)],
+            ["主要驱动", text(systemicRisk.top_drivers)],
           ]} />
         </Panel>
       </div>
 
       <Panel
-        title="Financial statement intelligence"
-        subtitle={`Cash-flow, capex, debt, and revenue-growth stress · ${text(financialsIntelligence.status, "NOT_READY")} · ${text(asDict(financialsIntelligence.llm).model, "structured fallback")}`}
+        title="财报与财务压力分析"
+        subtitle={`现金流、资本开支、债务和收入增长压力 · ${text(financialsIntelligence.status, "NOT_READY")} · ${text(asDict(financialsIntelligence.llm).model, "结构化兜底")}`}
       >
         <div className={`news-brief ${Number(financialsSummary.stress_count ?? 0) > 0 ? "negative" : ""}`}>
           {readableNewsLines(financialsIntelligence.executive_summary).length
             ? readableNewsLines(financialsIntelligence.executive_summary).map((line, index) => <p key={index}>{line}</p>)
-            : <p>Run the nightly pipeline to build statement-aware financial intelligence.</p>}
+            : <p>请运行夜间流程来生成财报/财务压力分析。</p>}
           <div>
             <Status value={financialsSummary.hard_financial_data ?? "MISSING"} />
-            <span>{text(financialsSummary.covered_count, "0")} covered</span>
-            <span>{text(financialsSummary.caution_count, "0")} caution</span>
-            <span>{text(financialsSummary.stress_count, "0")} stress</span>
+            <span>{text(financialsSummary.covered_count, "0")} 已覆盖</span>
+            <span>{text(financialsSummary.caution_count, "0")} 谨慎</span>
+            <span>{text(financialsSummary.stress_count, "0")} 压力</span>
             <span>{text(financialsIntelligence.generated_at, "-")}</span>
           </div>
         </div>
       </Panel>
 
-      <Panel title="Tomorrow executable plan" subtitle="Only these rows passed the execution planner. If this is empty, the system's active recommendation is no trade.">
+      <Panel title="明日可执行计划" subtitle="只有这些标的通过了执行计划器。如果为空，系统当前建议就是不交易。">
         <DecisionTable rows={planItems} columns={[
-          { label: "Symbol", className: "symbol-cell", render: (row) => text(row.symbol) },
-          { label: "Plan", render: (row) => <Status value={row.plan_action} /> },
-          { label: "Buy zone", render: (row) => `${text(row.buy_zone_low, "-")} - ${text(row.buy_zone_high, "-")}` },
-          { label: "Risk break", render: (row) => text(row.risk_break_level, "-") },
-          { label: "Weight delta", render: (row) => text(row.plan_weight_delta_pct, "-") },
-          { label: "Valid until", render: (row) => text(row.plan_valid_until, "-") },
-        ]} emptyText={text(tradePlan.summary_reason, "No executable next-day plan is available.")} />
+          { label: "代码", className: "symbol-cell", render: (row) => text(row.symbol) },
+          { label: "计划", render: (row) => <Status value={row.plan_action} /> },
+          { label: "买入区间", render: (row) => `${text(row.buy_zone_low, "-")} - ${text(row.buy_zone_high, "-")}` },
+          { label: "风险破坏位", render: (row) => text(row.risk_break_level, "-") },
+          { label: "仓位变化", render: (row) => text(row.plan_weight_delta_pct, "-") },
+          { label: "有效期", render: (row) => text(row.plan_valid_until, "-") },
+        ]} emptyText={text(tradePlan.summary_reason, "当前没有可执行的明日计划。")} />
       </Panel>
 
-      <Panel title="Model candidate actions" subtitle="These are raw long-horizon/timing candidates. They still need the execution planner before they become a trade plan.">
-        <DecisionTable rows={approved} columns={actionColumns} emptyText="No candidate trades in the latest model snapshot." />
-        {blockedPlanItems.length ? <div className="notice">Blocked candidate count: {blockedPlanItems.length}. Review risk and discipline before overriding.</div> : null}
+      <Panel title="模型候选动作" subtitle="这些只是长期/时机模型的原始候选，仍需执行计划器确认后才会成为交易计划。">
+        <DecisionTable rows={approved} columns={actionColumns} emptyText="最新模型快照里没有交易候选。" />
+        {blockedPlanItems.length ? <div className="notice">被阻断候选数：{blockedPlanItems.length}。如果要人工覆盖，请先复核风险与纪律层。</div> : null}
       </Panel>
 
       <Panel
-        title="Portfolio news intelligence"
-        subtitle={`Evidence-backed summary · ${text(newsIntelligence.status, "NOT_READY")} · ${text(newsLlm.model, "structured only")}`}
+        title="组合新闻情报"
+        subtitle={`基于证据的新闻摘要 · ${text(newsIntelligence.status, "NOT_READY")} · ${text(newsLlm.model, "结构化输出")}`}
       >
         <div className={`news-brief ${text(newsIntelligence.market_risk_level, "").toUpperCase() === "HIGH" ? "negative" : ""}`}>
           {readableNewsLines(newsIntelligence.executive_summary).length
             ? readableNewsLines(newsIntelligence.executive_summary).map((line, index) => <p key={index}>{line}</p>)
-            : <p>Run the nightly pipeline to build portfolio-aware news intelligence.</p>}
+            : <p>请运行夜间流程来生成组合相关的新闻情报。</p>}
           <div>
             <Status value={newsIntelligence.market_risk_level ?? "LOW"} />
-            <span>{text(newsSource.status, "UNKNOWN")} source</span>
-            <span>{text(newsLlm.route_name, "structured")} route</span>
+            <span>{text(newsSource.status, "UNKNOWN")} 数据源</span>
+            <span>{text(newsLlm.route_name, "structured")} 路由</span>
             <span>{text(newsIntelligence.generated_at, "-")}</span>
           </div>
         </div>
@@ -237,8 +264,8 @@ export default function Dashboard() {
                     <b>{text(row.symbol)}</b>
                     <Status value={row.direction} />
                     <Status value={row.risk_action ?? "NONE"} />
-                    <span>Confidence {formatPercent(row.confidence)}</span>
-                    <span>Relevance {text(row.relevance_score)}</span>
+                    <span>置信度 {formatPercent(row.confidence)}</span>
+                    <span>相关性 {text(row.relevance_score)}</span>
                     <em>{readableNewsLines(row.summary)[0] ?? text(row.summary)}</em>
                   </summary>
                   <div className="news-evidence-list">
@@ -246,7 +273,7 @@ export default function Dashboard() {
                       const evidence = asDict(entry);
                       return (
                         <p key={evidenceIndex}>
-                          <b>{text(evidence.source, "source")}</b>
+                          <b>{text(evidence.source, "来源")}</b>
                           <span>{text(evidence.title)}</span>
                         </p>
                       );
@@ -257,27 +284,27 @@ export default function Dashboard() {
             })}
           </div>
         ) : (
-          <div className="empty-state">No portfolio-relevant active news is available.</div>
+          <div className="empty-state">当前没有组合相关的活跃新闻。</div>
         )}
       </Panel>
 
       <div className="split-layout">
-        <Panel title="Signal disagreements" subtitle="These are not sell signals by themselves.">
+        <Panel title="信号冲突" subtitle="这些冲突本身并不等于卖出信号。">
           <DecisionTable
             rows={conflicts}
             columns={actionColumns.slice(0, 5)}
-            emptyText="No long-horizon and timing conflicts."
+            emptyText="长期判断和入场时机之间没有冲突。"
           />
         </Panel>
-        <Panel title="Trust checks" subtitle="Recommendation quality depends on these controls.">
+        <Panel title="可信度检查" subtitle="建议质量依赖这些控制项。">
           <Facts rows={[
-            ["Model", <Status value={modelStatus} />],
-            ["Data health", <Status value={asDict(dataHealth.summary).status ?? dataHealth.status ?? "UNKNOWN"} />],
-            ["Health reason", text(asDict(dataHealth.summary).health_reason, text(data?.summary.data_health_reason, "unknown"))],
-            ["Suggested fix", text(asDict(dataHealth.summary).action_required, text(data?.summary.data_health_action_required, "none"))],
-            ["Plan quality", <Status value={asDict(planQuality.summary).status ?? planQuality.status ?? "UNKNOWN"} />],
-            ["Last model run", text(model.generated_at)],
-            ["Model version", text(asDict(model.model).version ?? asDict(model.model).trained_at)],
+            ["模型状态", <Status value={modelStatus} />],
+            ["数据健康度", <Status value={asDict(dataHealth.summary).status ?? dataHealth.status ?? "UNKNOWN"} />],
+            ["健康度原因", text(asDict(dataHealth.summary).health_reason, text(data?.summary.data_health_reason, "unknown"))],
+            ["建议修复", text(asDict(dataHealth.summary).action_required, text(data?.summary.data_health_action_required, "none"))],
+            ["计划质量", <Status value={asDict(planQuality.summary).status ?? planQuality.status ?? "UNKNOWN"} />],
+            ["上次模型运行", text(model.generated_at)],
+            ["模型版本", text(asDict(model.model).version ?? asDict(model.model).trained_at)],
           ]} />
         </Panel>
       </div>

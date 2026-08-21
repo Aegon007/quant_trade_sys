@@ -1,5 +1,8 @@
 import unittest
+import sys
+import types
 from datetime import datetime
+from unittest.mock import patch
 
 from tests.support import clear_modules, reload_module
 
@@ -161,10 +164,74 @@ class ApiActionsTests(unittest.TestCase):
             "/api/actions/explain-satellite",
             "/api/actions/explain-risk",
             "/api/actions/refresh-decision-brief",
+            "/api/actions/warmup-foundation-model",
             "/api/actions/save-core-etf-universe",
             "/api/actions/save-event-sources",
         ]:
             self.assertIn(path, route_paths)
+
+    def test_warmup_foundation_model_downloads_and_loads_chronos_backend(self):
+        events = []
+        downloads = []
+        loaded = []
+        actions = self.actions
+        original_load_config = self.actions.foundation_model_config.load_foundation_model_config
+        original_select_backend = self.actions.foundation_backends.select_backend
+        self.addCleanup(setattr, self.actions.foundation_model_config, "load_foundation_model_config", original_load_config)
+        self.addCleanup(setattr, self.actions.foundation_backends, "select_backend", original_select_backend)
+
+        class FakeChronosBackend(actions.foundation_backends.ChronosFoundationBackend):
+            def __init__(self):
+                self.name = "chronos"
+                self.model_name = "amazon/chronos-2"
+                self.revision = "main"
+                self._runtime_device = "unknown"
+
+            def capabilities(self):
+                return actions.foundation_backends.BackendCapabilities(
+                    name="chronos",
+                    model_family="CHRONOS",
+                    status="READY",
+                    supports_covariates=False,
+                    supports_quantiles=True,
+                    message="fake chronos ready",
+                )
+
+            def _load_pipeline(self):
+                loaded.append(self.model_name)
+                self._runtime_device = "cuda"
+                return object()
+
+        fake_backend = FakeChronosBackend()
+        self.actions.foundation_model_config.load_foundation_model_config = lambda: {
+            "backend_priority": ["chronos"],
+            "backends": {"chronos": {"enabled": True, "model_name": fake_backend.model_name}},
+        }
+        self.actions.foundation_backends.select_backend = lambda config: (fake_backend, [{"name": "chronos"}])
+        fake_hf = types.ModuleType("huggingface_hub")
+
+        def fake_snapshot_download(**kwargs):
+            downloads.append(kwargs)
+            if kwargs.get("local_files_only"):
+                raise FileNotFoundError("not cached")
+            return "/tmp/fake-model"
+
+        fake_hf.snapshot_download = fake_snapshot_download
+
+        with patch.dict(sys.modules, {"huggingface_hub": fake_hf}):
+            result = self.actions.warmup_foundation_model_backend(progress_callback=events.append)
+
+        self.assertEqual(result["model_name"], "amazon/chronos-2")
+        self.assertEqual(result["runtime_device"], "cuda")
+        self.assertEqual(result["cache_status"], "DOWNLOADED")
+        self.assertEqual(result["cache_path"], "/tmp/fake-model")
+        self.assertEqual(loaded, ["amazon/chronos-2"])
+        self.assertTrue(downloads[0]["local_files_only"])
+        self.assertEqual(downloads[1]["repo_id"], "amazon/chronos-2")
+        self.assertEqual(downloads[1]["revision"], "main")
+        self.assertEqual(events[-1]["stage"], "foundation_warmup_ready")
+        self.assertEqual(events[-1]["progress_pct"], 100.0)
+        self.assertEqual(events[-1]["cache_status"], "DOWNLOADED")
 
     def test_robinhood_import_followup_updates_review_and_plan_quality(self):
         review_saved = []

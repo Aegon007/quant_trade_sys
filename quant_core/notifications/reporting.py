@@ -367,6 +367,8 @@ def build_nightly_report(snapshot: Mapping) -> str:
         or {}
     )
     decision_brief = dict(snapshot.get("decision_brief", {}) or {})
+    final_decision = dict(snapshot.get("final_decision", {}) or {})
+    correlation_research = dict(snapshot.get("correlation_research_snapshot", {}) or {})
     intraday_event_summary = dict(snapshot.get("intraday_event_summary", {}) or {})
     change_feed = dict(snapshot.get("change_feed", {}) or {})
     nightly_manifest = dict(snapshot.get("nightly_manifest", {}) or {})
@@ -384,6 +386,7 @@ def build_nightly_report(snapshot: Mapping) -> str:
             f"version={model_info.get('version') or model_info.get('trained_at') or 'untrained'} "
             f"symbols={int(_float(model_summary.get('symbol_count'), 0) or 0)} "
             f"accumulate={int(_float(action_counts.get('ACCUMULATE'), 0) or 0)} "
+            f"dca={int(_float(action_counts.get('DCA_ACCUMULATE'), 0) or 0)} "
             f"trim={int(_float(action_counts.get('TRIM'), 0) or 0)} "
             f"conflicts={int(_float(model_summary.get('conflict_count'), 0) or 0)}"
         )
@@ -400,6 +403,19 @@ def build_nightly_report(snapshot: Mapping) -> str:
         f"Daily recap: trades={int(_float(recap.get('trade_count'), 0) or 0)}, buys={int(_float(recap.get('buy_count'), 0) or 0)}, sells={int(_float(recap.get('sell_count'), 0) or 0)}, events={int(_float(recap.get('portfolio_event_count'), 0) or 0)}, realized P/L={_format_money(recap.get('realized_pl'))}",
         lines_model,
     ]
+
+    if final_decision:
+        sections = dict(final_decision.get("strategy_sections", {}) or {})
+        lines.append(
+            "Unified decision: "
+            f"{final_decision.get('final_decision') or 'UNKNOWN'} | "
+            f"identity={final_decision.get('system_identity') or '-'} | "
+            f"core={dict(sections.get('core_etf', {}) or {}).get('action_count', 0)} | "
+            f"satellite={dict(sections.get('satellite', {}) or {}).get('action_count', 0)} | "
+            f"correlation_role={dict(sections.get('weekend_correlation', {}) or {}).get('role', '-')}"
+        )
+        for reason in list(final_decision.get("top_reasons", []) or [])[:3]:
+            lines.append(f"- Final decision reason: {reason}")
 
     if market_sentiment:
         lines.append(
@@ -582,6 +598,22 @@ def build_nightly_report(snapshot: Mapping) -> str:
         discipline_summary = str(discipline_snapshot.get("summary") or "").strip()
         if discipline_summary:
             lines.append(f"Discipline summary: {discipline_summary}")
+
+    if correlation_research:
+        correlation_summary = dict(correlation_research.get("summary", {}) or {})
+        lines.append(
+            "Weekend correlation research: "
+            f"status={correlation_research.get('status') or correlation_summary.get('status') or 'UNKNOWN'} | "
+            f"high_pairs={int(_float(correlation_summary.get('high_correlation_pair_count'), 0) or 0)} | "
+            f"portfolio_redundancy={int(_float(correlation_summary.get('portfolio_redundancy_count'), 0) or 0)} | "
+            f"independent_strength={int(_float(correlation_summary.get('independent_strength_count'), 0) or 0)}"
+        )
+        for pair in list(correlation_research.get("portfolio_redundancy", []) or [])[:3]:
+            lines.append(
+                "- Correlation clue: "
+                f"{pair.get('left')}/{pair.get('right')} corr={float(_float(pair.get('correlation'), 0.0) or 0.0):.2f}; "
+                "not a direct trade signal."
+            )
 
     if monthly_discipline_review:
         lines.append(

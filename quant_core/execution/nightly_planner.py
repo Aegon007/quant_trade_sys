@@ -12,7 +12,7 @@ from quant_core import paths as qpaths
 
 DEFAULT_TRADE_PLAN_FILE = qpaths.NEXT_DAY_TRADE_PLAN_FILE
 _SELL_ACTIONS = {"TRIM", "EXIT", "RISK_EXIT"}
-_BUY_ACTIONS = {"ADD", "ACCUMULATE", "PROBE"}
+_BUY_ACTIONS = {"ADD", "ACCUMULATE", "DCA_ACCUMULATE", "PROBE"}
 
 
 def _safe_float(value, default=None):
@@ -87,6 +87,7 @@ def _execution_priority(action: str) -> int:
         "TRIM": 3,
         "ADD": 4,
         "ACCUMULATE": 5,
+        "DCA_ACCUMULATE": 5,
         "PROBE": 6,
     }
     return order.get(str(action or "").strip().upper(), 99)
