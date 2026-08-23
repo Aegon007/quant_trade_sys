@@ -95,6 +95,12 @@ export default function Dashboard() {
   const modelRuntimeStatus = text(model.status ?? modelInfo.status, "MODEL_NOT_READY").toUpperCase();
   const modelFreshnessStatus = text(data?.summary.multi_horizon_status, "").toUpperCase();
   const dataHealthStatus = text(data?.summary.data_health_status ?? asDict(dataHealth.summary).status ?? dataHealth.status, "").toUpperCase();
+  const modelStatusDetail = [
+    `运行状态 ${text(model.status ?? modelInfo.status, "MODEL_NOT_READY")}`,
+    `快照状态 ${text(data?.summary.multi_horizon_status, "UNKNOWN")}`,
+    `后端 ${text(modelInfo.backend ?? modelInfo.backend_family ?? modelInfo.model_family, "UNKNOWN")}`,
+    `时间 ${text(model.generated_at, "-")}`,
+  ].join(" · ");
   const finalDecisionValue = text(finalDecision.final_decision, "").toUpperCase();
   const headline = finalDecisionValue === "WAIT"
     ? "建议等待：先处理数据或风险问题。"
@@ -107,13 +113,15 @@ export default function Dashboard() {
           : modelFreshnessStatus === "STALE"
             ? "模型快照已过期：建议先运行夜间流程或刷新模型快照，再参考交易建议。"
             : modelRuntimeStatus !== "READY"
-              ? "长期模型尚未就绪，暂不应使用交易建议。"
+              ? `模型运行快照未就绪（${text(model.status ?? modelInfo.status, "MODEL_NOT_READY")}），暂不应使用交易建议。`
           : "没有强交易信号。除非盘中出现紧急告警，否则建议保持仓位不动。";
   const headlineReason = dataHealthStatus === "BROKEN"
     ? `数据健康原因：${text(data?.summary.data_health_reason, "价格缺失或数据源异常")}。建议先到运行操作页执行强制刷新市场数据。`
     : modelFreshnessStatus === "STALE"
       ? `模型快照状态：${modelStatus}。建议运行完整夜间流程，让模型、风险、交易计划和新闻摘要重新对齐。`
-      : text(asArray(finalDecision.top_reasons)[0], "模型候选不是交易指令。只有当入场时机、组合纪律、风险门控和失效条件都通过后，才会进入明日计划。");
+      : modelRuntimeStatus !== "READY"
+        ? `${modelStatusDetail}。在 Jetson 上通常需要先到“运行操作”页执行“运行完整夜间流程”，或到“模型研究/Settings”确认 foundation model 已下载并可加载。`
+        : text(asArray(finalDecision.top_reasons)[0], "模型候选不是交易指令。只有当入场时机、组合纪律、风险门控和失效条件都通过后，才会进入明日计划。");
 
   async function refreshDecisionBrief() {
     setRefreshingBrief(true);
@@ -311,7 +319,8 @@ export default function Dashboard() {
         </Panel>
         <Panel title="可信度检查" subtitle="建议质量依赖这些控制项。">
           <Facts rows={[
-            ["模型状态", <Status value={modelStatus} />],
+            ["模型运行状态", <Status value={model.status ?? modelInfo.status ?? "MODEL_NOT_READY"} />],
+            ["模型快照状态", <Status value={data?.summary.multi_horizon_status ?? "UNKNOWN"} />],
             ["数据健康度", <Status value={asDict(dataHealth.summary).status ?? dataHealth.status ?? "UNKNOWN"} />],
             ["健康度原因", text(asDict(dataHealth.summary).health_reason, text(data?.summary.data_health_reason, "unknown"))],
             ["建议修复", text(asDict(dataHealth.summary).action_required, text(data?.summary.data_health_action_required, "none"))],
