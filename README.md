@@ -200,7 +200,7 @@ PYTHONPYCACHEPREFIX=/tmp/pycache ~/venv/bin/python -m unittest discover -s tests
   - 多周期神经模型重训检查、预训练和 walk-forward 验证
   - `next_week_bias`（如下周偏防守 / 平衡 / 风险偏好）
 
-周末研究宇宙配置在 `storage/config/weekend_research_universe.json`。如果要让周末任务扫描几千甚至上万只股票、ETF、黄金 ETF、商品 ETF、债券 ETF 或反向/杠杆 ETF，可以扩展该文件的 `manual_include`，并调整 `max_symbols`。这些研究结果只作为风险和机会线索，不会直接生成买卖指令。
+周末研究宇宙配置在 `storage/config/weekend_research_universe.json`。系统每次运行周末研究时会自动合并当前持仓、关注列表、核心 ETF 轮动池、卫星候选池、卫星 universe 和周末专用 universe；如果还没有运行过新版周末研究，`周末研究` 页面会先显示“计划扫描池”。如果要让周末任务扫描几千甚至上万只股票、ETF、黄金 ETF、商品 ETF、债券 ETF 或反向/杠杆 ETF，可以扩展该文件的 `manual_include`，并调整 `max_symbols`。这些研究结果只作为风险和机会线索，不会直接生成买卖指令。
 
 结果位置：
 

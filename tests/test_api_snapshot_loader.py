@@ -312,7 +312,7 @@ class ApiSnapshotLoaderTests(unittest.TestCase):
 
         self.assertEqual(response["name"], "weekend-research")
         self.assertEqual(response["summary"]["status"], "MISSING")
-        self.assertEqual(response["payload"]["research_universe"], {})
+        self.assertTrue(response["payload"]["research_universe"]["planned_only"])
 
     def test_weekend_research_api_serializes_non_finite_legacy_numbers(self):
         original_safe_read_json = self.loader.safe_read_json
@@ -336,6 +336,42 @@ class ApiSnapshotLoaderTests(unittest.TestCase):
         self.assertIsNone(response["summary"]["next_week_bias"])
         self.assertIsNone(response["summary"]["symbol_count"])
         self.assertIsNone(response["payload"]["weekend_research"]["correlation_research_snapshot"]["score"])
+
+    def test_load_weekend_research_response_builds_planned_universe_when_snapshot_is_missing(self):
+        original_safe_read_json = self.loader.safe_read_json
+        original_load_portfolio_payload = self.loader._load_portfolio_payload
+        original_load_job_status = self.loader.job_registry.load_job_status
+        self.addCleanup(setattr, self.loader, "safe_read_json", original_safe_read_json)
+        self.addCleanup(setattr, self.loader, "_load_portfolio_payload", original_load_portfolio_payload)
+        self.addCleanup(setattr, self.loader.job_registry, "load_job_status", original_load_job_status)
+
+        def fake_safe_read_json(path):
+            text = str(path)
+            if "weekend_research_snapshot" in text or "weekend_correlation_research" in text:
+                return {}, [f"Missing file: {text}"]
+            if "core_etf_snapshot" in text:
+                return {"symbols": [{"symbol": "VOO"}]}, []
+            if "satellite_candidate_pool" in text:
+                return {"candidate_pool": [{"symbol": "MU"}]}, []
+            if "weekend_research_universe" in text:
+                return {"manual_include": ["GLD", "SQQQ"], "manual_exclude": [], "max_symbols": 20}, []
+            if "satellite_universe" in text:
+                return {"manual_include": ["AAPL"]}, []
+            return {}, []
+
+        self.loader.safe_read_json = fake_safe_read_json
+        self.loader._load_portfolio_payload = lambda: {
+            "holdings": [{"symbol": "MSFT"}],
+            "watchlist": [{"symbol": "QQQM"}],
+        }
+        self.loader.job_registry.load_job_status = lambda: {"jobs": {}}
+
+        response = self.loader.load_weekend_research_response(now=datetime.fromisoformat("2026-06-21T12:00:00"))
+        universe = response["payload"]["research_universe"]
+
+        self.assertTrue(universe["planned_only"])
+        self.assertEqual(universe["symbols"][:6], ["MSFT", "QQQM", "VOO", "MU", "AAPL", "GLD"])
+        self.assertEqual(response["summary"]["symbol_count"], 7)
 
 
 if __name__ == "__main__":

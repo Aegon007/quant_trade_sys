@@ -91,16 +91,29 @@ export default function Dashboard() {
   const modelInfo = asDict(model.model);
   const [refreshingBrief, setRefreshingBrief] = useState(false);
   const [briefError, setBriefError] = useState("");
-  const modelStatus = text(data?.summary.multi_horizon_status ?? model.status ?? asDict(model.model).status, "MODEL_NOT_READY");
-  const headline = text(finalDecision.final_decision, "") === "WAIT"
+  const modelStatus = text(data?.summary.multi_horizon_status ?? model.status ?? modelInfo.status, "MODEL_NOT_READY");
+  const modelRuntimeStatus = text(model.status ?? modelInfo.status, "MODEL_NOT_READY").toUpperCase();
+  const modelFreshnessStatus = text(data?.summary.multi_horizon_status, "").toUpperCase();
+  const dataHealthStatus = text(data?.summary.data_health_status ?? asDict(dataHealth.summary).status ?? dataHealth.status, "").toUpperCase();
+  const finalDecisionValue = text(finalDecision.final_decision, "").toUpperCase();
+  const headline = finalDecisionValue === "WAIT"
     ? "建议等待：先处理数据或风险问题。"
-    : text(finalDecision.final_decision, "") === "STOP"
+    : finalDecisionValue === "STOP"
       ? "纪律层停手：当前不应新增仓位。"
-      : text(finalDecision.final_decision, "") === "ACTION"
+      : finalDecisionValue === "ACTION"
         ? `有 ${planItems.length} 条明日可执行计划需要你复核。`
-        : modelStatus !== "READY"
-          ? "长期模型尚未就绪，暂不应使用交易建议。"
+        : dataHealthStatus === "BROKEN"
+          ? "数据健康异常：请先强制刷新市场数据，再参考交易建议。"
+          : modelFreshnessStatus === "STALE"
+            ? "模型快照已过期：建议先运行夜间流程或刷新模型快照，再参考交易建议。"
+            : modelRuntimeStatus !== "READY"
+              ? "长期模型尚未就绪，暂不应使用交易建议。"
           : "没有强交易信号。除非盘中出现紧急告警，否则建议保持仓位不动。";
+  const headlineReason = dataHealthStatus === "BROKEN"
+    ? `数据健康原因：${text(data?.summary.data_health_reason, "价格缺失或数据源异常")}。建议先到运行操作页执行强制刷新市场数据。`
+    : modelFreshnessStatus === "STALE"
+      ? `模型快照状态：${modelStatus}。建议运行完整夜间流程，让模型、风险、交易计划和新闻摘要重新对齐。`
+      : text(asArray(finalDecision.top_reasons)[0], "模型候选不是交易指令。只有当入场时机、组合纪律、风险门控和失效条件都通过后，才会进入明日计划。");
 
   async function refreshDecisionBrief() {
     setRefreshingBrief(true);
@@ -121,7 +134,7 @@ export default function Dashboard() {
         <div>
           <span className="eyebrow">{text(finalDecision.system_identity, "明日决策简报")}</span>
           <h2>{headline}</h2>
-          <p>{text(asArray(finalDecision.top_reasons)[0], "模型候选不是交易指令。只有当入场时机、组合纪律、风险门控和失效条件都通过后，才会进入明日计划。")}</p>
+          <p>{headlineReason}</p>
         </div>
         <Status value={finalDecision.final_decision ?? modelStatus} />
       </section>

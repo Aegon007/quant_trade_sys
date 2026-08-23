@@ -54,6 +54,11 @@ export default function WeekendResearch() {
     () => Object.entries(sourceCounts).map(([source, count]) => ({ source, count })),
     [sourceCounts],
   );
+  const symbolRows = useMemo(() => {
+    const sourceRows = asArray(universe.symbol_sources);
+    if (sourceRows.length) return sourceRows.slice(0, 250);
+    return asArray(universe.symbols).slice(0, 250).map((symbol) => ({ symbol, sources: ["weekend_universe"] }));
+  }, [universe]);
 
   return (
     <SnapshotFrame snapshot={data} loading={loading} error={error} onReload={reload}>
@@ -94,6 +99,8 @@ export default function WeekendResearch() {
           ["选中标的", formatNumber(universe.symbol_count, 0)],
           ["上限", formatNumber(universe.max_symbols, 0)],
           ["截断", universe.truncated ? "是" : "否"],
+          ["当前显示", universe.planned_only ? "计划扫描池" : "实际研究池"],
+          ["自动合并", "持仓、关注、核心ETF、卫星池、周末专用配置"],
           ["下周偏向", text(summary.next_week_bias, "-")],
           ["研究角色", text(corrSummary.research_role, "RISK_AND_OPPORTUNITY_CLUES")],
         ]} />
@@ -101,6 +108,13 @@ export default function WeekendResearch() {
           { label: "来源", render: (row) => text(row.source) },
           { label: "数量", render: (row) => formatNumber(row.count, 0) },
         ]} emptyText="暂无研究宇宙来源。" detail={(row) => <div className="decision-detail"><p><b>来源说明</b><span>{text(row.source)} 贡献了 {formatNumber(row.count, 0)} 个标的。</span></p></div>} />
+      </Panel>
+
+      <Panel title="计划扫描标的预览" subtitle="这里显示周末研究会纳入的股票和ETF。页面最多预览前250个；完整池子由 storage/config/weekend_research_universe.json 和自动合并来源决定。">
+        <DecisionTable rows={symbolRows} columns={[
+          { label: "代码", className: "symbol-cell", render: (row) => text(row.symbol) },
+          { label: "来源", render: (row) => text(row.sources) },
+        ]} emptyText="暂无计划扫描标的。请检查 storage/config/weekend_research_universe.json。" detail={(row) => <div className="decision-detail"><p><b>说明</b><span>{text(row.symbol)} 会在周末研究中尝试获取历史数据并参与相关性/强势度扫描。</span></p></div>} />
       </Panel>
 
       <Panel title="算法阶段" subtitle="这里追踪周末研究到底跑了哪些数据挖掘步骤。">

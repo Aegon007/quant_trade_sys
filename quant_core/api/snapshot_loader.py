@@ -23,6 +23,7 @@ from quant_core.ledger import transactions as tx
 from quant_core.notifications import notification_config as ncfg
 from quant_core.models.multi_horizon import governance as mh_governance
 from quant_core.portfolio import risk as portfolio_risk
+from quant_core.research import weekend_universe as wuniverse
 from quant_core.snapshots import system_snapshot as ss
 
 
@@ -994,6 +995,22 @@ def load_weekend_research_response(*, now: Optional[datetime] = None) -> dict:
         or correlation_payload.get("research_universe")
         or {}
     )
+    if not research_universe.get("symbol_count") and not research_universe.get("symbols"):
+        core_rotation_snapshot, _ = safe_read_json(qpaths.CORE_ETF_SNAPSHOT_FILE)
+        satellite_snapshot, _ = safe_read_json(qpaths.SATELLITE_CANDIDATE_POOL_FILE)
+        weekend_universe_config, _ = safe_read_json(qpaths.WEEKEND_RESEARCH_UNIVERSE_FILE)
+        satellite_universe_config, _ = safe_read_json(qpaths.SATELLITE_UNIVERSE_FILE)
+        research_universe = wuniverse.build_weekend_research_universe(
+            data=_load_portfolio_payload(),
+            core_rotation_snapshot=core_rotation_snapshot if isinstance(core_rotation_snapshot, Mapping) else {},
+            satellite_snapshot=satellite_snapshot if isinstance(satellite_snapshot, Mapping) else {},
+            config=weekend_universe_config if isinstance(weekend_universe_config, Mapping) else None,
+            satellite_universe=satellite_universe_config if isinstance(satellite_universe_config, Mapping) else None,
+        )
+        research_universe["planned_only"] = True
+        research_universe["message"] = (
+            "这是按当前配置即时合成的计划扫描宇宙；运行周末研究后会写入实际研究快照。"
+        )
     generated_at = weekend_payload.get("generated_at") or correlation_payload.get("generated_at") or now_iso(now)
     age = _age_seconds(generated_at, now=now)
     stale = bool(age is not None and age > 14 * 24 * 3600)
