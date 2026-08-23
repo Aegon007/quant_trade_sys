@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+import numbers
 from datetime import datetime
 from typing import Mapping, Optional
 
@@ -11,6 +13,23 @@ API_SCHEMA_VERSION = 1
 
 def now_iso(now: Optional[datetime] = None) -> str:
     return (now or datetime.now()).isoformat()
+
+
+def _json_safe(value):
+    if value is None or isinstance(value, (str, bool)):
+        return value
+    if isinstance(value, numbers.Integral):
+        return int(value)
+    if isinstance(value, numbers.Real):
+        number = float(value)
+        return number if math.isfinite(number) else None
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, Mapping):
+        return {str(key): _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_json_safe(item) for item in value]
+    return str(value)
 
 
 def build_api_response(
@@ -41,11 +60,11 @@ def build_api_response(
         "source": str(source),
         "freshness_status": str(freshness_status or "UNKNOWN").upper(),
         "is_stale": bool(is_stale),
-        "summary": dict(summary or {}),
-        "items": list(items or []),
-        "errors": list(errors or []),
-        "warnings": list(warnings or []),
-        "data_quality": dict(data_quality or {}),
+        "summary": _json_safe(dict(summary or {})),
+        "items": _json_safe(list(items or [])),
+        "errors": _json_safe(list(errors or [])),
+        "warnings": _json_safe(list(warnings or [])),
+        "data_quality": _json_safe(dict(data_quality or {})),
         "next_update_hint": next_update_hint,
-        "payload": payload if payload is not None else {},
+        "payload": _json_safe(payload if payload is not None else {}),
     }

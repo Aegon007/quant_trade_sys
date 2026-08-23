@@ -149,6 +149,7 @@ class ApiActionsTests(unittest.TestCase):
             "/api/plan-quality",
             "/api/strategy-governance",
             "/api/research-models",
+            "/api/weekend-research",
             "/api/downloads/diagnostics-bundle",
             "/api/multi-horizon",
             "/api/reports/latest",
@@ -169,6 +170,35 @@ class ApiActionsTests(unittest.TestCase):
             "/api/actions/save-event-sources",
         ]:
             self.assertIn(path, route_paths)
+
+    def test_weekend_research_route_serializes_non_finite_legacy_snapshot(self):
+        from fastapi.testclient import TestClient
+
+        server = reload_module("jobs.api_server")
+        original_safe_read_json = server.loader.safe_read_json
+        original_load_job_status = server.loader.job_registry.load_job_status
+        self.addCleanup(setattr, server.loader, "safe_read_json", original_safe_read_json)
+        self.addCleanup(setattr, server.loader.job_registry, "load_job_status", original_load_job_status)
+
+        server.loader.safe_read_json = lambda path: (
+            {
+                "generated_at": "2026-06-20T12:00:00",
+                "summary": {"status": "READY", "next_week_bias": float("-inf")},
+                "research_universe": {"symbol_count": float("nan")},
+                "nested": {"score": float("inf")},
+            },
+            [],
+        )
+        server.loader.job_registry.load_job_status = lambda: {
+            "jobs": {"weekend-research": {"state": "completed", "progress_pct": float("nan")}}
+        }
+
+        response = TestClient(server.create_app()).get("/api/weekend-research")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertIsNone(payload["summary"]["next_week_bias"])
+        self.assertIsNone(payload["payload"]["weekend_research"]["nested"]["score"])
 
     def test_warmup_foundation_model_downloads_and_loads_chronos_backend(self):
         events = []

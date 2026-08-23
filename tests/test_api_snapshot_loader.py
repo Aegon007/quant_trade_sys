@@ -314,6 +314,29 @@ class ApiSnapshotLoaderTests(unittest.TestCase):
         self.assertEqual(response["summary"]["status"], "MISSING")
         self.assertEqual(response["payload"]["research_universe"], {})
 
+    def test_weekend_research_api_serializes_non_finite_legacy_numbers(self):
+        original_safe_read_json = self.loader.safe_read_json
+        original_load_job_status = self.loader.job_registry.load_job_status
+        self.addCleanup(setattr, self.loader, "safe_read_json", original_safe_read_json)
+        self.addCleanup(setattr, self.loader.job_registry, "load_job_status", original_load_job_status)
+
+        self.loader.safe_read_json = lambda path: (
+            {
+                "generated_at": "2026-06-20T12:00:00",
+                "summary": {"status": "READY", "next_week_bias": float("-inf")},
+                "research_universe": {"symbol_count": float("nan")},
+                "correlation_research_snapshot": {"score": float("inf")},
+            },
+            [],
+        )
+        self.loader.job_registry.load_job_status = lambda: {"jobs": {"weekend-research": {"state": "completed"}}}
+
+        response = self.loader.load_weekend_research_response(now=datetime.fromisoformat("2026-06-21T12:00:00"))
+
+        self.assertIsNone(response["summary"]["next_week_bias"])
+        self.assertIsNone(response["summary"]["symbol_count"])
+        self.assertIsNone(response["payload"]["weekend_research"]["correlation_research_snapshot"]["score"])
+
 
 if __name__ == "__main__":
     unittest.main()
