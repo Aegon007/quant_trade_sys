@@ -282,6 +282,38 @@ class ApiSnapshotLoaderTests(unittest.TestCase):
         self.assertEqual(rows[0]["timing_state"], "DETERIORATING")
         self.assertEqual(rows[0]["model_generated_at"], "2026-06-18T20:00:00")
 
+    def test_load_weekend_research_response_tolerates_legacy_snapshot_shapes(self):
+        original_safe_read_json = self.loader.safe_read_json
+        original_load_job_status = self.loader.job_registry.load_job_status
+        self.addCleanup(setattr, self.loader, "safe_read_json", original_safe_read_json)
+        self.addCleanup(setattr, self.loader.job_registry, "load_job_status", original_load_job_status)
+
+        def fake_safe_read_json(path):
+            if "weekend_research" in str(path):
+                return {
+                    "generated_at": "2026-06-20T12:00:00",
+                    "summary": ["legacy", "bad-shape"],
+                    "research_universe": ["bad", "shape"],
+                }, []
+            if "weekend_correlation" in str(path):
+                return {
+                    "generated_at": "2026-06-20T12:00:00",
+                    "summary": "legacy bad-shape",
+                    "research_universe": "legacy bad-shape",
+                }, []
+            return {}, []
+
+        self.loader.safe_read_json = fake_safe_read_json
+        self.loader.job_registry.load_job_status = lambda: {
+            "jobs": {"weekend-research": ["legacy", "bad-shape"]}
+        }
+
+        response = self.loader.load_weekend_research_response(now=datetime.fromisoformat("2026-06-21T12:00:00"))
+
+        self.assertEqual(response["name"], "weekend-research")
+        self.assertEqual(response["summary"]["status"], "MISSING")
+        self.assertEqual(response["payload"]["research_universe"], {})
+
 
 if __name__ == "__main__":
     unittest.main()

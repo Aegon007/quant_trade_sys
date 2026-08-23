@@ -196,6 +196,10 @@ def safe_read_json(path: str) -> tuple[object, list[str]]:
         return {}, [f"Failed to read JSON {path}: {exc}"]
 
 
+def _as_mapping_dict(value) -> dict:
+    return dict(value or {}) if isinstance(value, Mapping) else {}
+
+
 def _extract_generated_at(payload) -> Optional[str]:
     if not isinstance(payload, Mapping):
         return None
@@ -982,10 +986,10 @@ def load_weekend_research_response(*, now: Optional[datetime] = None) -> dict:
     weekend_payload = weekend_payload if isinstance(weekend_payload, dict) else {}
     correlation_payload = correlation_payload if isinstance(correlation_payload, dict) else {}
     jobs = job_registry.mark_stale_jobs(job_registry.load_job_status(), now=now)
-    weekend_job = dict(dict(jobs.get("jobs", {}) or {}).get("weekend-research", {}) or {})
-    summary = dict(weekend_payload.get("summary", {}) or {})
-    correlation_summary = dict(correlation_payload.get("summary", {}) or {})
-    research_universe = dict(
+    weekend_job = _as_mapping_dict(_as_mapping_dict(jobs.get("jobs")).get("weekend-research"))
+    summary = _as_mapping_dict(weekend_payload.get("summary"))
+    correlation_summary = _as_mapping_dict(correlation_payload.get("summary"))
+    research_universe = _as_mapping_dict(
         weekend_payload.get("research_universe")
         or correlation_payload.get("research_universe")
         or {}

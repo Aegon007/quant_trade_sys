@@ -78,9 +78,12 @@ def mark_stale_jobs(
     stale_after_seconds: int = DEFAULT_STALE_AFTER_SECONDS,
 ) -> dict:
     normalized = dict(payload or {})
+    raw_jobs = normalized.get("jobs", {})
+    raw_jobs = raw_jobs if isinstance(raw_jobs, Mapping) else {}
     normalized["jobs"] = {
         str(name): dict(entry or {})
-        for name, entry in dict(normalized.get("jobs", {}) or {}).items()
+        for name, entry in raw_jobs.items()
+        if isinstance(entry, Mapping)
     }
     current = now or datetime.now()
     for entry in normalized["jobs"].values():
