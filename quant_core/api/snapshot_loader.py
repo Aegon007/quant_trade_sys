@@ -48,6 +48,7 @@ SNAPSHOT_PATHS = {
     "financials-intelligence": qpaths.FINANCIALS_INTELLIGENCE_FILE,
     "decision-brief": qpaths.DECISION_BRIEF_FILE,
     "final-decision": qpaths.FINAL_DECISION_SNAPSHOT_FILE,
+    "weekend-research": qpaths.WEEKEND_RESEARCH_SNAPSHOT_FILE,
     "weekend-correlation": qpaths.WEEKEND_CORRELATION_RESEARCH_FILE,
     "reports-latest": str(qpaths.PROJECT_ROOT / "reports" / "nightly_report_latest.json"),
 }
@@ -972,6 +973,51 @@ def load_research_models_response(*, now: Optional[datetime] = None) -> dict:
             "foundation_config": foundation_config,
         },
         generated_at=snapshot.get("generated_at") or validation.get("generated_at") or now_iso(now),
+    )
+
+
+def load_weekend_research_response(*, now: Optional[datetime] = None) -> dict:
+    weekend_payload, weekend_errors = safe_read_json(qpaths.WEEKEND_RESEARCH_SNAPSHOT_FILE)
+    correlation_payload, correlation_errors = safe_read_json(qpaths.WEEKEND_CORRELATION_RESEARCH_FILE)
+    weekend_payload = weekend_payload if isinstance(weekend_payload, dict) else {}
+    correlation_payload = correlation_payload if isinstance(correlation_payload, dict) else {}
+    jobs = job_registry.mark_stale_jobs(job_registry.load_job_status(), now=now)
+    weekend_job = dict(dict(jobs.get("jobs", {}) or {}).get("weekend-research", {}) or {})
+    summary = dict(weekend_payload.get("summary", {}) or {})
+    correlation_summary = dict(correlation_payload.get("summary", {}) or {})
+    research_universe = dict(
+        weekend_payload.get("research_universe")
+        or correlation_payload.get("research_universe")
+        or {}
+    )
+    generated_at = weekend_payload.get("generated_at") or correlation_payload.get("generated_at") or now_iso(now)
+    age = _age_seconds(generated_at, now=now)
+    stale = bool(age is not None and age > 14 * 24 * 3600)
+    errors = [*weekend_errors, *correlation_errors]
+    return build_api_response(
+        name="weekend-research",
+        source="composed:weekend_research+correlation+job_status",
+        freshness_status="MISSING" if errors else ("STALE" if stale else "OK"),
+        is_stale=bool(errors or stale),
+        summary={
+            "status": summary.get("status") or correlation_payload.get("status") or "MISSING",
+            "next_week_bias": summary.get("next_week_bias"),
+            "symbol_count": research_universe.get("symbol_count") or correlation_summary.get("symbol_count"),
+            "high_correlation_pairs": correlation_summary.get("high_correlation_pair_count"),
+            "portfolio_redundancy": correlation_summary.get("portfolio_redundancy_count"),
+            "independent_strength": correlation_summary.get("independent_strength_count"),
+            "clusters": correlation_summary.get("cluster_count"),
+            "job_state": weekend_job.get("state") or "not run",
+        },
+        errors=errors,
+        data_quality={"status": "MISSING" if errors else "OK"},
+        payload={
+            "weekend_research": weekend_payload,
+            "weekend_correlation": correlation_payload,
+            "research_universe": research_universe,
+            "job": weekend_job,
+        },
+        generated_at=generated_at,
     )
 
 

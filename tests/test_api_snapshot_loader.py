@@ -83,6 +83,7 @@ class ApiSnapshotLoaderTests(unittest.TestCase):
 
         self.assertTrue(sanitized["alert_settings"]["send_hourly_market_summary"])
         self.assertTrue(sanitized["alert_settings"]["send_premarket_brief"])
+        self.assertTrue(sanitized["alert_settings"]["enable_llm_notification_digest"])
         self.assertTrue(sanitized["alert_settings"]["enable_weekend_research"])
         self.assertEqual(sanitized["alert_settings"]["weekend_research_day_local"], "saturday")
         self.assertEqual(sanitized["alert_settings"]["weekend_research_hour_local"], 10)

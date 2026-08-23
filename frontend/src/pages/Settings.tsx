@@ -532,6 +532,7 @@ export default function Settings() {
           <Toggle label="小时摘要仅限交易时段" checked={Boolean(alerts.send_hourly_market_summary_market_hours_only)} onChange={(value) => updateSection("alert_settings", "send_hourly_market_summary_market_hours_only", value)} />
           <Toggle label="启用周末研究" checked={Boolean(alerts.enable_weekend_research)} onChange={(value) => updateSection("alert_settings", "enable_weekend_research", value)} />
           <Toggle label="发送周末研究摘要" checked={Boolean(alerts.send_weekend_research_summary)} onChange={(value) => updateSection("alert_settings", "send_weekend_research_summary", value)} />
+          <Toggle label="通知先由LLM改写成中文摘要" checked={Boolean(alerts.enable_llm_notification_digest)} onChange={(value) => updateSection("alert_settings", "enable_llm_notification_digest", value)} />
           <Toggle label="启用LLM组合摘要" checked={Boolean(alerts.enable_llm_decision_brief)} onChange={(value) => updateSection("alert_settings", "enable_llm_decision_brief", value)} />
           <Toggle label="重大信号变化时刷新LLM摘要" checked={Boolean(alerts.refresh_llm_brief_on_material_change)} onChange={(value) => updateSection("alert_settings", "refresh_llm_brief_on_material_change", value)} />
           <Toggle label="将变化后的LLM摘要发送到Slack/Email" checked={Boolean(alerts.send_llm_brief_on_material_change)} onChange={(value) => updateSection("alert_settings", "send_llm_brief_on_material_change", value)} />
@@ -542,6 +543,19 @@ export default function Settings() {
           </Field>
           <Field label="周末研究历史窗口">
             <input value={text(alerts.weekend_research_history_period, "5y")} onChange={(event) => updateSection("alert_settings", "weekend_research_history_period", event.target.value)} />
+          </Field>
+          <Field label="周末研究日期">
+            <select value={text(alerts.weekend_research_day_local, "saturday")} onChange={(event) => updateSection("alert_settings", "weekend_research_day_local", event.target.value)}>
+              <option value="saturday">周六</option>
+              <option value="sunday">周日</option>
+            </select>
+          </Field>
+          <Field label="周末研究时间">
+            <input type="time" value={`${String(alerts.weekend_research_hour_local ?? 10).padStart(2, "0")}:${String(alerts.weekend_research_minute_local ?? 0).padStart(2, "0")}`} onChange={(event) => {
+              const [hour, minute] = event.target.value.split(":");
+              updateSection("alert_settings", "weekend_research_hour_local", Number(hour));
+              updateSection("alert_settings", "weekend_research_minute_local", Number(minute));
+            }} />
           </Field>
           <Field label="决策简报最大输出tokens" hint="全系统LLM摘要使用的独立大输出预算。">
             <input type="number" min="512" value={text(alerts.decision_brief_max_output_tokens, "16000")} onChange={(event) => updateSection("alert_settings", "decision_brief_max_output_tokens", Number(event.target.value))} />

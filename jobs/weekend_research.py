@@ -20,6 +20,8 @@ from quant_core.research import strategy_governance as sgov
 from quant_core.research import evidence_collector as evid
 from quant_core.research import weekend_research as wr
 from quant_core.research import correlation_research as corr_research
+from quant_core.research import weekend_universe as wuniverse
+from quant_core.jobs import job_registry
 from quant_core.snapshots import system_snapshot as ss
 from quant_core.ledger import transactions as tx
 from quant_core.analytics.signal_scoreboard import build_signal_scoreboard
@@ -66,6 +68,19 @@ def run_weekend_research(
     multi_horizon_runner = multi_horizon_runner or foundation_pipeline.run_foundation_job
 
     history_period = schedule["history_period"]
+    def mark(stage: str, progress_pct: int, detail: str, **metadata):
+        job_registry.update_job_status(
+            "weekend-research",
+            state="running",
+            detail=detail,
+            metadata={
+                "stage": stage,
+                "progress_pct": max(0, min(int(progress_pct), 100)),
+                **metadata,
+            },
+        )
+
+    mark("load_inputs", 2, "loading portfolio, transaction, and benchmark inputs")
     data = du.load_data()
     transaction_rows = tx.normalize_transactions(tx.load_transactions())
     benchmark_history = qa.get_historical_data("SPY", period=history_period)
@@ -77,6 +92,7 @@ def run_weekend_research(
         risk_gate=risk_gate,
         account_snapshot=account_snapshot,
     )
+    mark("foundation_inference", 12, "running foundation model inference for current tracked universe")
     multi_horizon_snapshot = multi_horizon_runner(
         data=data,
         train=False,
@@ -99,6 +115,7 @@ def run_weekend_research(
 
     core_universe = cer.load_core_etf_universe()
     policy = cer.load_engine_policy()
+    mark("core_etf_rotation", 25, "building core ETF rotation and allocation snapshot")
     core_rotation_snapshot = cer.build_core_etf_rotation_snapshot(
         data=data,
         history_period=history_period,
@@ -121,22 +138,39 @@ def run_weekend_research(
 
     satellite_snapshot = mh_pipeline.build_satellite_snapshot_from_model(multi_horizon_snapshot)
     cpool.save_satellite_candidate_pool_snapshot(satellite_snapshot)
-    correlation_symbols = []
-    for row in list(data.get("holdings", []) or []) + list(data.get("watchlist", []) or []):
-        symbol = str(row.get("symbol") or "").strip().upper()
-        if symbol:
-            correlation_symbols.append(symbol)
-    for row in list(core_rotation_snapshot.get("symbols", []) or []) + list(satellite_snapshot.get("candidate_pool", []) or [])[:100]:
-        symbol = str(row.get("symbol") or "").strip().upper()
-        if symbol:
-            correlation_symbols.append(symbol)
+    weekend_universe_config = wuniverse.load_weekend_universe_config()
+    satellite_universe = cpool.load_satellite_universe()
+    research_universe = wuniverse.build_weekend_research_universe(
+        data=data,
+        core_rotation_snapshot=core_rotation_snapshot,
+        satellite_snapshot=satellite_snapshot,
+        config=weekend_universe_config,
+        satellite_universe=satellite_universe,
+    )
+    mark(
+        "correlation_research",
+        35,
+        f"starting weekend correlation/data-mining research for {research_universe['symbol_count']} symbols",
+        symbol_count=research_universe["symbol_count"],
+    )
     correlation_snapshot = corr_research.build_correlation_research_snapshot(
-        symbols=correlation_symbols,
+        symbols=research_universe["symbols"],
         holdings=list(data.get("holdings", []) or []),
         load_history_fn=qa.get_historical_data,
         now=now,
         period=history_period,
+        progress_callback=lambda **kwargs: job_registry.update_job_status(
+            "weekend-research",
+            state="running",
+            detail=str(kwargs.get("detail") or "running weekend correlation research"),
+            metadata={
+                "stage": str(kwargs.get("stage") or "correlation_research"),
+                "progress_pct": max(35, min(int(kwargs.get("progress_pct", 50) or 50), 88)),
+                **{key: value for key, value in kwargs.items() if key not in {"detail", "stage", "progress_pct"}},
+            },
+        ),
     )
+    correlation_snapshot["research_universe"] = research_universe
     corr_research.save_correlation_research_snapshot(correlation_snapshot)
     # Disabled rule strategies remain useful as offline controls, never as production signals.
     strategies = su.load_strategies(include_disabled=True)
@@ -162,6 +196,7 @@ def run_weekend_research(
     validation_targets = validation_targets[:5]
     strategy_rows = []
     if validation_targets:
+        mark("strategy_validation", 90, f"backtesting strategy controls for {len(validation_targets)} focus symbols")
         for symbol, focus_role in validation_targets:
             comparisons = compare_strategies_for_symbol(
                 symbol=symbol,
@@ -198,7 +233,6 @@ def run_weekend_research(
     strategy_governance_snapshot = sgov.build_strategy_governance_snapshot(
         strategies=strategies,
         validation_snapshot=strategy_validation_snapshot,
-        now=now,
     )
     sgov.save_strategy_registry_state(strategy_governance_snapshot)
     evidence_layer = evid.build_evidence_layer(
@@ -223,6 +257,7 @@ def run_weekend_research(
     )
     snapshot["multi_horizon_snapshot"] = multi_horizon_snapshot
     snapshot["correlation_research_snapshot"] = correlation_snapshot
+    snapshot["research_universe"] = research_universe
     snapshot["summary"]["correlation_research_status"] = correlation_snapshot.get("status")
     snapshot["summary"]["high_correlation_pair_count"] = dict(correlation_snapshot.get("summary", {}) or {}).get("high_correlation_pair_count")
     snapshot["summary"]["portfolio_redundancy_count"] = dict(correlation_snapshot.get("summary", {}) or {}).get("portfolio_redundancy_count")
@@ -233,6 +268,25 @@ def run_weekend_research(
     report_text = wr.build_weekend_research_report(snapshot)
     report_files = wr.save_weekend_research_report_files(snapshot, report_text=report_text, reports_dir=reports_dir)
     wr.mark_weekend_research_done(now=now, alert_settings=alert_settings, snapshot=snapshot, state_path=state_path)
+    job_registry.update_job_status(
+        "weekend-research",
+        state="completed",
+        detail="weekend research completed",
+        metadata={
+            "stage": "completed",
+            "progress_pct": 100,
+            "symbol_count": research_universe.get("symbol_count"),
+            "usable_symbol_count": dict(correlation_snapshot.get("summary", {}) or {}).get("symbol_count"),
+            "failed_symbol_count": dict(correlation_snapshot.get("summary", {}) or {}).get("missing_symbol_count"),
+            "result_summary": {
+                "universe": research_universe.get("symbol_count"),
+                "high_pairs": dict(correlation_snapshot.get("summary", {}) or {}).get("high_correlation_pair_count"),
+                "clusters": dict(correlation_snapshot.get("summary", {}) or {}).get("cluster_count"),
+                "independent_strength": dict(correlation_snapshot.get("summary", {}) or {}).get("independent_strength_count"),
+            },
+        },
+        now=now,
+    )
 
     delivery_results = []
     if bool(schedule["send_summary"]):

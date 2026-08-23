@@ -298,21 +298,63 @@ def build_weekend_research_report(snapshot: Mapping) -> str:
         lines.append("")
     correlation_snapshot = dict(snapshot.get("correlation_research_snapshot", {}) or {})
     correlation_summary = dict(correlation_snapshot.get("summary", {}) or {})
+    research_universe = dict(snapshot.get("research_universe") or correlation_snapshot.get("research_universe") or {})
+    if research_universe:
+        source_counts = dict(research_universe.get("source_counts", {}) or {})
+        lines.append("## Weekend Research Universe")
+        lines.append("")
+        lines.append(
+            "- "
+            f"Selected symbols: {int(_safe_float(research_universe.get('symbol_count'), 0) or 0)} | "
+            f"Available before cap: {int(_safe_float(research_universe.get('available_symbol_count'), 0) or 0)} | "
+            f"Max symbols: {int(_safe_float(research_universe.get('max_symbols'), 0) or 0)} | "
+            f"Truncated: {'yes' if research_universe.get('truncated') else 'no'}"
+        )
+        lines.append(
+            "- Sources: "
+            + (
+                ", ".join(f"{key}={value}" for key, value in sorted(source_counts.items()))
+                if source_counts
+                else "-"
+            )
+        )
+        lines.append("")
     if correlation_summary:
+        algorithms = list(correlation_snapshot.get("algorithms", []) or [])
         lines.append("## Weekend Correlation Research")
         lines.append("")
         lines.append(
             "- "
             f"Status: {correlation_snapshot.get('status') or correlation_summary.get('status') or '—'} | "
+            f"Symbols: {int(_safe_float(correlation_summary.get('symbol_count'), 0) or 0)}/"
+            f"{int(_safe_float(correlation_summary.get('requested_symbol_count'), 0) or 0)} | "
             f"High pairs: {int(_safe_float(correlation_summary.get('high_correlation_pair_count'), 0) or 0)} | "
             f"Portfolio redundancy: {int(_safe_float(correlation_summary.get('portfolio_redundancy_count'), 0) or 0)} | "
-            f"Independent strength: {int(_safe_float(correlation_summary.get('independent_strength_count'), 0) or 0)}"
+            f"Independent strength: {int(_safe_float(correlation_summary.get('independent_strength_count'), 0) or 0)} | "
+            f"Clusters: {int(_safe_float(correlation_summary.get('cluster_count'), 0) or 0)}"
         )
+        lines.append("- Algorithms: " + (", ".join(algorithms) if algorithms else "-"))
         lines.append("- Role: 风险和机会线索，不直接产生买卖指令。")
+        for stage in list(correlation_snapshot.get("research_stages", []) or [])[:8]:
+            lines.append(
+                f"- Stage: {stage.get('name')} status={stage.get('status')} "
+                f"symbols={stage.get('symbol_count', '-')} results={stage.get('result_count', '-')}"
+            )
         for row in list(correlation_snapshot.get("portfolio_redundancy", []) or [])[:5]:
             lines.append(
                 f"- Redundancy: {row.get('left')} / {row.get('right')} corr={float(_safe_float(row.get('correlation'), 0.0) or 0.0):.2f}, "
                 f"combined weight={float(_safe_float(row.get('combined_weight_pct'), 0.0) or 0.0):.1f}%"
+            )
+        for row in list(correlation_snapshot.get("independent_strength", []) or [])[:5]:
+            lines.append(
+                f"- Independent strength: {row.get('symbol')} score={float(_safe_float(row.get('independent_strength_score'), 0.0) or 0.0):.4f}, "
+                f"excess_vs_spy={float(_safe_float(row.get('excess_vs_spy'), 0.0) or 0.0):.1%}, "
+                f"corr_spy={float(_safe_float(row.get('correlation_to_spy'), 0.0) or 0.0):.2f}"
+            )
+        for cluster in list(correlation_snapshot.get("correlation_clusters", []) or [])[:3]:
+            members = ", ".join(list(cluster.get("members", []) or [])[:8])
+            lines.append(
+                f"- Cluster: {members} | members={cluster.get('member_count')} | avg_corr={cluster.get('average_correlation')}"
             )
         lines.append("")
     evidence_layer = dict(snapshot.get("evidence_layer", {}) or {})

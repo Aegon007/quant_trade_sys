@@ -6,6 +6,7 @@ from typing import Dict, Iterable, List, Optional
 
 from quant_core import paths as qpaths
 from quant_core.events import analyst_consensus as ac
+from quant_core.llm import explainer
 from quant_core.notifications import notification_channels as nch
 from quant_core.notifications import notification_config as ncfg
 
@@ -224,20 +225,39 @@ def _effective_notification_config(config=None, environ=None):
     return ncfg.apply_environment_overrides(base, environ=environ)
 
 
+def _format_alert_for_delivery(alert: Alert, config) -> tuple[str, dict]:
+    text = format_alert_message(alert)
+    if not bool(dict(config.get("alert_settings", {}) or {}).get("enable_llm_notification_digest", True)):
+        return text, {"status": "DISABLED"}
+    ok, digest, meta = explainer.summarize_notification_message(
+        delivery_type=f"alert:{alert.alert_type}",
+        subject=alert.title,
+        body=text,
+        notification_config=config,
+    )
+    if ok and str(digest or "").strip():
+        return str(digest).strip(), {"status": "READY", **dict(meta or {})}
+    return text, {
+        "status": "STRUCTURED_FALLBACK",
+        "error": str(digest or "").strip(),
+        **dict(meta or {}),
+    }
+
+
 def send_alert(alert: Alert, config=None, slack_sender=None, email_sender=None):
     config = _effective_notification_config(config)
     slack_sender = slack_sender or nch.send_slack_message
     email_sender = email_sender or nch.send_email_message
-    text = format_alert_message(alert)
+    text, digest_meta = _format_alert_for_delivery(alert, config)
     results = []
 
     if config["slack"].get("enabled"):
         ok, message = slack_sender(text, config["slack"].get("webhook_url"))
-        results.append({"channel": "slack", "ok": ok, "message": message, "alert_id": alert.alert_id})
+        results.append({"channel": "slack", "ok": ok, "message": message, "alert_id": alert.alert_id, "digest": digest_meta})
 
     if config["email"].get("enabled"):
         ok, message = email_sender(alert.title, text, config["email"])
-        results.append({"channel": "email", "ok": ok, "message": message, "alert_id": alert.alert_id})
+        results.append({"channel": "email", "ok": ok, "message": message, "alert_id": alert.alert_id, "digest": digest_meta})
 
     if not results:
         results.append({"channel": "none", "ok": False, "message": "未启用通知通道", "alert_id": alert.alert_id})

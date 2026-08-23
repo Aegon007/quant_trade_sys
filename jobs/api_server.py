@@ -126,6 +126,10 @@ def create_app():
     def research_models():
         return loader.load_research_models_response()
 
+    @app.get("/api/weekend-research")
+    def weekend_research():
+        return loader.load_weekend_research_response()
+
     @app.get("/api/reports/latest")
     def latest_report():
         return loader.load_snapshot_response("reports-latest", loader.SNAPSHOT_PATHS["reports-latest"])

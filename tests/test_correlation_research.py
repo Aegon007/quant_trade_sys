@@ -30,6 +30,9 @@ class CorrelationResearchTests(unittest.TestCase):
         self.assertTrue(snapshot["high_correlation_pairs"])
         self.assertEqual(snapshot["high_correlation_pairs"][0]["left"], "A")
         self.assertIn("independent_strength", snapshot)
+        self.assertIn("research_stages", snapshot)
+        self.assertIn("correlation_clusters", snapshot)
+        self.assertIn("simple_correlation_cluster_mining", snapshot["algorithms"])
         self.assertEqual(snapshot["summary"]["research_role"], "RISK_AND_OPPORTUNITY_CLUES")
 
 

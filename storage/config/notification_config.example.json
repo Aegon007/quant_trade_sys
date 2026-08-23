@@ -46,6 +46,7 @@
     "send_hourly_market_summary": true,
     "send_hourly_market_summary_market_hours_only": true,
     "send_weekend_research_summary": true,
+    "enable_llm_notification_digest": true,
     "enable_llm_decision_brief": true,
     "refresh_llm_brief_on_material_change": true,
     "send_llm_brief_on_material_change": true,

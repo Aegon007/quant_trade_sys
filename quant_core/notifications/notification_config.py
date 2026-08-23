@@ -99,6 +99,7 @@ DEFAULT_NOTIFICATION_CONFIG = {
         "send_hourly_market_summary": True,
         "send_hourly_market_summary_market_hours_only": True,
         "send_weekend_research_summary": True,
+        "enable_llm_notification_digest": True,
         "enable_llm_decision_brief": True,
         "refresh_llm_brief_on_material_change": True,
         "send_llm_brief_on_material_change": True,
@@ -240,6 +241,9 @@ def normalize_notification_config(config):
         )
         normalized["alert_settings"]["send_weekend_research_summary"] = bool(
             alert_settings.get("send_weekend_research_summary", True)
+        )
+        normalized["alert_settings"]["enable_llm_notification_digest"] = bool(
+            alert_settings.get("enable_llm_notification_digest", True)
         )
         normalized["alert_settings"]["enable_llm_decision_brief"] = bool(
             alert_settings.get("enable_llm_decision_brief", True)

@@ -35,22 +35,27 @@ class ProjectFilesTests(unittest.TestCase):
     def test_core_etf_and_engine_policy_configs_exist(self):
         core_etf_path = ROOT / "storage" / "config" / "core_etf_universe.json"
         satellite_path = ROOT / "storage" / "config" / "satellite_universe.json"
+        weekend_universe_path = ROOT / "storage" / "config" / "weekend_research_universe.json"
         engine_policy_path = ROOT / "storage" / "config" / "engine_policy.json"
         model_registry_path = ROOT / "storage" / "config" / "model_registry.json"
         self.assertTrue(core_etf_path.exists())
         self.assertTrue(satellite_path.exists())
+        self.assertTrue(weekend_universe_path.exists())
         self.assertTrue(engine_policy_path.exists())
         self.assertTrue(model_registry_path.exists())
 
         core_etf = json.loads(core_etf_path.read_text(encoding="utf-8"))
         satellite_universe = json.loads(satellite_path.read_text(encoding="utf-8"))
+        weekend_universe = json.loads(weekend_universe_path.read_text(encoding="utf-8"))
         engine_policy = json.loads(engine_policy_path.read_text(encoding="utf-8"))
         model_registry = json.loads(model_registry_path.read_text(encoding="utf-8"))
         self.assertIn("etfs", core_etf)
         self.assertIsInstance(core_etf["etfs"], list)
         self.assertGreaterEqual(len(core_etf["etfs"]), 3)
         self.assertGreaterEqual(len(satellite_universe.get("manual_include", [])), 10)
+        self.assertGreaterEqual(len(weekend_universe.get("manual_include", [])), 20)
         self.assertIn("GELYY", satellite_universe.get("manual_exclude", []))
+        self.assertIn("GELYY", weekend_universe.get("manual_exclude", []))
         self.assertIn("core_etf_weight_ranges", engine_policy)
         self.assertIn("models", model_registry)
         self.assertTrue((ROOT / "storage" / "config" / "runtime_schedule.json").exists())

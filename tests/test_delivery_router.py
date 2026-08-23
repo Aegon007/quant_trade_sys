@@ -35,6 +35,39 @@ class DeliveryRouterTests(unittest.TestCase):
         self.assertEqual(sent[0][0], "slack")
         self.assertEqual(sent[1][0], "email")
 
+    def test_deliver_message_uses_llm_digest_when_enabled(self):
+        sent = []
+        original = self.module.explainer.summarize_notification_message
+        self.addCleanup(setattr, self.module.explainer, "summarize_notification_message", original)
+        self.module.explainer.summarize_notification_message = lambda **kwargs: (
+            True,
+            "中文摘要：无强交易动作，默认不动。",
+            {"route_name": "llm", "model": "test-model"},
+        )
+
+        results = self.module.deliver_message(
+            "nightly_report",
+            subject="Nightly",
+            body="Nightly Portfolio Report\nRisk regime: NORMAL",
+            config={
+                "slack": {"enabled": True, "webhook_url": "https://hooks.slack.com/services/test"},
+                "email": {
+                    "enabled": True,
+                    "smtp_host": "smtp.example.com",
+                    "smtp_port": 587,
+                    "to_emails": ["target@example.com"],
+                },
+                "llm": {"enabled": True, "base_url": "https://example.test/v1", "api_key": "x", "model": "test"},
+                "alert_settings": {"enable_llm_notification_digest": True},
+            },
+            slack_sender=lambda text, url: (sent.append(("slack", text)) or True, "slack ok"),
+            email_sender=lambda subject, body, cfg: (sent.append(("email", body)) or True, "email ok"),
+        )
+
+        self.assertEqual(sent[0], ("slack", "中文摘要：无强交易动作，默认不动。"))
+        self.assertEqual(sent[1], ("email", "中文摘要：无强交易动作，默认不动。"))
+        self.assertEqual(results[0]["digest"]["status"], "READY")
+
     def test_deliver_message_reports_skipped_channels(self):
         results = self.module.deliver_message(
             "premarket_brief",

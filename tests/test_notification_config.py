@@ -24,6 +24,7 @@ class NotificationConfigTests(unittest.TestCase):
         self.assertTrue(config["alert_settings"]["send_hourly_market_summary_market_hours_only"])
         self.assertTrue(config["alert_settings"]["send_premarket_brief"])
         self.assertTrue(config["alert_settings"]["send_intraday_alerts"])
+        self.assertTrue(config["alert_settings"]["enable_llm_notification_digest"])
         self.assertTrue(config["alert_settings"]["enable_weekend_research"])
         self.assertEqual(config["alert_settings"]["weekend_research_day_local"], "saturday")
         self.assertEqual(config["alert_settings"]["weekend_research_hour_local"], 10)

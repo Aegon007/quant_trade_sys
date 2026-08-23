@@ -66,6 +66,7 @@ NOTIFICATION_CONFIG_EXAMPLE_FILE = str(CONFIG_DIR / "notification_config.example
 PORTFOLIO_INPUT_EXAMPLE_FILE = str(CONFIG_DIR / "portfolio_input.example.json")
 CORE_ETF_UNIVERSE_FILE = str(CONFIG_DIR / "core_etf_universe.json")
 SATELLITE_UNIVERSE_FILE = str(CONFIG_DIR / "satellite_universe.json")
+WEEKEND_RESEARCH_UNIVERSE_FILE = str(CONFIG_DIR / "weekend_research_universe.json")
 ENGINE_POLICY_FILE = str(CONFIG_DIR / "engine_policy.json")
 INTRADAY_TACTICAL_CONFIG_FILE = str(CONFIG_DIR / "intraday_tactical_overlay.json")
 RUNTIME_SCHEDULE_CONFIG_FILE = str(CONFIG_DIR / "runtime_schedule.json")

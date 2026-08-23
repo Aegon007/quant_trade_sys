@@ -8,8 +8,9 @@ import ResearchModels from "../pages/ResearchModels";
 import RiskDiscipline from "../pages/RiskDiscipline";
 import SatelliteRadar from "../pages/SatelliteRadar";
 import Settings from "../pages/Settings";
+import WeekendResearch from "../pages/WeekendResearch";
 
-type PageKey = "dashboard" | "portfolio" | "core" | "satellite" | "risk" | "monitor" | "research" | "operations" | "settings";
+type PageKey = "dashboard" | "portfolio" | "core" | "satellite" | "risk" | "monitor" | "research" | "weekend" | "operations" | "settings";
 
 const pages: Array<{ key: PageKey; label: string; detail: string }> = [
   { key: "dashboard", label: "决策首页", detail: "买、卖、等" },
@@ -19,6 +20,7 @@ const pages: Array<{ key: PageKey; label: string; detail: string }> = [
   { key: "risk", label: "风险纪律", detail: "最终门控" },
   { key: "monitor", label: "盘中监控", detail: "紧急信号" },
   { key: "research", label: "模型研究", detail: "质量治理" },
+  { key: "weekend", label: "周末研究", detail: "长任务挖掘" },
   { key: "operations", label: "运行操作", detail: "任务与导入" },
   { key: "settings", label: "系统设置", detail: "全部配置" },
 ];
@@ -57,6 +59,7 @@ export default function App() {
         {active === "risk" ? <RiskDiscipline /> : null}
         {active === "monitor" ? <MarketMonitor /> : null}
         {active === "research" ? <ResearchModels /> : null}
+        {active === "weekend" ? <WeekendResearch /> : null}
         {active === "operations" ? <Operations /> : null}
         {active === "settings" ? <Settings /> : null}
       </section>

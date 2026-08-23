@@ -196,19 +196,24 @@ PYTHONPYCACHEPREFIX=/tmp/pycache ~/venv/bin/python -m unittest discover -s tests
 - 默认会生成：
   - 核心 ETF 轮动研究
   - 更大容量的卫星候选池扫描
+  - 周末相关性 / 数据挖掘研究：高相关资产对、持仓冗余、低相关强势候选、相关性簇
   - 多周期神经模型重训检查、预训练和 walk-forward 验证
   - `next_week_bias`（如下周偏防守 / 平衡 / 风险偏好）
+
+周末研究宇宙配置在 `storage/config/weekend_research_universe.json`。如果要让周末任务扫描几千甚至上万只股票、ETF、黄金 ETF、商品 ETF、债券 ETF 或反向/杠杆 ETF，可以扩展该文件的 `manual_include`，并调整 `max_symbols`。这些研究结果只作为风险和机会线索，不会直接生成买卖指令。
 
 结果位置：
 
 - 运行时快照：
   - `storage/state/weekend_research_snapshot.json`
+  - `storage/state/weekend_correlation_research.json`
 - 最新报告：
   - `reports/weekend_research_latest.md`
   - `reports/weekend_research_latest.json`
 - 页面入口：
-  - `Operations -> 报告与通知 -> 周末研究`
-  - `Settings -> 快速操作 -> 立即运行周末研究`
+  - `周末研究` 页面：查看研究进度、阶段、算法、研究宇宙和相关性结果
+  - `运行操作` 页面：手动启动 `运行周末研究`
+  - `Settings` 页面：配置周末研究调度和通知发送策略
 
 如果你想手动强制跑一次：
 
@@ -549,6 +554,7 @@ LLM / SLM 只负责转述、解释和整理结构化证据，不会直接生成�
 - 摘要必须明确区分“有动作”和“无强信号，保持不动”，同时列出信号冲突、可信度问题和失效条件。
 - 系统用不含时间戳的实质信号签名去重。普通价格抖动不会重复调用；新的高优先级变化或盘中紧急事件才会触发刷新。
 - 重大异动后的摘要会附加到现有 Slack/Email 盘中通知；夜间摘要随完整夜间报告发送。
+- Slack / Email 发送前会先经过 LLM 通知摘要层，把结构化报告改写成中文聊天式摘要；LLM 不可用时自动退回结构化报告，避免漏发。
 - Settings 可以分别控制摘要功能、异动自动刷新和 Slack/Email 附加发送。
 - LLM 只是统一解释层，不能创造量化系统没有给出的动作，也不能覆盖风险闸门。
 - `Context window tokens` 与 `Max output tokens` 是不同概念：前者可按当前模型设置为 `200000`，全局决策摘要默认拥有独立的 `16000` token 输出预算。

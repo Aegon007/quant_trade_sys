@@ -465,6 +465,39 @@ def build_trading_system_summary_messages(*, decision_context: Mapping):
     ]
 
 
+def build_notification_digest_messages(*, delivery_type: str, subject: str, body: str):
+    body_text = str(body or "").strip()
+    if len(body_text) > 24000:
+        body_text = body_text[:24000] + "\n...[内容过长，已截断给 LLM 做摘要]"
+    return [
+        {
+            "role": "system",
+            "content": (
+                "You are the notification writing layer for a personal quantitative trading assistant. "
+                "Rewrite supplied system output into concise, natural Chinese for Slack/Email. "
+                "Do not add facts, prices, forecasts, or trading actions that are not in the input. "
+                "Do not use markdown tables, pipe separators, alignment characters, or English status dumps."
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                "请把下面这条系统通知整理成适合聊天窗口阅读的中文摘要。\n"
+                "要求：\n"
+                "1. 第一行给出最重要结论；\n"
+                "2. 然后用 3-6 个短要点说明行动、风险、数据状态和需要关注的标的；\n"
+                "3. 如果没有强信号，要明确说“无强交易动作，默认不动”；\n"
+                "4. 保留重要数字，但不要堆砌英文 key=value；\n"
+                "5. 不要使用表格、竖线分隔符或对齐字符；\n"
+                "6. 不要编造系统没有提供的信息。\n\n"
+                f"通知类型：{delivery_type or 'generic'}\n"
+                f"标题：{subject or '无'}\n"
+                f"原始通知：\n{body_text}"
+            ),
+        },
+    ]
+
+
 def _core_etf_cache_key(
     *,
     symbol_row: Mapping,
@@ -1042,3 +1075,32 @@ def summarize_trading_system(
             "fallback_attempts": [{"route_name": route_name, "error": "wall_timeout"}],
         }
     return result_holder[0]
+
+
+def summarize_notification_message(
+    *,
+    delivery_type: str,
+    subject: str,
+    body: str,
+    notification_config: Mapping,
+    cache_path: str = DEFAULT_EXPLANATION_CACHE_FILE,
+    urlopen=None,
+):
+    return _run_messages_with_cache(
+        cache_kind="notification_digest",
+        cache_payload={
+            "prompt_version": 1,
+            "delivery_type": str(delivery_type or "").strip(),
+            "subject": str(subject or "").strip(),
+            "body": str(body or "").strip(),
+        },
+        messages=build_notification_digest_messages(
+            delivery_type=delivery_type,
+            subject=subject,
+            body=body,
+        ),
+        notification_config=notification_config,
+        complexity="analysis",
+        cache_path=cache_path,
+        urlopen=urlopen,
+    )
