@@ -1,30 +1,17 @@
-"""Local FastAPI server for the V3 frontend.
-
-The server is intentionally read-mostly. Endpoints return normalized snapshot
-DTOs and never run heavy quant computation inside HTTP requests.
-"""
+"""FastAPI server for the valuation-dislocation research UI."""
 
 from __future__ import annotations
 
 import argparse
 import io
-import sys
 from typing import Callable
 
-from quant_core.api import actions as api_actions
-from quant_core.api import snapshot_loader as loader
+from quant_core.api import actions, snapshot_loader
 from quant_core.diagnostics import build_diagnostics_bundle
 
 
-API_TITLE = "Quant Trade System Local API"
-API_VERSION = "0.1.0"
-
-
-def _missing_fastapi_error() -> RuntimeError:
-    return RuntimeError(
-        "FastAPI/Uvicorn is not installed. Install requirements.txt in ~/venv, "
-        "then run: ~/venv/bin/python -m jobs.api_server"
-    )
+API_TITLE = "估值与超跌机会研究系统"
+API_VERSION = "1.0.0"
 
 
 def _require_fastapi():
@@ -32,345 +19,154 @@ def _require_fastapi():
         from fastapi import FastAPI
         from fastapi.middleware.cors import CORSMiddleware
     except ModuleNotFoundError as exc:
-        raise _missing_fastapi_error() from exc
+        raise RuntimeError("请在 ~/venv 中安装 requirements.txt 后再启动API") from exc
     return FastAPI, CORSMiddleware
 
 
 def create_app():
     FastAPI, CORSMiddleware = _require_fastapi()
     app = FastAPI(title=API_TITLE, version=API_VERSION)
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=[
-            "http://127.0.0.1:5173",
-            "http://localhost:5173",
-        ],
-        allow_credentials=False,
-        allow_methods=["GET", "POST"],
-        allow_headers=["*"],
-    )
+    app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=False, allow_methods=["GET", "POST"], allow_headers=["*"])
 
     @app.get("/api/health")
     def health():
-        return {
-            "status": "ok",
-            "api_version": API_VERSION,
-            "generated_at": loader.now_iso(),
-        }
+        return {"status": "ok", "api_version": API_VERSION, "generated_at": snapshot_loader.now_iso()}
 
     @app.get("/api/dashboard")
     def dashboard():
-        return loader.load_dashboard_response()
+        return snapshot_loader.load_dashboard_response()
 
-    @app.get("/api/portfolio")
-    def portfolio():
-        return loader.load_portfolio_response()
+    @app.get("/api/opportunities")
+    def opportunities():
+        return snapshot_loader.load_opportunities_response()
 
-    @app.get("/api/core-etfs")
-    def core_etfs():
-        return loader.load_model_enriched_snapshot_response(
-            "core-etfs",
-            loader.SNAPSHOT_PATHS["core-etfs"],
-            row_keys=("symbols",),
-        )
+    @app.get("/api/valuations")
+    def valuations(symbol: str = ""):
+        return snapshot_loader.load_valuations_response(symbol)
 
-    @app.get("/api/satellite-radar")
-    def satellite_radar():
-        return loader.load_model_enriched_snapshot_response(
-            "satellite-radar",
-            loader.SNAPSHOT_PATHS["satellite-radar"],
-            row_keys=("top_recommendations", "symbols", "candidate_pool"),
-        )
+    @app.get("/api/market-risk")
+    def market_risk():
+        return snapshot_loader.load_market_risk_response()
 
-    @app.get("/api/risk")
-    def risk():
-        return loader.load_risk_response()
-
-    @app.get("/api/market-monitor")
-    def market_monitor():
-        return loader.load_snapshot_response("market-monitor", loader.SNAPSHOT_PATHS["market-monitor"])
+    @app.get("/api/watchlist")
+    def watchlist():
+        return snapshot_loader.load_watchlist_response()
 
     @app.get("/api/data-health")
     def data_health():
-        return loader.load_snapshot_response("data-health", loader.SNAPSHOT_PATHS["data-health"])
-
-    @app.get("/api/plan-quality")
-    def plan_quality():
-        return loader.load_snapshot_response("plan-quality", loader.SNAPSHOT_PATHS["plan-quality"])
-
-    @app.get("/api/strategy-governance")
-    def strategy_governance():
-        return loader.load_snapshot_response("strategy-governance", loader.SNAPSHOT_PATHS["strategy-governance"])
-
-    @app.get("/api/strategy-validation")
-    def strategy_validation():
-        return loader.load_snapshot_response("strategy-validation", loader.SNAPSHOT_PATHS["strategy-validation"])
-
-    @app.get("/api/multi-horizon")
-    def multi_horizon():
-        return loader.load_snapshot_response("multi-horizon", loader.SNAPSHOT_PATHS["multi-horizon"])
-
-    @app.get("/api/foundation-model")
-    def foundation_model():
-        return loader.load_snapshot_response("foundation-model", loader.SNAPSHOT_PATHS["foundation-model"])
-
-    @app.get("/api/market-sentiment")
-    def market_sentiment():
-        return loader.load_snapshot_response("market-sentiment", loader.SNAPSHOT_PATHS["market-sentiment"])
-
-    @app.get("/api/systemic-risk")
-    def systemic_risk():
-        return loader.load_snapshot_response("systemic-risk", loader.SNAPSHOT_PATHS["systemic-risk"])
-
-    @app.get("/api/research-models")
-    def research_models():
-        return loader.load_research_models_response()
-
-    @app.get("/api/weekend-research")
-    def weekend_research():
-        return loader.load_weekend_research_response()
-
-    @app.get("/api/reports/latest")
-    def latest_report():
-        return loader.load_snapshot_response("reports-latest", loader.SNAPSHOT_PATHS["reports-latest"])
+        return snapshot_loader.load_snapshot_response("data-health", snapshot_loader.qpaths.DATA_HEALTH_SNAPSHOT_FILE)
 
     @app.get("/api/change-feed")
     def change_feed():
-        return loader.load_snapshot_response("change-feed", loader.SNAPSHOT_PATHS["change-feed"])
+        return snapshot_loader.load_snapshot_response("change-feed", snapshot_loader.qpaths.CHANGE_FEED_FILE)
 
-    @app.get("/api/news-intelligence")
-    def news_intelligence():
-        return loader.load_snapshot_response(
-            "news-intelligence",
-            loader.SNAPSHOT_PATHS["news-intelligence"],
-        )
-
-    @app.get("/api/financials-intelligence")
-    def financials_intelligence():
-        return loader.load_snapshot_response(
-            "financials-intelligence",
-            loader.SNAPSHOT_PATHS["financials-intelligence"],
-        )
-
-    @app.get("/api/decision-brief")
-    def decision_brief():
-        return loader.load_snapshot_response(
-            "decision-brief",
-            loader.SNAPSHOT_PATHS["decision-brief"],
-        )
-
-    @app.get("/api/final-decision")
-    def final_decision():
-        return loader.load_snapshot_response(
-            "final-decision",
-            loader.SNAPSHOT_PATHS["final-decision"],
-        )
-
-    @app.get("/api/weekend-correlation")
-    def weekend_correlation():
-        return loader.load_snapshot_response(
-            "weekend-correlation",
-            loader.SNAPSHOT_PATHS["weekend-correlation"],
-            max_age_seconds=14 * 24 * 3600,
-        )
+    @app.get("/api/calibration")
+    def calibration():
+        return snapshot_loader.load_snapshot_response("calibration", snapshot_loader.qpaths.VALUATION_CALIBRATION_FILE, max_age_seconds=8 * 86400)
 
     @app.get("/api/job-status")
     def job_status():
-        return loader.load_job_status_response()
+        return snapshot_loader.load_job_status_response()
+
+    @app.get("/api/research-manifest")
+    def research_manifest():
+        return snapshot_loader.load_snapshot_response(
+            "research-manifest",
+            snapshot_loader.qpaths.RESEARCH_MANIFEST_FILE,
+            max_age_seconds=8 * 86400,
+        )
 
     @app.get("/api/settings")
     def settings():
-        return loader.load_settings_response()
+        return snapshot_loader.load_settings_response()
+
+    @app.get("/api/reports/latest")
+    def report():
+        return snapshot_loader.load_snapshot_response("latest-report", snapshot_loader.qpaths.VALUATION_REPORT_LATEST_JSON)
 
     @app.get("/api/downloads/diagnostics-bundle")
-    def diagnostics_bundle():
+    def diagnostics():
         from fastapi.responses import StreamingResponse
-
-        filename = f"quant-diagnostics-{loader.now_iso()[:10]}.zip"
-        return StreamingResponse(
-            io.BytesIO(build_diagnostics_bundle()),
-            media_type="application/zip",
-            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
-        )
+        return StreamingResponse(io.BytesIO(build_diagnostics_bundle()), media_type="application/zip", headers={"Content-Disposition": 'attachment; filename="valuation-diagnostics.zip"'})
 
     @app.post("/api/actions/refresh-market")
     def refresh_market(payload: dict | None = None):
         payload = dict(payload or {})
-        force_source_refresh = bool(payload.get("force_source_refresh", True))
-        return api_actions.run_with_job_status(
-            "manual-market-refresh",
-            lambda: api_actions.refresh_market_data_now(force_source_refresh=force_source_refresh),
-            run_async=False,
-        )
+        return actions.run_with_job_status("manual-market-refresh", lambda: actions.refresh_market_data_now(force_source_refresh=bool(payload.get("force_source_refresh", True))), run_async=True)
 
     @app.post("/api/actions/run-nightly-once")
-    def run_nightly_once():
-        return api_actions.run_with_job_status(
-            "manual-nightly-run",
-            api_actions.run_nightly_once,
-            run_async=True,
-        )
+    def nightly():
+        return actions.run_with_job_status("manual-nightly-run", actions.run_nightly_once, run_async=True)
 
     @app.post("/api/actions/run-weekend-research-once")
-    def run_weekend_research_once():
-        return api_actions.run_with_job_status(
-            "manual-weekend-research",
-            api_actions.run_weekend_research_once,
-            run_async=True,
-        )
+    def weekend():
+        return actions.run_with_job_status("manual-weekend-research", actions.run_weekend_research_once, run_async=True)
 
     @app.post("/api/actions/test-llm")
     def test_llm(payload: dict):
-        return api_actions.run_with_job_status(
-            "settings-llm-test",
-            lambda: api_actions.test_llm_settings(route=str(dict(payload or {}).get("route") or "")),
+        submitted = dict(payload or {})
+        return actions.run_with_job_status("settings-llm-test", lambda: actions.test_llm_settings(route=str(submitted.get("route") or "llm"), submitted_config=submitted.get("config")), run_async=False)
+
+    @app.post("/api/actions/test-notification")
+    def test_notification(payload: dict):
+        channel = str(dict(payload or {}).get("channel") or "")
+        return actions.run_with_job_status(
+            f"settings-{channel}-test",
+            lambda: actions.test_notification_channel(channel, submitted_config=dict(payload or {}).get("config")),
             run_async=False,
         )
 
-    @app.post("/api/actions/explain-core-etf")
-    def explain_core_etf(payload: dict):
-        return api_actions.run_with_job_status(
-            "llm-explain-core-etf",
-            lambda: api_actions.explain_core_etf(str(dict(payload or {}).get("symbol") or "")),
-            run_async=False,
-        )
+    @app.post("/api/actions/explain-security")
+    def explain_security(payload: dict):
+        return actions.explain_security(str(dict(payload or {}).get("symbol") or ""))
 
-    @app.post("/api/actions/explain-satellite")
-    def explain_satellite(payload: dict):
-        return api_actions.run_with_job_status(
-            "llm-explain-satellite",
-            lambda: api_actions.explain_satellite(str(dict(payload or {}).get("symbol") or "")),
-            run_async=False,
-        )
+    @app.post("/api/actions/watchlist")
+    def watchlist_action(payload: dict):
+        return actions.update_watchlist(str(dict(payload or {}).get("symbol") or ""), remove=bool(dict(payload or {}).get("remove")))
 
-    @app.post("/api/actions/explain-risk")
-    def explain_risk():
-        return api_actions.run_with_job_status(
-            "llm-explain-risk",
-            api_actions.explain_risk,
-            run_async=False,
-        )
+    @app.post("/api/settings/notifications")
+    def save_notifications(payload: dict):
+        return actions.save_notification_settings(payload)
 
-    @app.post("/api/actions/refresh-decision-brief")
-    def refresh_decision_brief():
-        return api_actions.run_with_job_status(
-            "llm-refresh-decision-brief",
-            api_actions.refresh_decision_brief_now,
-            run_async=False,
-        )
+    @app.post("/api/settings/runtime-schedule")
+    def save_schedule(payload: dict):
+        return actions.save_runtime_schedule(payload)
 
-    @app.post("/api/actions/import-robinhood-csv")
-    def import_robinhood_csv(payload: dict):
-        payload = dict(payload or {})
-        csv_text = str(payload.get("csv_text") or "")
-        filename = str(payload.get("filename") or "")
-        replace_existing = bool(payload.get("replace_existing", False))
-        return api_actions.run_with_job_status(
-            "manual-robinhood-import",
-            lambda: api_actions.import_robinhood_csv_text(
-                csv_text,
-                filename=filename,
-                replace_existing=replace_existing,
-            ),
-            run_async=False,
-        )
+    @app.post("/api/settings/research-universe")
+    def save_universe(payload: dict):
+        return actions.save_research_universe(payload)
 
-    @app.post("/api/actions/save-runtime-schedule")
-    def save_runtime_schedule(payload: dict):
-        return api_actions.run_with_job_status(
-            "settings-runtime-schedule",
-            lambda: api_actions.save_runtime_schedule(dict(payload or {})),
-            run_async=False,
-        )
-
-    @app.post("/api/actions/save-notification-config")
-    def save_notification_config(payload: dict):
-        return api_actions.run_with_job_status(
-            "settings-notification-config",
-            lambda: api_actions.save_notification_settings(dict(payload or {})),
-            run_async=False,
-        )
-
-    @app.post("/api/actions/save-foundation-model-config")
-    def save_foundation_model_config(payload: dict):
-        return api_actions.run_with_job_status(
-            "settings-foundation-model-config",
-            lambda: api_actions.save_foundation_model_settings(dict(payload or {})),
-            run_async=False,
-        )
-
-    @app.post("/api/actions/warmup-foundation-model")
-    def warmup_foundation_model():
-        progress = api_actions.build_job_progress_callback("settings-foundation-model-warmup")
-        return api_actions.run_with_job_status(
-            "settings-foundation-model-warmup",
-            lambda: api_actions.warmup_foundation_model_backend(progress_callback=progress),
-            run_async=True,
-        )
-
-    @app.post("/api/actions/save-financials-config")
-    def save_financials_config(payload: dict):
-        return api_actions.run_with_job_status(
-            "settings-financials-config",
-            lambda: api_actions.save_financials_settings(dict(payload or {})),
-            run_async=False,
-        )
-
-    @app.post("/api/actions/save-core-etf-universe")
-    def save_core_etf_universe(payload: dict):
-        return api_actions.run_with_job_status(
-            "settings-core-etf-universe",
-            lambda: api_actions.save_core_etf_universe_settings(dict(payload or {})),
-            run_async=False,
-        )
-
-    @app.post("/api/actions/save-event-sources")
-    def save_event_sources(payload: dict):
-        return api_actions.run_with_job_status(
-            "settings-event-sources",
-            lambda: api_actions.save_event_source_settings(dict(payload or {})),
-            run_async=False,
-        )
-
-    @app.post("/api/actions/save-account-calibration")
-    def save_account_calibration(payload: dict):
-        return api_actions.run_with_job_status(
-            "portfolio-account-calibration",
-            lambda: api_actions.save_account_calibration(dict(payload or {})),
-            run_async=False,
-        )
+    @app.post("/api/settings/valuation-policy")
+    def save_policy(payload: dict):
+        return actions.save_valuation_settings(payload)
 
     return app
 
 
-app = None
+_APP = None
 
 
 def get_app():
-    global app
-    if app is None:
-        app = create_app()
-    return app
+    global _APP
+    if _APP is None:
+        _APP = create_app()
+    return _APP
 
 
-def run_server(*, host: str = "127.0.0.1", port: int = 8710, app_factory: Callable = get_app):
+def run_server(*, host="127.0.0.1", port=8710, app_factory: Callable = get_app):
     try:
         import uvicorn
     except ModuleNotFoundError as exc:
-        raise _missing_fastapi_error() from exc
-    uvicorn.run(app_factory(), host=host, port=int(port), log_level="info")
+        raise RuntimeError("uvicorn is not installed") from exc
+    uvicorn.run(app_factory(), host=host, port=int(port))
 
 
-def main(argv=None) -> int:
-    parser = argparse.ArgumentParser(description="Start the local Quant Trade FastAPI server.")
+def main(argv=None):
+    parser = argparse.ArgumentParser()
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8710)
     args = parser.parse_args(argv)
-    try:
-        run_server(host=args.host, port=args.port)
-    except RuntimeError as exc:
-        print(str(exc), file=sys.stderr)
-        return 1
+    run_server(host=args.host, port=args.port)
     return 0
 
 

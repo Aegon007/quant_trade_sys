@@ -1,705 +1,208 @@
-"""Small action adapters for the local FastAPI server.
-
-HTTP handlers call these helpers to trigger existing jobs or write config. The
-helpers keep status updates consistent without moving quant computation into
-the frontend layer.
-"""
-
 from __future__ import annotations
 
-import traceback
+import json
+import os
+import threading
+import time
+from contextlib import contextmanager
 from datetime import datetime
-from threading import Thread
-from typing import Callable, Mapping, Optional
+from pathlib import Path
+from typing import Callable, Mapping
 
 from quant_core import paths as qpaths
 from quant_core.api import snapshot_loader
-from quant_core.data import data_health
-from quant_core.data import market_data
-from quant_core.data import storage as data_storage
-from quant_core.analytics import core_etf_rotation
-from quant_core.events import event_fetcher
-from quant_core.execution import nightly_planner
-from quant_core.execution import plan_quality
-from quant_core.execution import post_close_review
+from quant_core.data import prices
+from quant_core.data.data_health import build_data_health_snapshot, save_data_health_snapshot
+from quant_core.data.watchlist import add_to_watchlist, remove_from_watchlist
 from quant_core.jobs import job_registry
-from quant_core.ledger import transactions
-from quant_core.notifications import notification_config
 from quant_core.llm import openai_compatible
-from quant_core.llm import explainer as llm_explainer
-from quant_core.llm import decision_brief
-from quant_core.fundamentals import financials as financials_config
-from quant_core.models.foundation import config as foundation_model_config
-from quant_core.models.foundation import backends as foundation_backends
-from quant_core.portfolio import actions as portfolio_actions
-from quant_core.snapshots import system_snapshot
+from quant_core.notifications import notification_config
+from quant_core.notifications import notification_channels
+from quant_core.research.service import run_full_valuation_research, save_valuation_policy
+from quant_core.research.universe import build_research_universe, save_universe_config
+from quant_core.risk.market_regime import build_market_risk_snapshot, save_market_risk_snapshot
 
 
-def _safe_detail(payload) -> str:
-    if isinstance(payload, Mapping):
-        return str(payload.get("message") or payload.get("reason") or payload.get("status") or "completed")
-    return "completed"
+def _summary(payload) -> dict:
+    value = dict(payload or {}) if isinstance(payload, Mapping) else {}
+    return dict(value.get("summary", {}) or {key: value.get(key) for key in ("status", "ran", "generated_at") if value.get(key) is not None})
 
 
-def _result_summary(payload) -> dict:
-    if not isinstance(payload, Mapping):
-        return {"result": str(payload)}
-    preferred_keys = (
-        "message",
-        "status",
-        "symbol_count",
-        "priced_count",
-        "holdings_count",
-        "watchlist_count",
-        "data_health_status",
-        "dry_run",
-        "snapshot_journal_path",
-        "decision",
-        "action_count",
-        "generated_at",
-        "backend",
-        "model_name",
-        "revision",
-        "runtime_device",
-        "cache_status",
-        "cache_path",
-    )
-    summary = {
-        key: payload.get(key)
-        for key in preferred_keys
-        if payload.get(key) not in (None, "", [], {})
-    }
-    if "snapshot" in payload and isinstance(payload.get("snapshot"), Mapping):
-        snapshot = dict(payload.get("snapshot") or {})
-        summary.setdefault("generated_at", snapshot.get("generated_at"))
-        summary["alert_count"] = len(list(snapshot.get("alerts", []) or []))
-        summary["decision_brief_status"] = dict(snapshot.get("decision_brief", {}) or {}).get("status")
-    if "report_files" in payload and isinstance(payload.get("report_files"), Mapping):
-        summary["report_path"] = dict(payload.get("report_files") or {}).get("latest_markdown_path")
-    return summary or {"message": _safe_detail(payload)}
+def build_job_progress_callback(name: str):
+    def report(stage: str, progress_pct: int, detail: str, **metadata):
+        job_registry.update_job_status(name, state="running", detail=detail, metadata={"stage": stage, "progress_pct": progress_pct, **metadata})
+    return report
 
 
-def build_job_progress_callback(
-    job_name: str,
-    *,
-    logger: Callable[[str], object] | None = None,
-    now_func: Callable[[], datetime] = datetime.now,
-) -> Callable[[Mapping], None]:
-    normalized_name = str(job_name or "").strip() or "manual-job"
-
-    def _report(event: Mapping) -> None:
-        payload = dict(event or {})
-        detail = str(payload.pop("detail", "") or payload.get("stage") or "working")
-        stage = str(payload.get("stage") or "running")
-        progress = payload.get("progress_pct")
-        progress_text = f" {float(progress):.0f}%" if progress is not None else ""
-        message = f"[{normalized_name}] {stage}{progress_text} - {detail}"
-        if logger is None:
-            print(message, flush=True)
-        else:
-            logger(message)
-        job_registry.update_job_status(
-            normalized_name,
-            state="completed" if stage == "completed" else "failed" if stage == "failed" else "running",
-            detail=detail,
-            metadata=payload,
-            now=now_func(),
-        )
-
-    return _report
+def _job_group(name: str) -> str:
+    lowered = str(name).lower()
+    if "nightly" in lowered or "full-research" in lowered:
+        return "valuation-research"
+    if "weekend" in lowered:
+        return "weekend-calibration"
+    if "market-refresh" in lowered:
+        return "market-refresh"
+    return lowered.replace("/", "-")
 
 
-def run_with_job_status(
-    job_name: str,
-    runner: Callable[[], object],
-    *,
-    run_async: bool = True,
-    now_func: Callable[[], datetime] = datetime.now,
-) -> dict:
-    """Run a local job and update the file-backed job registry."""
-
-    normalized_name = str(job_name or "").strip() or "manual-job"
-
-    def _execute():
+@contextmanager
+def _exclusive_job(name: str):
+    path = qpaths.RESEARCH_STATE_DIR / f".{_job_group(name)}.lock"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor = None
+    for attempt in range(2):
         try:
-            job_registry.update_job_status(
-                normalized_name,
-                state="running",
-                detail="job is running",
-                metadata={"stage": "running", "progress_pct": 1},
-                now=now_func(),
-            )
-            result = runner()
-            job_registry.update_job_status(
-                normalized_name,
-                state="completed",
-                detail=_safe_detail(result),
-                metadata={
-                    "stage": "completed",
-                    "progress_pct": 100,
-                    "result_summary": _result_summary(result),
-                },
-                now=now_func(),
-            )
-            return result
-        except Exception as exc:  # pragma: no cover - defensive status path
-            job_registry.update_job_status(
-                normalized_name,
-                state="failed",
-                detail=f"{type(exc).__name__}: {exc}",
-                metadata={"stage": "failed"},
-                now=now_func(),
-            )
-            if run_async:
-                traceback.print_exc()
-            raise
-
-    job_registry.update_job_status(
-        normalized_name,
-        state="started",
-        detail="manual trigger accepted",
-        metadata={"stage": "queued", "progress_pct": 0},
-        now=now_func(),
-    )
-    if run_async:
-        thread = Thread(target=_execute, daemon=True, name=normalized_name)
-        thread.start()
-        return {
-            "accepted": True,
-            "job_name": normalized_name,
-            "mode": "background",
-            "message": f"{normalized_name} started in background.",
-        }
-
+            descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+            os.write(descriptor, f"pid={os.getpid()} started={datetime.now().isoformat()}\n".encode("utf-8"))
+            break
+        except FileExistsError:
+            if attempt == 0 and time.time() - path.stat().st_mtime > 12 * 3600:
+                path.unlink(missing_ok=True)
+                continue
     try:
-        result = _execute()
-        return {
-            "accepted": True,
-            "job_name": normalized_name,
-            "mode": "inline",
-            "result": result,
-        }
-    except Exception as exc:
-        return {
-            "accepted": False,
-            "job_name": normalized_name,
-            "mode": "inline",
-            "error": f"{type(exc).__name__}: {exc}",
-            "traceback": traceback.format_exc(limit=4),
-        }
+        yield descriptor is not None
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+            path.unlink(missing_ok=True)
+
+
+def run_with_job_status(name: str, runner: Callable, *, run_async: bool = True) -> dict:
+    current = dict(job_registry.load_job_status().get("jobs", {}).get(name, {}) or {})
+    if str(current.get("state") or "").lower() in {"queued", "started", "running"}:
+        return {"accepted": False, "error": "任务已经在运行", "job": current}
+    job_registry.update_job_status(name, state="queued", detail="任务已进入队列", metadata={"stage": "queued", "progress_pct": 0})
+
+    outcome = {}
+
+    def execute():
+        job_registry.update_job_status(name, state="running", detail="任务开始", metadata={"stage": "starting", "progress_pct": 1})
+        with _exclusive_job(name) as acquired:
+            if not acquired:
+                job_registry.update_job_status(name, state="failed", detail="同类任务已在另一个入口运行", metadata={"stage": "blocked", "progress_pct": 100})
+                return
+            try:
+                result = runner()
+            except Exception as exc:
+                outcome["error"] = f"{type(exc).__name__}: {exc}"
+                job_registry.update_job_status(name, state="failed", detail=f"{type(exc).__name__}: {exc}", metadata={"stage": "failed", "progress_pct": 100})
+                return
+        outcome["result"] = result
+        job_registry.update_job_status(name, state="completed", detail="任务完成", metadata={"stage": "completed", "progress_pct": 100, "result_summary": _summary(result)})
+
+    if run_async:
+        threading.Thread(target=execute, name=f"quant-{name}", daemon=True).start()
+        return {"accepted": True, "job_name": name, "state": "queued"}
+    execute()
+    job = dict(job_registry.load_job_status().get("jobs", {}).get(name, {}) or {})
+    result = dict(outcome.get("result", {}) or {}) if isinstance(outcome.get("result"), Mapping) else {}
+    return {"accepted": job.get("state") == "completed", "job_name": name, "job": job, **result, **({"error": outcome["error"]} if outcome.get("error") else {})}
 
 
 def refresh_market_data_now(*, force_source_refresh: bool = True) -> dict:
-    before = data_storage.load_data()
-    refreshed = data_storage.refresh_market_data(
-        before,
-        force_source_refresh=bool(force_source_refresh),
-    )
-    data_storage.save_data(refreshed)
-    health_snapshot = data_health.build_data_health_snapshot(
-        refreshed,
-        data_sources=market_data.get_market_data_status_snapshot(),
-    )
-    data_health.save_data_health_snapshot(health_snapshot)
-    holdings = list(refreshed.get("holdings", []) or [])
-    watchlist = list(refreshed.get("watchlist", []) or [])
-    priced_holdings = [row for row in holdings if row.get("current_price") is not None]
-    priced_watchlist = [row for row in watchlist if row.get("last_price") is not None]
-    return {
-        "message": "market data refreshed",
-        "symbol_count": len({str(row.get("symbol") or "").upper() for row in holdings + watchlist if row.get("symbol")}),
-        "priced_count": len(priced_holdings) + len(priced_watchlist),
-        "holdings_count": len(holdings),
-        "watchlist_count": len(watchlist),
-        "prices_last_updated": refreshed.get("prices_last_updated"),
-        "data_health_status": health_snapshot.get("status"),
+    universe = build_research_universe()
+    symbols = [str(row.get("symbol") or "") for row in universe]
+    resolved = prices.fetch_latest_prices(symbols, force=force_source_refresh)
+    histories = {
+        symbol: prices.get_history(symbol, period="1y", force=force_source_refresh)
+        for symbol in ("SPY", "QQQ", "^VIX")
     }
+    market_risk = build_market_risk_snapshot(histories)
+    save_market_risk_snapshot(market_risk)
+    health = build_data_health_snapshot(
+        opportunities=snapshot_loader._load(qpaths.OPPORTUNITY_SNAPSHOT_FILE),
+        valuations=snapshot_loader._load(qpaths.VALUATION_SNAPSHOT_FILE),
+        market_risk=market_risk,
+        require_llm_route=bool(snapshot_loader.load_settings_response()["payload"]["valuation_policy"].get("require_llm_route_for_action", False)),
+    )
+    save_data_health_snapshot(health)
+    return {"status": "READY", "summary": {"requested_count": len(symbols), "refreshed_count": len(resolved), "market_regime": market_risk.get("regime")}}
 
 
-def run_nightly_once() -> dict:
-    from jobs.nightly_alerts import run_nightly_alerts
-
-    result = run_nightly_alerts(force=True, dry_run=False)
-    return result if isinstance(result, dict) else {"message": "nightly run completed", "result": result}
+def run_nightly_once(*, progress=None) -> dict:
+    return run_full_valuation_research(force=True, progress=progress or build_job_progress_callback("manual-nightly-run"), notify=True)
 
 
-def run_weekend_research_once() -> dict:
+def run_weekend_research_once(*, progress=None) -> dict:
     from jobs.weekend_research import run_weekend_research
-
-    result = run_weekend_research(force=True)
-    return result if isinstance(result, dict) else {"message": "weekend research completed", "result": result}
+    return run_weekend_research(force=True, progress=progress or build_job_progress_callback("manual-weekend-research"), notify=True)
 
 
-def test_llm_settings(*, route: str) -> dict:
-    config = notification_config.apply_environment_overrides(
-        notification_config.load_notification_config()
-    )
-    route = str(route or "").strip().lower()
-    if route == "remote":
-        ok, message = openai_compatible.test_llm_connection(config.get("llm", {}))
-    elif route == "local":
-        ok, message = openai_compatible.test_local_narration(config.get("local_slm", {}))
+def test_llm_settings(*, route: str, submitted_config: Mapping | None = None) -> dict:
+    existing = notification_config.load_notification_config()
+    config = notification_config.preserve_unsubmitted_secrets(submitted_config, existing) if submitted_config else existing
+    config = notification_config.apply_environment_overrides(config)
+    selected = dict(config.get("local_slm" if str(route).lower() == "local_slm" else "llm", {}) or {})
+    ok, message = openai_compatible.test_llm_connection(selected)
+    if not ok:
+        raise RuntimeError(message)
+    return {"status": "READY", "route": route, "message": message, "model": selected.get("model")}
+
+
+def test_notification_channel(channel: str, *, submitted_config: Mapping | None = None) -> dict:
+    channel = str(channel or "").strip().lower()
+    existing = notification_config.load_notification_config()
+    config = notification_config.preserve_unsubmitted_secrets(submitted_config, existing) if submitted_config else existing
+    config = notification_config.apply_environment_overrides(config)
+    message = notification_channels.build_test_notification_message(channel)
+    if channel == "slack":
+        slack = dict(config.get("slack", {}) or {})
+        if not slack.get("enabled") or not slack.get("webhook_url"):
+            raise RuntimeError("Slack推送尚未启用或Webhook URL为空")
+        ok, detail = notification_channels.send_slack_message(message, slack.get("webhook_url"))
+    elif channel == "email":
+        email = dict(config.get("email", {}) or {})
+        if not email.get("enabled") or not email.get("to_emails"):
+            raise RuntimeError("Email尚未启用或收件人为空")
+        ok, detail = notification_channels.send_email_message("估值雷达连接测试", message, email)
     else:
-        raise ValueError("Unknown LLM test route.")
-    return {
-        "message": message,
-        "ok": bool(ok),
-        "route": route,
-    }
+        raise ValueError(f"不支持的通知渠道：{channel}")
+    if not ok:
+        raise RuntimeError(detail)
+    return {"status": "READY", "channel": channel, "message": detail}
 
 
-def _llm_config() -> dict:
-    return notification_config.apply_environment_overrides(
-        notification_config.load_notification_config()
-    )
-
-
-def _find_symbol_row(rows, symbol: str) -> dict:
-    normalized = str(symbol or "").strip().upper()
-    for row in list(rows or []):
-        row = dict(row or {})
-        if str(row.get("symbol") or "").strip().upper() == normalized:
-            return row
-    raise ValueError(f"Symbol {normalized or '-'} is not present in the latest snapshot.")
-
-
-def explain_core_etf(symbol: str) -> dict:
-    response = snapshot_loader.load_model_enriched_snapshot_response(
-        "core-etfs",
-        snapshot_loader.SNAPSHOT_PATHS["core-etfs"],
-        row_keys=("symbols",),
-    )
-    row = _find_symbol_row(dict(response.get("payload", {}) or {}).get("symbols", []), symbol)
-    discipline, _ = snapshot_loader.safe_read_json(qpaths.DISCIPLINE_SNAPSHOT_FILE)
-    change_feed, _ = snapshot_loader.safe_read_json(qpaths.CHANGE_FEED_FILE)
-    ok, text, meta = llm_explainer.explain_core_etf_decision(
-        symbol_row=row,
-        notification_config=_llm_config(),
-        discipline_snapshot=discipline,
-        change_feed=change_feed,
-    )
-    return {"ok": ok, "text": text, "meta": meta, "symbol": str(symbol).upper()}
-
-
-def explain_satellite(symbol: str) -> dict:
-    response = snapshot_loader.load_model_enriched_snapshot_response(
-        "satellite-radar",
-        snapshot_loader.SNAPSHOT_PATHS["satellite-radar"],
-        row_keys=("top_recommendations", "symbols", "candidate_pool"),
-    )
-    payload = dict(response.get("payload", {}) or {})
-    rows = (
-        list(payload.get("top_recommendations", []) or [])
-        + list(payload.get("candidate_pool", []) or [])
-        + list(payload.get("current_holdings", []) or [])
-    )
-    row = _find_symbol_row(rows, symbol)
-    discipline, _ = snapshot_loader.safe_read_json(qpaths.DISCIPLINE_SNAPSHOT_FILE)
-    change_feed, _ = snapshot_loader.safe_read_json(qpaths.CHANGE_FEED_FILE)
-    ok, text, meta = llm_explainer.explain_satellite_candidate(
-        candidate_row=row,
-        notification_config=_llm_config(),
-        discipline_snapshot=discipline,
-        change_feed=change_feed,
-    )
-    return {"ok": ok, "text": text, "meta": meta, "symbol": str(symbol).upper()}
-
-
-def explain_risk() -> dict:
-    risk_response = snapshot_loader.load_risk_response()
-    news_intelligence, _ = snapshot_loader.safe_read_json(qpaths.NEWS_INTELLIGENCE_FILE)
-    ok, text, meta = llm_explainer.explain_portfolio_risk(
-        risk_payload=dict(risk_response.get("payload", {}) or {}),
-        news_intelligence=news_intelligence,
-        notification_config=_llm_config(),
-    )
-    return {"ok": ok, "text": text, "meta": meta}
-
-
-def refresh_decision_brief_now() -> dict:
-    config = _llm_config()
-    context = decision_brief.build_current_decision_context()
-    result = decision_brief.refresh_decision_brief(
-        context=context,
-        notification_config=config,
-        trigger="MANUAL",
-        force=True,
-    )
-    return {
-        "message": "LLM decision brief refreshed",
-        "decision_brief": result,
-    }
-
-
-def import_robinhood_csv_text(csv_text: str, *, filename: str = "", replace_existing: bool = False) -> dict:
-    if not str(csv_text or "").strip():
-        raise ValueError("CSV content is empty.")
-    if replace_existing:
-        imported = transactions.replace_with_robinhood_activity_csv(csv_text, filename=filename, backup=True)
-    else:
-        imported = transactions.import_robinhood_activity_csv(csv_text, filename=filename)
-    reconciled: Optional[dict] = None
-    reconcile_error = ""
-    try:
-        reconciled = portfolio_actions.reconcile_portfolio_from_robinhood_imports(
-            force_price_refresh=False,
-            incremental_cash_records=None if replace_existing else list(imported.get("records", []) or []),
-        )
-    except Exception as exc:
-        reconcile_error = f"{type(exc).__name__}: {exc}"
-    followup = build_robinhood_import_followup(imported)
-    return {
-        "message": "robinhood csv imported",
-        "mode": "replace" if replace_existing else "append",
-        "import": imported,
-        "reconciliation": reconciled or {},
-        "reconciliation_error": reconcile_error,
-        "followup": followup,
-    }
-
-
-def _latest_trade_day(records) -> Optional[str]:
-    latest = None
-    for record in transactions.normalize_transactions(records):
-        if str(record.get("record_type") or "").strip().upper() != "TRADE":
-            continue
-        parsed = post_close_review._parse_datetime(record.get("date"))
-        if parsed is None:
-            continue
-        if latest is None or parsed > latest:
-            latest = parsed
-    return latest.date().isoformat() if latest is not None else None
-
-
-def build_robinhood_import_followup(imported: Mapping) -> dict:
-    """Update lightweight review snapshots after Robinhood CSV import."""
-
-    imported = dict(imported or {})
-    transaction_rows = transactions.load_transactions()
-    latest_day = _latest_trade_day(imported.get("records") or transaction_rows)
-    if not latest_day:
-        return {
-            "message": "no trade day found",
-            "post_close_review_updated": False,
-            "plan_quality_updated": False,
-        }
-
-    trade_plan = nightly_planner.load_next_day_trade_plan() or {}
-    review = post_close_review.build_execution_review(
-        trade_plan,
-        transaction_rows,
-        day=latest_day,
-    )
-    post_close_review.save_post_close_review(review)
-    quality = plan_quality.build_plan_quality_snapshot(
-        trade_plan=trade_plan,
-        latest_review=review,
-    )
-    plan_quality.save_plan_quality_snapshot(quality)
-    return {
-        "message": "post-close review and plan quality updated",
-        "review_day": latest_day,
-        "post_close_review_updated": True,
-        "plan_quality_updated": True,
-        "review": {
-            "status": review.get("status"),
-            "executed_count": review.get("executed_count"),
-            "missed_count": review.get("missed_count"),
-            "unplanned_trade_count": review.get("unplanned_trade_count"),
-        },
-        "plan_quality": dict(quality.get("summary", {}) or {}),
-    }
-
-
-def save_runtime_schedule(schedule: Mapping) -> dict:
-    path = snapshot_loader.save_runtime_schedule(schedule)
-    return {
-        "message": "runtime schedule saved",
-        "path": path,
-        "runtime_schedule": snapshot_loader.load_runtime_schedule(path=path),
-    }
+def explain_security(symbol: str) -> dict:
+    symbol = str(symbol or "").strip().upper()
+    valuation = snapshot_loader.load_valuations_response(symbol)["payload"]
+    recommendations = snapshot_loader._load(qpaths.RECOMMENDATION_SNAPSHOT_FILE)
+    row = next((dict(item) for item in list(recommendations.get("recommendations", []) or []) if str(item.get("symbol") or "").upper() == symbol), {})
+    valuation_row = next(iter(list(valuation.get("valuations", []) or [])), {})
+    if not row or not valuation_row:
+        raise LookupError(f"没有 {symbol} 的最新估值结果")
+    llm = dict(notification_config.load_notification_config().get("llm", {}) or {})
+    messages = [
+        {"role": "system", "content": "Explain the supplied valuation result in natural Chinese. Preserve all numbers, distinguish assumptions from facts, and do not create a new recommendation."},
+        {"role": "user", "content": json.dumps({"recommendation": row, "valuation": valuation_row}, ensure_ascii=False, default=str)},
+    ]
+    ok, text = openai_compatible.call_openai_compatible_chat(messages, {**llm, "max_tokens": max(int(llm.get("max_tokens") or 300), 1800)})
+    if not ok:
+        raise RuntimeError(text)
+    return {"status": "READY", "symbol": symbol, "explanation": text, "model": llm.get("model")}
 
 
 def save_notification_settings(config: Mapping) -> dict:
     existing = notification_config.load_notification_config()
     merged = notification_config.preserve_unsubmitted_secrets(dict(config or {}), existing)
     saved = notification_config.save_notification_config(merged)
-    return {
-        "message": "notification config saved",
-        "notification_config": snapshot_loader._sanitize_notification_config(saved),
-    }
+    return {"status": "READY", "message": "通知与LLM设置已保存", "notification_config": snapshot_loader._sanitize(saved)}
 
 
-def save_foundation_model_settings(config: Mapping) -> dict:
-    path = foundation_model_config.save_foundation_model_config(config)
-    return {
-        "message": "foundation model config saved",
-        "path": path,
-        "foundation_model_config": foundation_model_config.load_foundation_model_config(path=path),
-    }
+def save_runtime_schedule(schedule: Mapping) -> dict:
+    path = snapshot_loader.save_runtime_schedule(schedule)
+    return {"status": "READY", "path": path, "runtime_schedule": snapshot_loader.load_runtime_schedule()}
 
 
-def warmup_foundation_model_backend(
-    *,
-    progress_callback: Callable[[Mapping], None] | None = None,
-) -> dict:
-    """Download and load the configured foundation backend once.
-
-    This is intentionally separate from a full nightly run: the Settings page
-    needs to prove that the selected model can actually be resolved and loaded
-    before the user trusts downstream recommendations.
-    """
-
-    def report(stage: str, detail: str, progress_pct: float, **metadata) -> None:
-        if progress_callback:
-            progress_callback(
-                {
-                    "stage": stage,
-                    "detail": detail,
-                    "progress_pct": round(float(progress_pct), 1),
-                    **metadata,
-                }
-            )
-
-    config = foundation_model_config.load_foundation_model_config()
-    report("foundation_warmup_config", "Loaded foundation model config", 5)
-    backend, attempts = foundation_backends.select_backend(config)
-    capabilities = backend.capabilities()
-    model_name = getattr(backend, "model_name", None)
-    revision = getattr(backend, "revision", None)
-    report(
-        "foundation_warmup_capabilities",
-        capabilities.message or f"Selected backend {backend.name}",
-        15,
-        backend=backend.name,
-        model_name=model_name,
-        revision=revision,
-        backend_status=capabilities.status,
-    )
-    if capabilities.status != "READY":
-        raise RuntimeError(capabilities.message or "Foundation backend is not ready.")
-    if backend.name != "chronos":
-        return {
-            "message": f"foundation backend {backend.name} is ready; no Chronos warmup required",
-            "backend": backend.name,
-            "model_name": model_name,
-            "revision": revision,
-            "cache_status": "NOT_APPLICABLE",
-            "attempts": attempts,
-        }
-
-    cache_path = ""
-    cache_status = "UNKNOWN"
-    try:
-        from huggingface_hub import snapshot_download
-
-        cache_path = snapshot_download(
-            repo_id=str(model_name),
-            revision=str(revision) if revision else None,
-            local_files_only=True,
-        )
-        cache_status = "CACHED"
-    except Exception as exc:
-        cache_status = "MISSING"
-        report(
-            "foundation_warmup_cache_check",
-            f"Local cache miss for {model_name}: {type(exc).__name__}: {exc}",
-            20,
-            backend=backend.name,
-            model_name=model_name,
-            revision=revision,
-            cache_status=cache_status,
-            cache_path=cache_path,
-        )
-    else:
-        report(
-            "foundation_warmup_cache_check",
-            f"Local cache ready for {model_name}",
-            25,
-            backend=backend.name,
-            model_name=model_name,
-            revision=revision,
-            cache_status=cache_status,
-            cache_path=cache_path,
-        )
-
-    report(
-        "foundation_warmup_download",
-        f"Downloading or verifying cached weights for {model_name}",
-        25,
-        backend=backend.name,
-        model_name=model_name,
-        revision=revision,
-        cache_status=cache_status,
-        cache_path=cache_path,
-    )
-    try:
-        from huggingface_hub import snapshot_download
-        from tqdm.auto import tqdm
-
-        last_pct = {"value": 25.0}
-
-        class JobTqdm(tqdm):
-            def update(self, n=1):  # type: ignore[override]
-                result = super().update(n)
-                total = float(self.total or 0.0)
-                if total > 0:
-                    raw_pct = 25.0 + min(max(float(self.n) / total, 0.0), 1.0) * 45.0
-                    pct = max(last_pct["value"], raw_pct)
-                    if pct - last_pct["value"] >= 2.0 or pct >= 70.0:
-                        last_pct["value"] = min(pct, 70.0)
-                        report(
-                            "foundation_warmup_download",
-                            f"Downloading or verifying cached weights for {model_name}",
-                            last_pct["value"],
-                            backend=backend.name,
-                            model_name=model_name,
-                            revision=revision,
-                            cache_status="DOWNLOADING" if cache_status != "CACHED" else "CACHED",
-                            cache_path=cache_path,
-                        )
-                return result
-
-        resolved_cache_path = snapshot_download(
-            repo_id=str(model_name),
-            revision=str(revision) if revision else None,
-            resume_download=True,
-            tqdm_class=JobTqdm,
-        )
-        cache_path = str(resolved_cache_path or cache_path)
-        cache_status = "CACHED" if cache_status == "CACHED" else "DOWNLOADED"
-    except ModuleNotFoundError:
-        report(
-            "foundation_warmup_download",
-            "huggingface_hub is unavailable; Chronos will download through from_pretrained instead",
-            45,
-            backend=backend.name,
-            model_name=model_name,
-            revision=revision,
-            cache_status="UNKNOWN",
-            cache_path=cache_path,
-        )
-    except Exception as exc:
-        report(
-            "foundation_warmup_download_failed",
-            f"Failed to download {model_name}: {type(exc).__name__}: {exc}",
-            100,
-            backend=backend.name,
-            model_name=model_name,
-            revision=revision,
-            cache_status="FAILED",
-            cache_path=cache_path,
-        )
-        raise
-
-    report(
-        "foundation_warmup_load",
-        f"Loading {model_name} into the configured runtime device",
-        75,
-        backend=backend.name,
-        model_name=model_name,
-        revision=revision,
-        cache_status=cache_status,
-        cache_path=cache_path,
-    )
-    if not isinstance(backend, foundation_backends.ChronosFoundationBackend):
-        raise RuntimeError("Selected Chronos backend is not a ChronosFoundationBackend instance.")
-    backend._load_pipeline()
-    runtime_device = getattr(backend, "_runtime_device", "unknown")
-    report(
-        "foundation_warmup_ready",
-        f"{model_name} is loaded on {runtime_device}",
-        100,
-        backend=backend.name,
-        model_name=model_name,
-        revision=revision,
-        runtime_device=runtime_device,
-        cache_status=cache_status,
-        cache_path=cache_path,
-    )
-    return {
-        "message": "foundation model warmed up",
-        "backend": backend.name,
-        "model_name": model_name,
-        "revision": revision,
-        "runtime_device": runtime_device,
-        "cache_status": cache_status,
-        "cache_path": cache_path,
-        "attempts": attempts,
-    }
+def save_research_universe(config: Mapping) -> dict:
+    path = save_universe_config(config)
+    return {"status": "READY", "path": path, "research_universe": snapshot_loader.load_settings_response()["payload"]["research_universe"]}
 
 
-def save_financials_settings(config: Mapping) -> dict:
-    path = financials_config.save_financials_config(config)
-    return {
-        "message": "financials intelligence config saved",
-        "path": path,
-        "financials_config": financials_config.load_financials_config(path=path),
-    }
+def save_valuation_settings(config: Mapping) -> dict:
+    path = save_valuation_policy(config)
+    return {"status": "READY", "path": path, "valuation_policy": dict(config or {})}
 
 
-def save_core_etf_universe_settings(config: Mapping) -> dict:
-    path = core_etf_rotation.save_core_etf_universe(dict(config or {}))
-    return {
-        "message": "core ETF universe saved; rerun nightly analysis to refresh model outputs",
-        "path": path,
-        "core_etf_universe": core_etf_rotation.load_core_etf_universe(path=path),
-    }
-
-
-def save_event_source_settings(config: Mapping) -> dict:
-    path = event_fetcher.save_event_source_config(dict(config or {}))
-    return {
-        "message": "financial news source configuration saved",
-        "path": path,
-        "event_source_config": event_fetcher.load_event_source_config(path=path),
-    }
-
-
-def _optional_float_from_payload(payload: Mapping, key: str):
-    value = payload.get(key)
-    if value in (None, ""):
-        return None
-    return float(value)
-
-
-def save_account_calibration(payload: Mapping) -> dict:
-    payload = dict(payload or {})
-    data = data_storage.load_data()
-    account = dict(data.get("account", {}) or {})
-    before_snapshot = system_snapshot.build_account_snapshot(data)
-    holdings_value = float(before_snapshot.get("holdings_market_value") or 0.0)
-
-    broker_total = _optional_float_from_payload(payload, "broker_total_capital")
-    cash_available = _optional_float_from_payload(payload, "cash_available")
-    inferred_from_broker_total = False
-    if broker_total is not None:
-        cash_available = round(float(broker_total) - holdings_value, 4)
-        inferred_from_broker_total = True
-        if cash_available < 0:
-            raise ValueError(
-                "broker_total_capital is below current holdings market value; "
-                "enter cash_available directly if the broker account includes margin or stale prices."
-            )
-
-    if cash_available is not None:
-        if cash_available < 0:
-            raise ValueError("cash_available must be >= 0")
-        account["cash_available"] = round(float(cash_available), 4)
-
-    for key in ("min_cash_buffer_pct", "max_single_position_pct", "max_total_exposure_pct"):
-        value = payload.get(key)
-        if value not in (None, ""):
-            account[key] = float(value)
-
-    # Keep total capital dynamic: cash + current holdings market value.
-    account["total_capital"] = None
-    data["account"] = account
-    data_storage.save_data(data)
-    snapshot = system_snapshot.build_account_snapshot(data)
-    return {
-        "message": "account calibration saved",
-        "account": snapshot,
-        "inferred_cash_from_broker_total": inferred_from_broker_total,
-        "holdings_market_value": holdings_value,
-    }
+def update_watchlist(symbol: str, *, remove: bool = False) -> dict:
+    symbols = remove_from_watchlist(symbol) if remove else add_to_watchlist(symbol)
+    return {"status": "READY", "symbols": symbols, "message": f"{str(symbol).upper()} 已{'移出' if remove else '加入'}关注列表"}

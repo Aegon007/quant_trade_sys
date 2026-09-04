@@ -1,109 +1,17 @@
-<svg width="1280" height="760" viewBox="0 0 1280 760" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
-  <title id="title">Quant Trade System Architecture</title>
-  <desc id="desc">A simplified architecture diagram showing user entry points, orchestration, backend services, quant core, local storage, and external integrations.</desc>
-  <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="1280" y2="760" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#F7FAFC"/>
-      <stop offset="1" stop-color="#EEF4FF"/>
-    </linearGradient>
-    <linearGradient id="core" x1="0" y1="0" x2="1" y2="1">
-      <stop stop-color="#0F766E"/>
-      <stop offset="1" stop-color="#155E75"/>
-    </linearGradient>
-    <filter id="shadow" x="-10%" y="-15%" width="120%" height="135%" color-interpolation-filters="sRGB">
-      <feDropShadow dx="0" dy="12" stdDeviation="14" flood-color="#0F172A" flood-opacity="0.10"/>
-    </filter>
-    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto" markerUnits="strokeWidth">
-      <path d="M 0 0 L 10 5 L 0 10 z" fill="#64748B"/>
-    </marker>
-    <style>
-      .title { font: 700 30px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #0F172A; }
-      .subtitle { font: 400 15px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #475569; }
-      .label { font: 700 16px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #0F172A; }
-      .small { font: 400 13px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #475569; }
-      .smallLight { font: 400 13px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #E2E8F0; }
-      .labelLight { font: 700 16px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #FFFFFF; }
-      .section { font: 800 13px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; letter-spacing: .08em; fill: #64748B; }
-      .box { fill: #FFFFFF; stroke: #CBD5E1; stroke-width: 1.2; rx: 18; filter: url(#shadow); }
-      .soft { fill: #F8FAFC; stroke: #D7E0EA; stroke-width: 1.2; rx: 16; }
-      .line { stroke: #64748B; stroke-width: 2.2; marker-end: url(#arrow); }
-      .dash { stroke: #94A3B8; stroke-width: 1.8; stroke-dasharray: 6 6; marker-end: url(#arrow); }
-    </style>
-  </defs>
-
-  <rect width="1280" height="760" fill="url(#bg)"/>
-  <text x="52" y="58" class="title">Quant Trade System Architecture</text>
-  <text x="52" y="86" class="subtitle">Front end reads snapshots; scheduled workers compute signals; local files remain the source of truth.</text>
-
-  <text x="58" y="142" class="section">USER ENTRY</text>
-  <text x="296" y="142" class="section">ORCHESTRATION</text>
-  <text x="526" y="142" class="section">SERVICE API</text>
-  <text x="760" y="142" class="section">QUANT CORE</text>
-  <text x="1054" y="142" class="section">STATE &amp; INTEGRATIONS</text>
-
-  <rect x="52" y="166" width="182" height="96" class="box"/>
-  <text x="78" y="203" class="label">React Web UI</text>
-  <text x="78" y="228" class="small">Dashboard · Portfolio</text>
-  <text x="78" y="248" class="small">ETF · Radar · Risk</text>
-
-  <rect x="52" y="292" width="182" height="88" class="box"/>
-  <text x="78" y="327" class="label">Slack / Email</text>
-  <text x="78" y="352" class="small">commands, alerts</text>
-  <text x="78" y="372" class="small">daily briefs</text>
-
-  <rect x="276" y="198" width="194" height="132" class="box"/>
-  <text x="306" y="238" class="label">jobs.run_all</text>
-  <text x="306" y="263" class="small">starts API first</text>
-  <text x="306" y="283" class="small">then frontend + bots</text>
-  <text x="306" y="303" class="small">supervises workers</text>
-
-  <rect x="514" y="166" width="186" height="96" class="box"/>
-  <text x="544" y="203" class="label">FastAPI API</text>
-  <text x="544" y="228" class="small">snapshots, actions</text>
-  <text x="544" y="248" class="small">job status</text>
-
-  <rect x="514" y="292" width="186" height="88" class="box"/>
-  <text x="544" y="327" class="label">Action Layer</text>
-  <text x="544" y="352" class="small">refresh · nightly</text>
-  <text x="544" y="372" class="small">train · import CSV</text>
-
-  <rect x="746" y="152" width="250" height="310" fill="url(#core)" rx="24" filter="url(#shadow)"/>
-  <text x="778" y="193" class="labelLight">Quant Core</text>
-  <text x="778" y="222" class="smallLight">Market data &amp; data health</text>
-  <text x="778" y="246" class="smallLight">News, analyst, event inputs</text>
-  <text x="778" y="270" class="smallLight">Multi-horizon neural model</text>
-  <text x="778" y="294" class="smallLight">Core ETF rotation engine</text>
-  <text x="778" y="318" class="smallLight">Satellite radar &amp; Top 3 scorer</text>
-  <text x="778" y="342" class="smallLight">Portfolio allocation actions</text>
-  <text x="778" y="366" class="smallLight">Risk gate &amp; discipline layer</text>
-  <text x="778" y="390" class="smallLight">Execution plan quality</text>
-  <text x="778" y="414" class="smallLight">LLM summaries &amp; explanations</text>
-
-  <rect x="1050" y="166" width="182" height="96" class="box"/>
-  <text x="1076" y="203" class="label">Local Storage</text>
-  <text x="1076" y="228" class="small">config, state</text>
-  <text x="1076" y="248" class="small">reports, models</text>
-
-  <rect x="1050" y="292" width="182" height="88" class="box"/>
-  <text x="1076" y="327" class="label">External APIs</text>
-  <text x="1076" y="352" class="small">market/news data</text>
-  <text x="1076" y="372" class="small">LLM, SMTP, Slack</text>
-
-  <rect x="52" y="510" width="1180" height="150" class="soft"/>
-  <text x="82" y="548" class="label">Runtime Flow</text>
-  <text x="82" y="580" class="small">1. UI and Slack send lightweight requests to FastAPI; page navigation does not train models or run backtests.</text>
-  <text x="82" y="606" class="small">2. Daytime workers refresh market data and classify urgent events; nightly/weekend jobs build plans, reports, and model candidates.</text>
-  <text x="82" y="632" class="small">3. Quant Core combines model outputs with portfolio state, risk gates, and discipline rules; LLMs explain decisions but do not create trades.</text>
-
-  <path d="M234 214 C250 214 258 214 276 234" class="line"/>
-  <path d="M234 336 C254 336 260 312 276 290" class="line"/>
-  <path d="M470 238 C490 238 496 216 514 214" class="line"/>
-  <path d="M470 286 C492 286 498 326 514 336" class="line"/>
-  <path d="M700 214 C720 214 728 214 746 214" class="line"/>
-  <path d="M700 336 C720 336 728 336 746 336" class="line"/>
-  <path d="M996 214 C1018 214 1028 214 1050 214" class="line"/>
-  <path d="M1050 336 C1028 336 1018 356 996 376" class="dash"/>
-  <path d="M872 462 L872 510" class="line"/>
-
-  <text x="546" y="704" class="small">No broker auto-trading: Robinhood CSV imports synchronize completed trades only.</text>
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="520" viewBox="0 0 1200 520">
+  <rect width="1200" height="520" fill="#f4f1e8"/>
+  <style>
+    .title{font:700 26px sans-serif;fill:#17392f}.label{font:700 17px sans-serif;fill:#17392f}.small{font:400 13px sans-serif;fill:#5f695f}.box{fill:#fbfaf5;stroke:#9da99f;stroke-width:2}.core{fill:#17392f;stroke:#17392f;stroke-width:2}.coretext{font:700 18px sans-serif;fill:#fff}.coresmall{font:400 13px sans-serif;fill:#c5d5cd}.arrow{stroke:#9a6722;stroke-width:3;fill:none;marker-end:url(#arrow)}
+  </style>
+  <defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" fill="#9a6722"/></marker></defs>
+  <text x="60" y="54" class="title">估值雷达：系统架构</text>
+  <rect x="60" y="100" width="210" height="105" rx="8" class="box"/><text x="85" y="135" class="label">外部证据</text><text x="85" y="164" class="small">行情 · SEC财报 · 新闻</text><text x="85" y="185" class="small">Stooq → Yahoo备用</text>
+  <rect x="370" y="85" width="255" height="135" rx="8" class="core"/><text x="398" y="126" class="coretext">估值研究核心</text><text x="398" y="156" class="coresmall">超跌初筛 → 基本面检查</text><text x="398" y="181" class="coresmall">LLM选模型 → 确定性计算</text><text x="398" y="202" class="coresmall">市场风险门槛 → 推荐</text>
+  <rect x="735" y="100" width="210" height="105" rx="8" class="box"/><text x="760" y="135" class="label">持久化快照</text><text x="760" y="164" class="small">机会 · 估值 · 风险</text><text x="760" y="185" class="small">日报 · 校准 · 运行状态</text>
+  <rect x="990" y="100" width="150" height="105" rx="8" class="box"/><text x="1017" y="135" class="label">输出渠道</text><text x="1017" y="164" class="small">React WebUI</text><text x="1017" y="185" class="small">Slack · Email</text>
+  <path d="M270 152H365" class="arrow"/><path d="M625 152H730" class="arrow"/><path d="M945 152H985" class="arrow"/>
+  <rect x="230" y="315" width="220" height="100" rx="8" class="box"/><text x="257" y="350" class="label">统一启动与调度</text><text x="257" y="379" class="small">jobs.run_all</text><text x="257" y="400" class="small">行情 · 夜间研究 · 周末校准</text>
+  <rect x="520" y="315" width="220" height="100" rx="8" class="box"/><text x="547" y="350" class="label">语言模型边界</text><text x="547" y="379" class="small">远程LLM：分析与模型路由</text><text x="547" y="400" class="small">本地SLM：仅文字转述</text>
+  <rect x="810" y="315" width="220" height="100" rx="8" class="box"/><text x="837" y="350" class="label">审计与反馈</text><text x="837" y="379" class="small">Manifest · Change Feed</text><text x="837" y="400" class="small">3/6/12/24月短债与市场校准</text>
+  <path d="M450 365H515" class="arrow"/><path d="M740 365H805" class="arrow"/><path d="M630 310V225" class="arrow"/>
 </svg>

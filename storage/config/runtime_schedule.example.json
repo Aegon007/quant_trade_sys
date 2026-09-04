@@ -1,0 +1,25 @@
+{
+  "schema_version": 2,
+  "timezone": "America/New_York",
+  "market_monitor": {
+    "enabled": true,
+    "interval_seconds": 1800,
+    "market_hours_only": true
+  },
+  "nightly": {
+    "enabled": true,
+    "poll_seconds": 300,
+    "run_window_local": {
+      "start": "23:00",
+      "end": "01:00"
+    }
+  },
+  "weekend_research": {
+    "enabled": true,
+    "run_window_local": {
+      "day": "Saturday",
+      "start": "10:00",
+      "end": "18:00"
+    }
+  }
+}

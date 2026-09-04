@@ -61,6 +61,6 @@ def send_email_message(subject, body, email_config, smtp_factory=smtplib.SMTP):
 
 def build_test_notification_message(channel_name):
     return (
-        f"Quant Trade System {channel_name} 测试消息\n\n"
+        f"估值雷达 {channel_name} 测试消息\n\n"
         "如果你收到这条消息，说明通知连接已经配置成功。"
     )

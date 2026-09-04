@@ -1,322 +1,92 @@
 from __future__ import annotations
 
 import argparse
+import json
 from datetime import datetime
+from pathlib import Path
+from statistics import median
+from typing import Mapping, Optional
 
-from engine import BacktraderEngine
-from jobs.nightly_alerts import evaluate_current_market_risk
-from quant_core.analytics import candidate_pool as cpool
-from quant_core.analytics import core_etf_rotation as cer
-from quant_core.analytics import quant_analysis as qa
-from quant_core.analytics.strategy_compare import compare_strategies_for_symbol
-from quant_core.data import storage as du
-from quant_core.notifications import delivery_router as dr
-from quant_core.notifications import notification_channels as nch
-from quant_core.notifications import notification_config as ncfg
-from quant_core.portfolio import core_etf_engine as cee
-from quant_core.portfolio.control_loop import evaluate_allocation_regime
-from quant_core.research import strategy_validation as sval
-from quant_core.research import strategy_governance as sgov
-from quant_core.research import evidence_collector as evid
-from quant_core.research import weekend_research as wr
-from quant_core.research import correlation_research as corr_research
-from quant_core.research import weekend_universe as wuniverse
-from quant_core.jobs import job_registry
-from quant_core.snapshots import system_snapshot as ss
-from quant_core.ledger import transactions as tx
-from quant_core.analytics.signal_scoreboard import build_signal_scoreboard
-from quant_core.models.foundation import pipeline as foundation_pipeline
-from quant_core.models.multi_horizon import pipeline as mh_pipeline
-from quant_core.models.multi_horizon import governance as mh_governance
-from strategies import ui as su
-from strategies.registry import create_strategy
+from quant_core import paths as qpaths
+from quant_core.data.prices import get_history
+from quant_core.notifications import notification_config
+from quant_core.notifications.delivery_router import deliver_message
+from quant_core.research.calibration import calibrate_recommendations, load_recommendation_journal, save_calibration
 
 
-def _runtime_strategy(strategy, *, history_period: str):
-    runtime = dict(strategy or {})
-    runtime_params = dict(runtime.get("params", {}) or {})
-    runtime_params.setdefault("period", history_period)
-    runtime["params"] = runtime_params
-    return runtime
+def _read_json(path: str) -> dict:
+    try:
+        payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
 
 
-def run_weekend_research(
-    *,
-    now=None,
-    force=False,
-    notification_config_path=ncfg.NOTIFICATION_CONFIG_FILE,
-    snapshot_path=wr.DEFAULT_WEEKEND_RESEARCH_SNAPSHOT_FILE,
-    state_path=wr.DEFAULT_WEEKEND_RESEARCH_STATE_FILE,
-    reports_dir=wr.DEFAULT_WEEKEND_REPORTS_DIR,
-    slack_sender=None,
-    email_sender=None,
-    message_router=None,
-    multi_horizon_runner=None,
-    environ=None,
-):
-    now = now or datetime.now()
-    config = ncfg.load_notification_config(notification_config_path)
-    normalized_config = ncfg.apply_environment_overrides(config, environ=environ)
-    alert_settings = dict(normalized_config.get("alert_settings", {}) or {})
-    schedule = wr.normalize_weekend_research_schedule(alert_settings)
-    if not force and not wr.should_run_weekend_research(now=now, alert_settings=alert_settings, state_path=state_path):
-        return {"ran": False, "reason": "not_due", "schedule": schedule}
-
-    slack_sender = slack_sender or nch.send_slack_message
-    email_sender = email_sender or nch.send_email_message
-    message_router = message_router or dr.deliver_message
-    multi_horizon_runner = multi_horizon_runner or foundation_pipeline.run_foundation_job
-
-    history_period = schedule["history_period"]
-    def mark(stage: str, progress_pct: int, detail: str, **metadata):
-        job_registry.update_job_status(
-            "weekend-research",
-            state="running",
-            detail=detail,
-            metadata={
-                "stage": stage,
-                "progress_pct": max(0, min(int(progress_pct), 100)),
-                **metadata,
-            },
-        )
-
-    mark("load_inputs", 2, "loading portfolio, transaction, and benchmark inputs")
-    data = du.load_data()
-    transaction_rows = tx.normalize_transactions(tx.load_transactions())
-    benchmark_history = qa.get_historical_data("SPY", period=history_period)
-    live_scoreboard = build_signal_scoreboard(transaction_rows, benchmark_history=benchmark_history)
-    account_snapshot = ss.build_account_snapshot(data)
-    risk_gate = evaluate_current_market_risk(data, history_period=history_period) if data.get("holdings") else None
-    allocation_regime = evaluate_allocation_regime(
-        live_scoreboard,
-        risk_gate=risk_gate,
-        account_snapshot=account_snapshot,
-    )
-    mark("foundation_inference", 12, "running foundation model inference for current tracked universe")
-    multi_horizon_snapshot = multi_horizon_runner(
-        data=data,
-        train=False,
-        risk_regime=str(getattr(risk_gate, "regime", None) or "NORMAL"),
-        now=now,
-    )
-    multi_horizon_snapshot = dict(multi_horizon_snapshot or {})
-    if dict(multi_horizon_snapshot or {}).get("status") == "READY":
-        mh_governance.append_prediction_journal(multi_horizon_snapshot)
-    model_governance = mh_governance.refresh_model_governance(
-        multi_horizon_snapshot,
-        load_history_fn=qa.get_historical_data,
-        score_outcomes=True,
-        now=now,
-    )
-    multi_horizon_snapshot = mh_governance.apply_production_gate(
-        multi_horizon_snapshot,
-        model_governance,
-    )
-
-    core_universe = cer.load_core_etf_universe()
-    policy = cer.load_engine_policy()
-    mark("core_etf_rotation", 25, "building core ETF rotation and allocation snapshot")
-    core_rotation_snapshot = cer.build_core_etf_rotation_snapshot(
-        data=data,
-        history_period=history_period,
-        universe=core_universe,
-        policy=policy,
-        risk_gate=risk_gate,
-        allocation_regime=allocation_regime,
-        now=now,
-    )
-    core_snapshot = cee.build_core_etf_snapshot(
-        data=data,
-        account_snapshot=account_snapshot,
-        rotation_snapshot=core_rotation_snapshot,
-        risk_gate=risk_gate,
-        allocation_regime=allocation_regime,
-        previous_snapshot=cee.load_core_etf_snapshot(),
-        policy=policy,
-        now=now,
-    )
-
-    satellite_snapshot = mh_pipeline.build_satellite_snapshot_from_model(multi_horizon_snapshot)
-    cpool.save_satellite_candidate_pool_snapshot(satellite_snapshot)
-    weekend_universe_config = wuniverse.load_weekend_universe_config()
-    satellite_universe = cpool.load_satellite_universe()
-    research_universe = wuniverse.build_weekend_research_universe(
-        data=data,
-        core_rotation_snapshot=core_rotation_snapshot,
-        satellite_snapshot=satellite_snapshot,
-        config=weekend_universe_config,
-        satellite_universe=satellite_universe,
-    )
-    mark(
-        "correlation_research",
-        35,
-        f"starting weekend correlation/data-mining research for {research_universe['symbol_count']} symbols",
-        symbol_count=research_universe["symbol_count"],
-    )
-    correlation_snapshot = corr_research.build_correlation_research_snapshot(
-        symbols=research_universe["symbols"],
-        holdings=list(data.get("holdings", []) or []),
-        load_history_fn=qa.get_historical_data,
-        now=now,
-        period=history_period,
-        progress_callback=lambda **kwargs: job_registry.update_job_status(
-            "weekend-research",
-            state="running",
-            detail=str(kwargs.get("detail") or "running weekend correlation research"),
-            metadata={
-                "stage": str(kwargs.get("stage") or "correlation_research"),
-                "progress_pct": max(35, min(int(kwargs.get("progress_pct", 50) or 50), 88)),
-                **{key: value for key, value in kwargs.items() if key not in {"detail", "stage", "progress_pct"}},
-            },
-        ),
-    )
-    correlation_snapshot["research_universe"] = research_universe
-    corr_research.save_correlation_research_snapshot(correlation_snapshot)
-    # Disabled rule strategies remain useful as offline controls, never as production signals.
-    strategies = su.load_strategies(include_disabled=True)
-    runtime_strategy = _runtime_strategy(strategies[0], history_period="2y") if strategies else None
-
-    top_symbols = [
-        str(row.get("symbol") or "").strip().upper()
-        for row in list((satellite_snapshot or {}).get("top_recommendations", []) or [])[:3]
-        if str(row.get("symbol") or "").strip()
-    ]
-    core_focus_symbols = [
-        str(symbol or "").strip().upper()
-        for symbol in list((core_snapshot or {}).get("summary", {}).get("focus_symbols", []) or [])[:2]
-        if str(symbol or "").strip()
-    ]
-    validation_targets = []
-    for symbol in top_symbols:
-        if symbol:
-            validation_targets.append((symbol, "satellite"))
-    for symbol in core_focus_symbols:
-        if symbol and symbol not in {item[0] for item in validation_targets}:
-            validation_targets.append((symbol, "core"))
-    validation_targets = validation_targets[:5]
-    strategy_rows = []
-    if validation_targets:
-        mark("strategy_validation", 90, f"backtesting strategy controls for {len(validation_targets)} focus symbols")
-        for symbol, focus_role in validation_targets:
-            comparisons = compare_strategies_for_symbol(
-                symbol=symbol,
-                strategies=strategies,
-                load_historical_data_fn=qa.get_historical_data,
-                create_strategy_fn=create_strategy,
-                engine_factory_fn=BacktraderEngine,
-                history_period="2y",
-                runtime_param_fn=lambda strategy: _runtime_strategy(strategy, history_period="2y"),
-            )
-            if comparisons:
-                best = dict(comparisons[0] or {})
-                strategy_rows.append(
-                    {
-                        "symbol": symbol,
-                        "focus_role": focus_role,
-                        "best_strategy_id": best.get("strategy_id"),
-                        "best_strategy_name": best.get("strategy_name"),
-                        "best_strategy_score": best.get("composite_score"),
-                        "comparison_rows": comparisons,
-                        "top_rows": comparisons[:3],
-                    }
-                )
-
-    strategy_validation_snapshot = sval.build_strategy_validation_snapshot(
-        now=now,
-        history_period=history_period,
-        default_strategy=runtime_strategy or {},
-        strategy_research_rows=strategy_rows,
-        source="weekend_research",
-    )
-    sval.save_strategy_validation_snapshot(strategy_validation_snapshot)
-    sval.append_strategy_experiment_journal(strategy_validation_snapshot)
-    strategy_governance_snapshot = sgov.build_strategy_governance_snapshot(
-        strategies=strategies,
-        validation_snapshot=strategy_validation_snapshot,
-    )
-    sgov.save_strategy_registry_state(strategy_governance_snapshot)
-    evidence_layer = evid.build_evidence_layer(
-        core_snapshot=core_snapshot,
-        satellite_snapshot=satellite_snapshot,
-        strategy_validation_snapshot=strategy_validation_snapshot,
-        now=now,
-    )
-
-    snapshot = wr.build_weekend_research_snapshot(
-        now=now,
-        history_period=history_period,
-        risk_gate=risk_gate,
-        allocation_regime=allocation_regime,
-        core_rotation_snapshot=core_rotation_snapshot,
-        core_snapshot=core_snapshot,
-        satellite_snapshot=satellite_snapshot,
-        strategy_research_rows=strategy_rows,
-        strategy_validation_snapshot=strategy_validation_snapshot,
-        strategy_governance_snapshot=strategy_governance_snapshot,
-        evidence_layer=evidence_layer,
-    )
-    snapshot["multi_horizon_snapshot"] = multi_horizon_snapshot
-    snapshot["correlation_research_snapshot"] = correlation_snapshot
-    snapshot["research_universe"] = research_universe
-    snapshot["summary"]["correlation_research_status"] = correlation_snapshot.get("status")
-    snapshot["summary"]["high_correlation_pair_count"] = dict(correlation_snapshot.get("summary", {}) or {}).get("high_correlation_pair_count")
-    snapshot["summary"]["portfolio_redundancy_count"] = dict(correlation_snapshot.get("summary", {}) or {}).get("portfolio_redundancy_count")
-    snapshot["summary"]["multi_horizon_status"] = dict(multi_horizon_snapshot or {}).get("status")
-    snapshot["summary"]["multi_horizon_validation_status"] = dict(dict(multi_horizon_snapshot or {}).get("training", {}) or {}).get("validation_status")
-    wr.save_weekend_research_snapshot(snapshot, path=snapshot_path)
-    evid.append_weekend_research_journal(snapshot)
-    report_text = wr.build_weekend_research_report(snapshot)
-    report_files = wr.save_weekend_research_report_files(snapshot, report_text=report_text, reports_dir=reports_dir)
-    wr.mark_weekend_research_done(now=now, alert_settings=alert_settings, snapshot=snapshot, state_path=state_path)
-    job_registry.update_job_status(
-        "weekend-research",
-        state="completed",
-        detail="weekend research completed",
-        metadata={
-            "stage": "completed",
-            "progress_pct": 100,
-            "symbol_count": research_universe.get("symbol_count"),
-            "usable_symbol_count": dict(correlation_snapshot.get("summary", {}) or {}).get("symbol_count"),
-            "failed_symbol_count": dict(correlation_snapshot.get("summary", {}) or {}).get("missing_symbol_count"),
-            "result_summary": {
-                "universe": research_universe.get("symbol_count"),
-                "high_pairs": dict(correlation_snapshot.get("summary", {}) or {}).get("high_correlation_pair_count"),
-                "clusters": dict(correlation_snapshot.get("summary", {}) or {}).get("cluster_count"),
-                "independent_strength": dict(correlation_snapshot.get("summary", {}) or {}).get("independent_strength_count"),
-            },
-        },
-        now=now,
-    )
-
-    delivery_results = []
-    if bool(schedule["send_summary"]):
-        delivery_results = message_router(
-            "weekend_research_summary",
-            subject=f"Weekend Research Report {now.strftime('%Y-%m-%d')}",
-            body=report_text,
-            config=normalized_config,
-            environ=environ,
-            slack_sender=slack_sender,
-            email_sender=email_sender,
-        )
-
+def _peer_distributions(valuations: Mapping) -> dict:
+    groups = {}
+    for row in list(dict(valuations or {}).get("valuations", []) or []):
+        archetype = str(row.get("archetype") or "unknown")
+        value = row.get("margin_of_safety")
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            continue
+        groups.setdefault(archetype, []).append(value)
     return {
-        "ran": True,
-        "snapshot": snapshot,
-        "report_files": report_files,
-        "delivery_results": delivery_results,
+        key: {"count": len(values), "median_margin_of_safety": round(median(values), 4), "min": round(min(values), 4), "max": round(max(values), 4)}
+        for key, values in groups.items()
     }
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Run the weekend research workflow.")
-    parser.add_argument("--force", action="store_true", help="Run even if the weekend schedule is not due.")
-    args = parser.parse_args()
-    result = run_weekend_research(force=bool(args.force))
-    print(f"Weekend research ran: {bool(result.get('ran'))}")
-    if result.get("reason"):
-        print(f"Reason: {result['reason']}")
+def run_weekend_research(*, force=False, progress=None, notify=True, now: Optional[datetime] = None):
+    now = now or datetime.now()
+    progress = progress or (lambda *_args, **_kwargs: None)
+    progress("load_history", 5, "读取推荐历史")
+    journal = load_recommendation_journal()
+    progress("calibrate", 20, "校准3、6、12和24个月推荐表现")
+    calibration = calibrate_recommendations(journal, history_loader=get_history, now=now)
+    progress("peer_statistics", 78, "更新估值类型横截面分布")
+    valuations = _read_json(qpaths.VALUATION_SNAPSHOT_FILE)
+    calibration["peer_distributions"] = _peer_distributions(valuations)
+    calibration["methodology"] = {
+        "market_benchmark": "SPY",
+        "risk_free_benchmark": "SGOV",
+        "horizons_days": [63, 126, 252, 504],
+        "note": "只使用系统当时已记录的推荐，同时衡量是否超过无风险收益和是否取得市场超额。",
+    }
+    save_calibration(calibration)
+    lines = [
+        "# 周末估值策略校准",
+        "",
+        f"生成时间：{now.isoformat()}",
+        f"成熟观察数：{calibration['summary']['matured_observation_count']}",
+        "",
+    ]
+    for horizon, row in calibration["horizons"].items():
+        lines.append(
+            f"- {horizon}交易日：样本{row['count']}，跑赢短债比例{row['risk_free_win_rate']}，"
+            f"跑赢SPY比例{row['market_win_rate']}，对短债中位超额{row['median_excess_over_risk_free']}，"
+            f"对SPY中位超额{row['median_excess_over_market']}"
+        )
+    report = "\n".join(lines) + "\n"
+    report_path = qpaths.PROJECT_ROOT / "reports" / "weekend_valuation_latest.md"
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text(report, encoding="utf-8")
+    delivery = []
+    if notify:
+        delivery = deliver_message("weekend_calibration", subject="周末估值策略校准", body=report, config=notification_config.load_notification_config())
+    progress("completed", 100, "周末校准完成")
+    return {"ran": True, "status": calibration["status"], "summary": calibration["summary"], "delivery": delivery}
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--force", action="store_true")
+    parser.add_argument("--no-notify", action="store_true")
+    args = parser.parse_args(argv)
+    print(json.dumps(run_weekend_research(force=args.force, notify=not args.no_notify), ensure_ascii=False, indent=2, default=str))
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

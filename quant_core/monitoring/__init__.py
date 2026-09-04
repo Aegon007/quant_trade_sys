@@ -1,2 +1,0 @@
-"""Intraday monitoring helpers."""
-

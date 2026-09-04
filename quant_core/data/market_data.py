@@ -16,7 +16,7 @@ _DEFAULT_STATUS = {
     "history": {
         "primary_requests": 0,
         "fallback_requests": 0,
-        "primary_source": "yfinance",
+        "primary_source": "stooq",
         "last_source": None,
         "last_symbol": None,
         "last_error": None,

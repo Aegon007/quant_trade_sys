@@ -1,831 +1,133 @@
-# 量化持仓追踪与策略回测系统
+# 估值雷达
 
-一个本地量化投资组合辅助决策系统，用于管理持仓、维护观察列表、刷新行情、生成量化信号、执行策略回测，并在组合层面提示行业集中度和相关性风险。V3 已切换为 `FastAPI + React` 前后端分离架构：后端按计划生成快照，前端快速读取结果，不再使用 Streamlit rerun 模式。
+这是一个面向个人投资研究的本地系统。它不再管理真实持仓，也不预测短期价格路径，而是寻找“价格因事件明显下跌、基本面仍可验证、确定性估值提供足够安全边际”的股票或 ETF。
 
-> 说明：本项目用于研究、学习和辅助决策，不构成投资建议。真实交易前请结合账户风险、税务、流动性和券商规则独立判断。
-
-## 功能概览
-
-- 持仓管理：支持添加、编辑、删除、加仓买入、部分卖出，以及“转到关注/转到持仓”等仓位迁移操作；最小交易单位为 `0.001` share，适合 Robinhood 等支持 fractional shares 的账户。
-- 观察列表：维护关注股票、备注，并显示模型估算的上涨预期价区间。
-- 实时行情：通过 Yahoo Finance 获取持仓和观察列表价格，并使用本地缓存减少重复请求；应用运行时会自动刷新过期价格。
-- 多周期决策：对持仓、核心 ETF 和卫星候选统一输出 `63/126/252` 交易日的上涨概率、绝对收益/价格区间、跑赢短债与 SPY 的概率、短期时机和最终仓位动作。
-- 核心 ETF 定投纪律：VOO/VTI/QQQ/QQQM 这类长期核心 ETF 不再完全依赖模型喊 `ATTRACTIVE`。当风险未封锁、长期核心 ETF 明显低于目标底仓时，系统可输出 `DCA_ACCUMULATE`，用于纪律化补齐底仓或回调定投。
-- 卫星仓行业动量 overlay：半导体链候选会结合 SMH/SOXX 与 SPY 的相对强度；当行业 ETF 和个股同时确认强势时，可把中性 watch 信号升级为 `PROBE`，避免 foundation model 对急速板块扩散反应过慢。
-- 分析师共识增强：夜间抓取分析师买卖共识；当看多或看空比例超过 `90%` 且样本充足时，增强关注列表提示为“强烈买入”或“强烈卖出”。
-- ETF 代理意见：当 ETF 本身没有分析师评级时，系统会自动读取前十大持仓，并按权重聚合成分股分析师共识，生成 ETF 的代理买卖意见。
-- 仓位建议：结合当前持仓、目标仓位和回测结果，给出加仓、减仓、退出或观望建议。
-- 组合级建议：分析行业集中度和高相关股票组合，避免只看单只股票信号而忽略整体风险。
-- Foundation 量化引擎：默认路线切换为真实 `foundation-model-first`。当前默认模型为 `amazon/chronos-2`；未安装真实后端或权重未下载时，系统会显示 `MODEL_UNAVAILABLE` 并停止生成模型交易建议，不再使用 proxy 冒充真实模型。
-- 风险因子增强：模型输出会叠加市场情绪、市场宽度、VIX 风险、新闻事件、财报现金流/capex/债务压力、AI capex / systemic risk 早期预警，再进入仓位纪律层。
-- 模型治理：旧自训练 benchmark 已从前台、API 和模型注册表移除；当前只注册 `foundation_quant_engine`，旧 `multi_horizon` 命名仅作为共享信号快照兼容层保留。
-- 新闻/事件系统：支持本地 `storage/state/market_events.json` 事件输入，并可通过事件源适配层自动抓取外部新闻事件。
-- 事件风控急刹车：可基于 FOMC/宏观事件和 VIX 高波动阈值触发临时风险收缩（限制仓位或暂停新增仓位）。
-- FinBERT 情绪分析：事件/新闻可选用 FinBERT 进行情绪打分；未安装时自动回退为关键词情绪规则。
-- Monte Carlo 预期收益分布：可基于历史波动生成收益分布、VaR/CVaR 和区间预期，辅助决定仓位与止盈止损。
-- 通知与夜间任务：支持 Slack / Email 强信号告警，并提供独立 `jobs.nightly_alerts` 入口用于定时调度。
-- Robinhood 导入闭环：在 `Operations` 上传 Account Activity CSV 后，系统会去重导入交易记录、reconcile 当前持仓/现金，并在 `Portfolio` 页面展示持仓、关注、最近交易、导入日摘要、post-close review 和 plan-quality。
-- 本地数据文件：持仓、观察列表、交易记录、价格缓存都保存在本地 JSON 文件中，无需数据库。
+> 本项目用于研究和辅助判断，不构成投资建议。系统输出是待研究候选，不是自动交易指令。
 
 ## 系统架构
 
-![系统架构图](docs/assets/system_architecture.svg)
+![估值雷达系统架构](docs/assets/system_architecture.svg)
 
-架构边界：
+核心边界：
 
-- **前端不运行重型量化计算**：React 通过 FastAPI 读取已经生成的稳定快照，页面切换不会触发训练或回测。
-- **交易动作由量化与风控链决定**：模型输出先经过组合引擎、纪律层和 Risk Gate，再形成次日计划；LLM 只负责总结和解释，不能创造新动作或绕过风控。
-- **系统不连接券商下单**：Robinhood 只通过 Account Activity CSV 同步已经发生的交易，所有真实交易仍由用户手工执行。
-- **本地文件是唯一事实来源**：配置、运行状态、日志、报告和模型资产均保存在项目目录中，不依赖数据库服务。
-- **统一入口负责可靠启动**：`jobs.run_all` 先等待 FastAPI 健康检查通过，再启动 React，同时管理 Slack Bot、日间刷新、夜间任务和周末研究。
+- LLM 负责选择适用的估值模型、从证据提取情景假设、研判事件并解释结果。
+- 确定性 Python 引擎负责估值、概率区间、阈值校验和持久化，不允许 LLM 直接写入价格结论。
+- 研究结论与个人持仓完全解耦；系统不连接券商、不读取 Robinhood、不记录现金或交易。
+- React 只读取 FastAPI 快照，切换页面不会触发网络抓取或重计算。
 
-## 快速开始
+## 研究流程
 
-### 1. 创建环境
+1. 从 S&P 500、Nasdaq 100、固定关注列表和 ETF 列表构建研究范围，默认不超过 700 个标的；指数成分会自动附带行业及行业 ETF 基准。
+2. 并发读取本地 Parquet 历史缓存；过期时先请求 Stooq，失败后回退到 yfinance。
+3. 计算相对 SPY、行业 ETF、52 周高点和近期波动的异常下跌分数。
+4. 只对前 30 个错位候选及指定 ETF 做深度分析，避免为全市场逐一调用 LLM。
+5. 股票财务数据优先使用 SEC Company Facts；无 SEC 覆盖时使用明确标记的 yfinance 备用数据。
+6. 远程 LLM 从白名单中选择公司类型和估值模型，并提取悲观、基准、乐观假设。
+7. 确定性估值引擎计算主模型与兼容辅助模型的交叉估值，再生成合理价值 P10/P50/P90、安全边际、模型离散度和可信度。
+8. 基本面损伤、困境概率、事件暂时性、价格企稳和市场风险共同决定是否进入研究名单。
+9. 夜间生成 JSON/Markdown 报告并推送 Slack/Email；周末同时校准历史推荐是否跑赢短期国债代理 SGOV，以及是否取得相对 SPY 的市场超额。
 
-前端使用 Vite 6，需要 `Node.js >= 18`。如果新电脑上 `npm run dev` 报 `Unexpected token '.'` 或 Vite 启动后马上退出，通常就是 Node 版本太旧。先确认：
+支持的主要估值路线包括多阶段 FCFF、成长型收入 DCF、剩余收益、标准化盈利、收入倍数、REIT FFO/NAV、分部估值、困境加权，以及 ETF 风险溢价/收益率久期/现货持有模型。
 
-```bash
-node --version
-npm --version
-```
+## 安装与启动
 
-如果 Node 低于 18，请先升级 Node，再安装前端依赖。
-
-```bash
-python -m venv ~/venv
-source ~/venv/bin/activate
-pip install -r requirements.txt
-cd frontend && npm ci && cd ..
-```
-
-#### 安装真实 Foundation Model 后端
-
-系统默认要求真实时间序列 foundation model。当前生产默认后端是 Chronos-2。
-
-模型选择位于 `Settings -> Foundation model selection`。页面会显示当前配置模型、后端顺序、设备、context/batch、revision 和训练数据保留天数，并提供 `amazon/chronos-2` 与 `autogluon/chronos-2-small` 预设按钮。点击 `Save foundation model` 后，系统会先保存配置，再启动 `settings-foundation-model-warmup` 后台任务：先用 `local_files_only=True` 检查 Hugging Face 本地缓存，再按需下载缺失权重；随后真实加载 Chronos pipeline，并在页面显示 queued/running/completed/failed、stage、progress、model、cache status、cache path 和 device。默认缓存通常位于 `~/.cache/huggingface/hub`，实际路径以 Settings 页面显示为准。当前默认是 `amazon/chronos-2`；Jetson Orin Nano 8GB 如果内存压力较大，先降低 batch size 或切换到 `autogluon/chronos-2-small`。
-
-普通 macOS / x86 Linux：
-
-```bash
-source ~/venv/bin/activate
-pip install -r requirements.txt
-python -c "from chronos import BaseChronosPipeline; BaseChronosPipeline.from_pretrained('amazon/chronos-2', device_map='cpu'); print('chronos ready')"
-```
-
-Apple Silicon Mac 会由系统自动尝试 `mps`；如果 MPS 不可用会回到 CPU。Jetson 必须使用下面的 Jetson 专用安装流程，不能直接用普通依赖解析安装 Chronos。第一次运行会从 Hugging Face 下载模型权重，之后复用本机缓存。
-
-如果真实后端不可用：
-
-- `Research & Models` 会显示 `MODEL_UNAVAILABLE`。
-- 夜间模型快照会写入安装提示和 backend attempts。
-- 系统不会用 proxy 生成交易建议。
-- 如需临时开发调试，必须在 `storage/config/foundation_model.json` 中显式设置 `allow_development_proxy=true` 且开启 `backends.proxy.enabled=true`。
-
-#### Jetson PyTorch
-
-Jetson 使用 NVIDIA JetPack 自带 CUDA，不能依赖 PyPI 的通用 PyTorch wheel。`requirements.txt`
-会在 `aarch64` 上跳过 PyTorch 和 Chronos，避免 Chronos 的依赖解析覆盖 NVIDIA 专用 PyTorch。
-请先按照
-[NVIDIA Installing PyTorch for Jetson Platform](https://docs.nvidia.com/deeplearning/frameworks/install-pytorch-jetson-platform/index.html)
-安装与当前 JetPack 版本匹配的 PyTorch，再安装本项目依赖。
-
-Jetson 推荐安装顺序：
+需要 Python 3.10+ 和 Node.js 18+。项目统一使用 `~/venv`，不使用项目内 `.venv`。
 
 ```bash
 python3 -m venv ~/venv
 source ~/venv/bin/activate
-
-# Step 1: 按 NVIDIA 官方文档安装与你的 JetPack 匹配的 torch wheel。
-# 安装完成后先确认 CUDA 可用，再继续。
-python -c "import torch; print(torch.__version__); print(torch.version.cuda); print(torch.cuda.is_available())"
-
-# Step 2: 安装应用依赖，但不碰 torch / chronos。
-pip install -r requirements-jetson.txt
-
-# Step 3: 安装 Chronos 包本体，但禁止 pip 解析依赖，避免覆盖 NVIDIA torch。
-pip install --no-deps chronos-forecasting==2.2.2
-
-# Step 4: 预热下载模型权重。
-python -c "from chronos import BaseChronosPipeline; BaseChronosPipeline.from_pretrained('amazon/chronos-2', device_map='cuda'); print('chronos ready')"
-```
-
-在启动系统前可以这样确认后端环境确实看到了 GPU：
-
-```bash
-source ~/venv/bin/activate
-python -c "import sys, torch; print(sys.executable); print(torch.__version__); print(torch.version.cuda); print(torch.cuda.is_available()); print(torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CUDA unavailable')"
-```
-
-如果 `torch.version.cuda` 是 `None`，当前安装的是 CPU-only PyTorch；如果它有版本号但
-`torch.cuda.is_available()` 仍为 `False`，则需要检查 JetPack/CUDA 兼容性或容器的
-NVIDIA runtime。不要在 Jetson 上运行 `pip install -U torch`、`pip install torch==...`
-或不带 `--no-deps` 的 `pip install chronos-forecasting`，这些都可能覆盖 NVIDIA wheel。
-
-### 2. 启动应用
-
-```bash
+pip install -r requirements.txt
+cd frontend && npm ci && cd ..
 ~/venv/bin/python -m jobs.run_all
 ```
 
-默认这个命令会尽量一次性启动：
-
-- FastAPI snapshot API: `http://127.0.0.1:8710`
-- React frontend: `http://127.0.0.1:5173`
-
-### 局域网访问
-
-在 Jetson 或服务器上使用：
+本机访问 `http://127.0.0.1:5173`。可信局域网访问使用：
 
 ```bash
-source ~/venv/bin/activate
-cd ~/work_dir/quant_trade_sys
-python -m jobs.run_all --lan
+~/venv/bin/python -m jobs.run_all --host 0.0.0.0
 ```
 
-然后在服务器上查询局域网 IP：
+终端会输出局域网地址。系统没有公网认证，不应直接暴露到互联网。
 
-```bash
-hostname -I
-```
+统一入口依次启动 FastAPI、React、可选 Slack Bot，并在进程内管理交易时段行情刷新、工作日夜间研究和周末校准。API 未健康前不会启动前端，因此不会再产生启动阶段的代理连接拒绝提示。
 
-例如 IP 为 `192.168.1.50`，同一局域网内的电脑访问：
+## 首次使用
+
+1. 打开“系统管理”。
+2. 在“研究范围与门槛”中填写 SEC User-Agent，建议使用包含真实联系邮箱的应用标识。
+3. 在页面配置远程 LLM。支持 OpenAI、OpenRouter 及任意 OpenAI-compatible `/v1/chat/completions` 接口，并点击“测试远程LLM”。
+4. 如使用 LM Studio，配置本地 SLM 地址与模型名。本地 SLM 仅润色结构化文字；研究、事件分析和估值路由仍使用远程 LLM。
+5. 按需配置 Slack、Email、研究范围和阈值，然后点击“保存全部设置”。
+6. 点击“运行完整估值研究”，等待任务状态显示完成。
+
+密钥写入 `storage/config/notification_secrets.local.json`，文件权限尽量设为 `0600`，并由 `.gitignore` 排除。公开配置中只保留空密钥字段。
+
+## Slack
+
+推送只需要 Incoming Webhook。双向 `/quant` 命令还需要 Socket Mode 的 Bot Token 和 App Token；可直接在“系统管理”保存，随后重启 `jobs.run_all`。
+
+可用命令：
 
 ```text
-http://192.168.1.50:5173
+/quant 帮助
+/quant 概览
+/quant 机会
+/quant 分析 MSFT
+/quant 风险
+/quant 关注列表
+/quant 关注 NVDA
+/quant 取消关注 NVDA
+/quant 数据状态
+/quant 策略校准
+/quant 刷新行情
+/quant 运行完整研究
 ```
 
-LAN 模式只暴露前端端口 `5173`，前端会在服务器内部代理 `/api` 到本机 FastAPI。
-系统目前没有用户认证，因此只应在可信家庭/私人局域网中启用，不要把 `5173`
-端口转发到公网。
-- Slack bot
-- nightly scheduler
-- market refresh worker
+系统不再接受买入、卖出、持仓或 CSV 上传命令。
 
-新架构下，前端只读取后端快照，不在页面切换时触发重型量化计算。需要立即补齐数据或重跑流程时，请在 React 前端的 `Operations` 页面触发 `Force Fresh Market Data`、`Run Full Nightly Pipeline` 或 `Run Weekend Research`。
-
-### 3. 运行测试
-
-```bash
-PYTHONPYCACHEPREFIX=/tmp/pycache ~/venv/bin/python -m unittest discover -s tests -v
-```
-
-当前测试覆盖 fractional shares、数据文件同步、策略注册、组合建议、仓位建议、回测引擎适配和 RSI 参数修复等关键路径。
-
-## 当前默认工作流
-
-当前版本更偏向“少而硬”的交易辅助，而不是堆很多花哨模型。默认工作流如下：
-
-1. 白天后台刷新行情并运行大盘与紧急事件监控；页面只读取快照，不在切换标签时训练模型。
-2. 夜间使用 Foundation Quant Engine 生成持仓、核心 ETF、卫星 Top 3 和次日计划；没有强信号时明确输出不交易。
-3. 默认 horizon 为 `63/126/252` 交易日，短债 hurdle 使用可配置的 `BIL`，并同时比较 `SPY/QQQ`。
-4. 周末研究继续做长窗口验证、候选池更新和策略治理，不再训练旧 benchmark。
-5. `Research & Models` 页面展示当前 foundation backend、统一信号快照、市场情绪和 AI capex/systemic risk，不再提供旧模型训练或 promote 操作。
-6. 新 foundation backend 只有在验证和人工确认后才应获得更高建议权限；proxy backend 会明确标注为临时可用层。
-7. 夜间报告、盘前计划、风险和强信号仍可通过 Slack 与 Email 发送。
-
-## 周末研究模式
-
-系统现在支持一条独立的 `Weekend Research` 链路，用来在周末跑更长时间的研究任务，帮助形成下周的市场偏向判断，而不是挤进盘中或首屏渲染里。
-
-默认行为：
-
-- 默认在 `Settings -> 通知 / 模型 -> 系统节奏 / 自动分析` 中启用。
-- 默认调度为 `Saturday 10:00` 本地时间。
-- 神经模型默认使用 `10y` 历史；其他周末风险研究仍可使用独立配置窗口。
-- 默认会生成：
-  - 核心 ETF 轮动研究
-  - 更大容量的卫星候选池扫描
-  - 周末相关性 / 数据挖掘研究：高相关资产对、持仓冗余、低相关强势候选、相关性簇
-  - 多周期神经模型重训检查、预训练和 walk-forward 验证
-  - `next_week_bias`（如下周偏防守 / 平衡 / 风险偏好）
-
-周末研究宇宙配置在 `storage/config/weekend_research_universe.json`。系统每次运行周末研究时会自动合并当前持仓、关注列表、核心 ETF 轮动池、卫星候选池、卫星 universe 和周末专用 universe；如果还没有运行过新版周末研究，`周末研究` 页面会先显示“计划扫描池”。如果要让周末任务扫描几千甚至上万只股票、ETF、黄金 ETF、商品 ETF、债券 ETF 或反向/杠杆 ETF，可以扩展该文件的 `manual_include`，并调整 `max_symbols`。这些研究结果只作为风险和机会线索，不会直接生成买卖指令。
-
-结果位置：
-
-- 运行时快照：
-  - `storage/state/weekend_research_snapshot.json`
-  - `storage/state/weekend_correlation_research.json`
-- 最新报告：
-  - `reports/weekend_research_latest.md`
-  - `reports/weekend_research_latest.json`
-- 页面入口：
-  - `周末研究` 页面：查看研究进度、阶段、算法、研究宇宙和相关性结果
-  - `运行操作` 页面：手动启动 `运行周末研究`
-  - `Settings` 页面：配置周末研究调度和通知发送策略
-
-如果你想手动强制跑一次：
-
-```bash
-~/venv/bin/python -m jobs.weekend_research --force
-```
-
-如果你平时就是用统一入口：
-
-```bash
-~/venv/bin/python -m jobs.run_all
-```
-
-那么 `run_all` 会在周末按配置自动检查并执行周末研究任务。
-
-## 开机自动运行
-
-推荐仍然用统一入口：
-
-```bash
-~/venv/bin/python -m jobs.run_all
-```
-
-项目提供了两个自启模板：
-
-- macOS: `deploy/launchd/com.quant-trade-system.plist.example`
-- Linux / Jetson: `deploy/systemd/quant-trade-system.service.example`
-
-### macOS: launchd
-
-1. 复制模板：
-
-```bash
-mkdir -p ~/Library/LaunchAgents
-cp deploy/launchd/com.quant-trade-system.plist.example ~/Library/LaunchAgents/com.quant-trade-system.plist
-```
-
-2. 编辑 `~/Library/LaunchAgents/com.quant-trade-system.plist`，把 `YOUR_USER` 和项目路径改成你自己的路径。
-
-3. 确保日志目录存在：
-
-```bash
-mkdir -p storage/logs
-```
-
-4. 加载并启动：
-
-```bash
-launchctl unload ~/Library/LaunchAgents/com.quant-trade-system.plist 2>/dev/null || true
-launchctl load ~/Library/LaunchAgents/com.quant-trade-system.plist
-launchctl start com.quant-trade-system
-```
-
-5. 查看日志：
-
-```bash
-tail -f storage/logs/launchd.out.log storage/logs/launchd.err.log
-```
-
-### Linux / Jetson: systemd user service
-
-1. 复制模板：
-
-```bash
-mkdir -p ~/.config/systemd/user
-cp deploy/systemd/quant-trade-system.service.example ~/.config/systemd/user/quant-trade-system.service
-```
-
-2. 编辑 `~/.config/systemd/user/quant-trade-system.service`，把 `YOUR_USER` 和项目路径改成你自己的路径。
-
-3. 启用并启动：
-
-```bash
-systemctl --user daemon-reload
-systemctl --user enable --now quant-trade-system.service
-```
-
-4. 如果希望用户未登录时也能启动：
-
-```bash
-sudo loginctl enable-linger "$USER"
-```
-
-5. 查看状态和日志：
-
-```bash
-systemctl --user status quant-trade-system.service
-journalctl --user -u quant-trade-system.service -f
-```
-
-## 手工维护持仓与观察列表
-
-除了通过 UI 添加和编辑，也可以直接维护 `storage/state/portfolio_input.json`。系统会在启动或页面重跑时检测这个文件：当它比运行时文件 `storage/state/portfolio_data.json` 更新时，会自动导入。侧边栏也提供“从文件重新加载持仓/关注”按钮，可以强制同步。
-
-`storage/state/portfolio_input.json` 是个人数据文件，已经加入 `.gitignore`。仓库中提供了 [storage/config/portfolio_input.example.json](storage/config/portfolio_input.example.json) 作为格式参考。
-
-```json
-{
-  "holdings": [
-    {
-      "symbol": "AAPL",
-      "shares": 0.125,
-      "cost": 180.5,
-      "sector": "Technology"
-    },
-    {
-      "symbol": "IAU",
-      "shares": 1.0,
-      "cost": 90.4,
-      "sector": "Gold"
-    }
-  ],
-  "watchlist": [
-    {
-      "symbol": "MSFT",
-      "notes": "Wait for pullback"
-    }
-  ]
-}
-```
-
-同步规则：
-
-- `symbol` 会自动转成大写。
-- `shares` 必须大于等于 `0.001`。
-- `cost` 是持仓成本价，`sector` 用于组合行业集中度分析。
-- `current_price` 和 `last_price` 可以省略；系统会按股票代码尽量保留已有运行时价格。
-- 如果文件中只写 `holdings` 或只写 `watchlist`，未写的部分会保留当前运行时数据。
-- 如果需要清空某一部分，请显式写成空数组，例如 `"watchlist": []`。
-
-## 数据文件说明
-
-- `storage/state/portfolio_input.json`：手工维护入口，适合批量修改持仓和观察列表，不提交到 Git。
-- `storage/state/portfolio_data.json`：应用运行时数据，保存当前持仓、观察列表、最新价格和更新时间。
-- `storage/state/price_cache.json`：行情缓存文件，减少短时间内重复请求。
-- `storage/state/analyst_consensus_cache.json`：夜间生成的分析师共识缓存文件，用于增强关注列表买入提示，也会保存 ETF 的持仓加权代理意见。
-- `storage/state/alert_state.json`：告警去重状态文件，记录已发送过的强信号和风险告警。
-- `storage/config/notification_config.json`：本地通知、LLM 和发送策略的非敏感配置，不提交到 Git。
-- `storage/config/notification_secrets.local.json`：只保存 Slack webhook、SMTP 密码及 LLM API key；不提交到 Git，并尽量使用仅当前用户可读写的文件权限。
-- `storage/state/market_events.json`：手工维护事件输入文件（可选）。
-- `storage/state/event_source_status.json`：最近一次财经新闻抓取的源级成功/失败状态。
-- `storage/state/news_intelligence.json`：夜间生成的组合相关新闻、分析师共识与 LLM 解读快照。
-- `storage/state/financials_intelligence.json`：夜间生成的财报现金流、capex、债务和营收增长压力快照。
-- `config/event_sources.json`：事件源配置，定义本地 mock 与自动抓取源（如 yfinance 新闻）。
-- `storage/state/transactions.json`：买入/卖出交易记录与组合动作事件记录（如转到关注、转到持仓等）。
-- `storage/state/foundation_model_snapshot.json`：Foundation Quant Engine 原生快照。
-- `storage/state/market_sentiment_snapshot.json`：市场情绪、宽度、VIX 和事件语气快照。
-- `storage/state/systemic_risk_snapshot.json`：AI capex / systemic risk 早期预警快照。
-- `storage/state/multi_horizon_snapshot.json`：前端、夜间计划和通知共同读取的统一多周期模型快照。
-- `storage/state/multi_horizon_validation.json`：walk-forward 绝对收益误差、上涨/跑赢短债概率校准、Top 3 对短债及 SPY 超额收益、分位数覆盖和 MoE 路由验证结果。
-- `storage/journals/multi_horizon_predictions.jsonl`：紧凑预测日志，用于未来 63/126/252 日实际结果归因。
-- `storage/config/foundation_model.json`：foundation backend 优先级、horizon、benchmark、risk-free hurdle 和决策融合阈值配置。
-- `storage/config/financials_config.json`：财报数据源、覆盖数量和压力阈值配置。
-- 旧 `storage/config/multi_horizon_model.json` 和随代码发布的 legacy bootstrap checkpoint 已删除；新机器应通过 foundation backend 生成最新快照。
-
-## 策略与回测
-
-旧的均线、布林带、MACD 和 RSI 只保留为离线研究对照，`config/strategies.json` 默认全部关闭。生产决策不再从这些单票策略中选择一个“默认策略”。
-
-- 双均线交叉：`MA(20)` 和 `MA(50)` 金叉买入、死叉卖出。
-- 布林带反转：价格接近下轨时关注反弹，回到中轨附近考虑止盈。
-- MACD 金叉死叉：动能转强买入，动能转弱卖出。
-- RSI 超买超卖：低位回升买入，高位回落卖出。
-
-说明：
-
-- `foundation_quant_engine` 是当前默认决策模型入口。
-- `finance_multi_asset_transformer` legacy benchmark 已从模型注册表、前台按钮和 API 操作中移除。
-- Research & Models 页面现在只展示 foundation 引擎状态、当前统一信号快照和只读验证归档。
-- 传统规则策略仍保留，主要用于做对照、解释和回测基线。
-- LightGBM、CatBoost、XGBoost 及其生产依赖已经删除；除非未来消融实验证明有稳定的增量经济价值，否则不会重新加入生产。
-- 长周期训练默认排除杠杆、反向与波动率战术产品；它们继续由盘中战术模块处理，不和普通股票、核心 ETF 共用长期 Top 3 排名。
-
-离线基准只在周末研究任务中运行，用来回答“复杂模型是否真的优于简单规则”。它们不会生成日常生产信号，也不会阻塞多周期模型的训练、推理或页面读取。
-
-## 深度学习与 Foundation Model 路线
-
-当前主模型入口位于 `quant_core/models/foundation/`。它把价格分布预测、市场情绪、AI capex/systemic risk、新闻事件和仓位纪律层分开处理，而不是让一个小型自训练模型独自回答所有问题。
-
-当前 backend 策略：
-
-- 优先级由 `storage/config/foundation_model.json` 控制。
-- TimesFM / Chronos / MOMENT 是可插拔候选 backend。
-- 当前默认后端为 `chronos`，默认模型为 `amazon/chronos-2`。
-- `Settings -> Foundation model selection` 可以直接切换 `amazon/chronos-2` / `autogluon/chronos-2-small`，也可以手动填写 Hugging Face model id 和可选 revision。
-- `Research & Models` 会显示当前快照实际使用的 model name、revision、runtime device、forecast API、context length 和 batch size。
-- 每次 Foundation job 会把实际读取到的历史 OHLCV 归档到 `storage/state/foundation_training_observations.parquet`，按 `training_data.retention_days` 裁剪，作为未来 Chronos-2 fine-tune / LoRA 适配的数据基础。
-- 如果依赖或权重尚未安装，系统会显示 `MODEL_UNAVAILABLE`，并停止生成模型交易建议。
-- `proxy` 仅允许显式开发调试，不再是默认运行路径。
-
-Chronos 验证命令：
-
-```bash
-source ~/venv/bin/activate
-python -c "from chronos import BaseChronosPipeline; BaseChronosPipeline.from_pretrained('amazon/chronos-2', device_map='cpu'); print('chronos ready')"
-```
-
-旧自训练 benchmark 的用户入口已经移除。`quant_core/models/multi_horizon/` 目录当前仍保留部分共享结构：统一多周期快照、决策融合、验证归档和历史测试辅助。它不再作为可训练/可部署模型暴露给用户。
-
-默认设备参数为：
-
-```json
-{
-  "device": "auto"
-}
-```
-
-自动选择顺序：
-
-- 有 NVIDIA GPU 时使用 `cuda`。
-- 在 Apple Silicon Mac 且 PyTorch 支持 MPS 时使用 `mps`。
-- 其他环境自动回落到 `cpu`。
-
-当前模型运行方式：
-
-- 夜间模式：由 Foundation Quant Engine 推理并写入统一多周期快照。
-- 周末模式：由 Foundation Quant Engine 刷新研究快照、候选池和策略质量信息。
-- 系统不再维护 legacy candidate / production checkpoint，也不再提供 legacy promote 流程。
-
-Settings 页面中的 Remote LLM 和 Local SLM 状态在保存后只表示 `CONFIGURED`。
-点击对应的测试按钮并完成真实请求后，才会显示 `TESTED OK`；调用错误会直接显示
-`TEST FAILED` 和服务返回的错误原因。
-
-Research & Models 页面提供 `Download training analysis`。它会生成一个 ZIP，包含：
-
-- 训练特征与标签面板 `multi_horizon_panel.parquet`
-- walk-forward 验证、模型快照、治理状态和训练任务日志
-- 候选、预训练及存在时的生产模型 checkpoint
-- Python、PyTorch、CUDA 与 GPU 环境信息
-- 文件大小、SHA-256 和缺失文件清单
-
-该分析包不会包含持仓、交易流水、通知配置或任何 API key/密码。
-
-如果当前环境没有安装 PyTorch，系统不会崩溃，深度学习策略会返回 `HOLD` 并提示依赖缺失。
-macOS 和普通 x86 Linux 的安装方式：
-
-```bash
-pip install "torch>=2.2.0"
-```
-
-Jetson 请使用前文所述的 NVIDIA JetPack 对应构建，不要使用这条通用安装命令。
-
-如需启用 FinBERT（自动新闻情绪）：
-
-```bash
-pip install "transformers>=4.40.0"
-```
-
-## 本地 SLM 接入方案
-
-当前推荐用 `LM Studio` 作为本地 SLM server，而不是让项目自己托管模型服务。
-
-默认预设模型：
-
-- `Qwen/Qwen3-0.6B`
-
-默认用途：
-
-- 只负责把结构化原因引擎的输出转述得更自然
-- 不负责复杂解释、调研或综合分析
-
-默认服务地址：
-
-- `http://127.0.0.1:8000/v1`
-
-### 在 LM Studio 中启动
-
-1. 在 LM Studio 下载并加载 `Qwen/Qwen3-0.6B`
-2. 打开 `Developer` / `Local Server`
-3. 启动 OpenAI-compatible server
-4. 记下 server 地址，默认可用 `http://127.0.0.1:8000/v1`
-
-### 在系统里怎么接入
-
-1. 打开 `Settings`
-2. 点击 `写入本地 SLM 默认配置 (LM Studio / Qwen3-0.6B)`
-3. 保持默认：
-   - `Local Base URL = http://127.0.0.1:8000/v1`
-   - `Local Model = Qwen/Qwen3-0.6B`
-4. 在 `Settings` 里点击 `测试本地 SLM`
-
-如果以后切换本地小模型，通常只需要：
-
-- 在 LM Studio 里换模型
-- 在 `Settings` 中调整 `Local Model`
-- 如果端口或地址不同，再改 `Local Base URL`
-
-### 本地 SLM 不可用时的远程 LLM fallback
-
-系统的默认路由规则是：
-
-- 结构化原因转述：优先 `local_slm`，失败后自动尝试远程 `llm`。
-- 复杂解释 / 调研 / 综合分析：优先远程 `llm`，必要时才尝试 `local_slm`。
-
-这意味着如果 LM Studio 没有启动、端口不对或模型未加载，只要远程 LLM 已在 `Settings` 或环境变量中配置好，系统会自动兜底调用远程 OpenAI-compatible API。
-
-常用环境变量：
-
-```bash
-export LLM_ENABLED=true
-export LLM_PROVIDER=openai
-export LLM_API_BASE_URL=https://api.openai.com/v1
-export LLM_API_KEY=你的_api_key
-export LLM_MODEL=gpt-5-mini
-```
-
-如果使用 OpenRouter：
-
-```bash
-export LLM_ENABLED=true
-export LLM_PROVIDER=openrouter
-export LLM_API_BASE_URL=https://openrouter.ai/api/v1
-export LLM_API_KEY=你的_openrouter_key
-export LLM_MODEL=openrouter/free
-```
-
-也可以填写某个具体免费模型的完整 slug，但必须包含 OpenRouter 页面显示的组织前缀和
-`:free` 后缀。Settings 测试失败时会显示 OpenRouter 返回的具体错误正文，而不再只显示
-笼统的 `HTTP 400`。
-
-LLM / SLM 只负责转述、解释和整理结构化证据，不会直接生成交易动作。
-
-### 财经新闻与分析师信息
-
-- 日间市场刷新和夜间流水线都会按 `config/event_sources.json` 抓取新闻；失败时保留上一份缓存，不让单一新闻源阻断量化主流程。
-- 夜间任务会将活跃事件、当前持仓、卫星候选和分析师共识组合成 `news_intelligence.json`。
-- 远程 LLM 优先负责组合新闻综合解读；没有可用 LLM 时仍会生成可审计的结构化摘要。
-- Dashboard 展示最相关的标的、方向、置信度、风险动作和原始标题证据；夜间 Slack/Email 报告也包含同一份摘要。
-- Core ETF、Satellite Radar 和 Risk 页面提供按需解释按钮，只有点击时才调用远程 LLM。
-- 当前分析师模块读取的是推荐数量与强弱共识，不包含付费研报正文。系统会明确标记这一限制，不会伪装成已经阅读过完整研报。
-- 新闻源开关、最近抓取状态和分析师缓存状态集中显示在 Settings 页面。
-
-### LLM 全局交易摘要
-
-- 夜间流水线会把账户资金、全部多周期模型信号、核心 ETF、卫星候选、纪律与风险、次日计划、Change Feed、新闻、分析师共识和数据健康统一交给远程 LLM 整理。
-- 夜间流水线会抓取可用的公司财务报表数据，将现金流、capex、债务和营收增长转换为 `financials_intelligence`，并交给 LLM 形成可读风险摘要。ETF 或缺失数据只标记为 `MISSING`，不会当成负面信号。
-- Dashboard 首页顶部展示同一份全局摘要，并提供手动刷新按钮。
-- 摘要必须明确区分“有动作”和“无强信号，保持不动”，同时列出信号冲突、可信度问题和失效条件。
-- 系统用不含时间戳的实质信号签名去重。普通价格抖动不会重复调用；新的高优先级变化或盘中紧急事件才会触发刷新。
-- 重大异动后的摘要会附加到现有 Slack/Email 盘中通知；夜间摘要随完整夜间报告发送。
-- Slack / Email 发送前会先经过 LLM 通知摘要层，把结构化报告改写成中文聊天式摘要；LLM 不可用时自动退回结构化报告，避免漏发。
-- Settings 可以分别控制摘要功能、异动自动刷新和 Slack/Email 附加发送。
-- LLM 只是统一解释层，不能创造量化系统没有给出的动作，也不能覆盖风险闸门。
-- `Context window tokens` 与 `Max output tokens` 是不同概念：前者可按当前模型设置为 `200000`，全局决策摘要默认拥有独立的 `16000` token 输出预算。
-- 免费路由若长时间持续推理，会在独立墙钟超时后自动退回结构化摘要，避免阻塞夜间任务和通知。
-
-## 组合级建议
-
-组合建议不只看单个股票信号，还会结合整体风险：
-
-- 行业集中度：如果某个 `sector` 的市值占比过高，会提示可能需要降低集中度或增加其他板块暴露。
-- 相关性拥挤：如果两个持仓历史收益相关性过高，且合计仓位较大，会提示避免同时继续加仓。
-- 缺失价格：如果持仓没有现价，组合建议会提示这些标的暂未纳入组合级计算。
-
-为了让行业集中度分析更准确，建议在 `storage/state/portfolio_input.json` 或 UI 编辑持仓时维护 `sector`。
-
-## 通知配置
-
-应用内提供“通知配置”页，可配置并测试。当前通知能力：
-
-- 已支持：Slack 单向告警（Incoming Webhook）、Email 单向告警（SMTP）。
-- 已支持：Slack -> 系统 的双向控制（`/quant` + Socket Mode bot），用于从 Slack 查询驾驶舱状态、更新本地持仓/关注列表，并支持上传 Robinhood CSV 直接同步交易记录。
-
-注意：
-
-- 当前系统不会连接券商，也不会自动实盘下单。
-- Slack / Email 发送通知；Slack 双向命令只会更新本地 JSON 持仓状态，不会触发真实交易。
-
-### 当前已支持：Slack 单向告警
-
-- Slack Incoming Webhook：适合实时告警，系统通过 webhook URL 发送消息到指定频道。
-- Email / SMTP：适合每日摘要或留档；可以用一个 Outlook 账号作为发件人，把消息发到 Gmail。
-- 告警去重：`storage/state/alert_state.json` 会记录已发送告警，避免同一个强烈买入/卖出每天重复发送；风险告警默认 6 小时冷却。
-
-Slack 单向告警推荐配置步骤：
-
-1. 在 Slack API 后台创建一个 Slack App。
-2. 打开 `Incoming Webhooks`。
-3. 为目标频道生成一个 webhook URL。
-4. 在系统的“通知配置”页填入这个 webhook URL，或者在运行环境中设置 `SLACK_WEBHOOK_URL`。
-5. 点击系统中的 Slack 测试发送按钮，确认频道能收到消息。
-
-如果你的系统跑在服务器上，而你平时在本地电脑使用 Slack：
-
-- 服务器上需要保存 `SLACK_WEBHOOK_URL`，由服务器负责发送消息。
-- 你本地电脑不需要额外安装任何代码，只需要登录同一个 Slack workspace，并能看到目标频道即可。
-- 如果目标是私有频道，需要先把 Slack App 对应的 bot / webhook 安装到该频道。
-
-示例环境变量：
-
-```bash
-export SLACK_WEBHOOK_URL="https://hooks.slack.com/services/..."
-```
-
-### 当前已支持：Email 单向告警
-
-Outlook 常用 SMTP 参数：
-
-- SMTP Host: `smtp-mail.outlook.com`
-- SMTP Port: `587`
-- STARTTLS: enabled
-- Username: 完整 Outlook 邮箱地址
-- Password: Outlook 账号密码或 app password（取决于账号安全设置）
-
-如果 Outlook 拒绝 SMTP 登录，请先确认该账号是否允许 SMTP AUTH；若账号强制 Modern Auth/OAuth2，当前简单 SMTP 配置可能无法通过，这时更推荐使用 SendGrid、Mailgun、Resend 等邮件 API。
-
-Email 推荐配置步骤：
-
-1. 确定发件邮箱服务商，例如 Outlook。
-2. 在“通知配置”页填写 SMTP Host、Port、用户名、密码、发件人邮箱、收件人邮箱。
-3. 如果使用 Outlook，通常启用 `STARTTLS`，端口用 `587`。
-4. 点击系统中的 Email 测试发送按钮。
-5. 如果计划长期部署，建议把密码放到服务器环境变量中，而不是直接写入本地 JSON。
-
-如果你的系统跑在服务器上，而你本地电脑只是收邮件：
-
-- SMTP 配置和密码只放在服务器上。
-- 你本地电脑不需要额外配置代码，只需要能登录你的 Gmail / Outlook 收件箱即可。
-
-示例环境变量：
-
-```bash
-export SMTP_HOST="smtp-mail.outlook.com"
-export SMTP_PORT="587"
-export SMTP_USER="your_account@outlook.com"
-export SMTP_PASSWORD="your_password_or_app_password"
-export SMTP_FROM="your_account@outlook.com"
-export ALERT_EMAIL_TO="your_gmail@gmail.com"
-```
-
-独立夜间告警入口：
-
-```bash
-~/venv/bin/python -m jobs.nightly_alerts --force
-```
-
-查看将生成哪些告警但不发送：
-
-```bash
-~/venv/bin/python -m jobs.nightly_alerts --dry-run --force
-```
-
-说明：
-
-- 个股优先使用直接分析师共识。
-- ETF 若缺少直接分析师数据，会自动回退到“前十大持仓加权代理共识”。
-- 当前默认要求代理覆盖权重至少约 `50%`，且加权后的看多/看空比例超过 `90%`，才会触发强烈信号。
-- 默认只对“强一致”分析师结论发出强化提示或通知，避免弱信号引入额外噪声。
-
-也可以不写真实密钥到配置文件，改用环境变量：
-
-```bash
-export SLACK_WEBHOOK_URL="https://hooks.slack.com/services/..."
-export SMTP_HOST="smtp-mail.outlook.com"
-export SMTP_PORT="587"
-export SMTP_USER="your_account@outlook.com"
-export SMTP_PASSWORD="your_password_or_app_password"
-export ALERT_EMAIL_TO="your_gmail@gmail.com"
-~/venv/bin/python -m jobs.nightly_alerts --force
-```
-
-### Slack 双向消息控制
-
-Slack 的双向控制已经按 `slack_bolt + Socket Mode` 的方式接上了。现在 bot 不只是处理 `/quant` slash command，也支持接收你上传的 Robinhood `Account activity CSV`，并自动完成：
-
-- 导入交易记录
-- 去重
-- reconcile 当前持仓和可用现金
-- 在 Slack 中返回同步摘要
-
-`/quant` 和文件上传都需要一个常驻 bot 进程在服务器上运行，去接收 Slack 事件并调用本系统内部的命令执行层。最省事的方式是直接运行统一入口：
-
-```bash
-export SLACK_BOT_TOKEN="xoxb-..."
-export SLACK_APP_TOKEN="xapp-..."
-~/venv/bin/python -m jobs.run_all
-```
-
-如果你不想同时启动页面，可以加 `--no-ui`。如果只想单独起 bot，也可以运行：
-
-```bash
-~/venv/bin/python -m integrations.slack.bot
-```
-
-最重要的一点是：**token 不要写进代码里**。请把它们放在运行 bot 的那台服务器环境变量里。
-
-如果你在 Slack 里输入 `/quant` 看到 “the app did not respond”，通常表示：
-
-- bot 进程没有启动；
-- `SLACK_BOT_TOKEN` 或 `SLACK_APP_TOKEN` 没配对；
-- Slack App 还没有重新安装到 workspace；
-- slash command 还没有加上 `commands` scope；
-- `Socket Mode` 还没有打开，或者 app-level token 没配好。
-
-建议的 Slack App 配置：
-
-1. 在 Slack API 后台创建一个新的 Slack App。
-2. 打开 `Socket Mode`。
-3. 创建 `App-Level Token`，拿到 `xapp-...`，并授予 `connections:write`。
-4. 在 `OAuth & Permissions` 里给 bot 加最小可用 scopes：
-   - `commands`：让 `/quant` 可以工作
-   - `chat:write`：让 bot 能回复 slash command 和文件同步结果
-   - `files:read`：让 bot 可以读取你上传的 Robinhood CSV
-5. 在 `Event Subscriptions` 中启用事件，并按你的使用场景订阅消息事件：
-   - 如果你准备把 CSV 发给 bot 私聊：至少订阅 `message.im`
-   - 如果你准备发到公开频道：订阅 `message.channels`
-   - 如果你准备发到私有频道：订阅 `message.groups`
-6. 把 App 安装到你的 workspace，拿到 `Bot Token`，形如 `xoxb-...`。
-7. 在服务器上导出 `SLACK_BOT_TOKEN` 和 `SLACK_APP_TOKEN`，再启动 `python -m integrations.slack.bot`，或直接用 `python -m jobs.run_all` 统一启动。
-
-这一模式下，配置位置分工如下：
-
-- 服务器：保存 Slack token，并运行 bot。
-- 本地电脑：只作为 Slack 客户端使用，不需要额外保存 bot token。
-
-当前第一版双向控制保持确定性，已经支持：
-
-- `可用命令`
-- `系统概览`
-- `今日计划`
-- `风险状态`
-- `核心ETF`
-- `卫星雷达`
-- `当前持仓`
-- `当前关注`
-- `状态 AAPL`
-- `买入 AAPL 0.5`
-- `卖出 AAPL 0.25`
-- `全部卖出 TSLA`
-- `转到关注 NVDA`
-- `转到持仓 MSFT 1`
-- `刷新 全部`
-
-### Slack 上传 Robinhood CSV 自动同步
-
-如果你只是想把 Robinhood 里的真实交易同步回系统，现在最省事的方式是：
-
-1. 在 Robinhood 导出 `Account activity CSV`
-2. 把这个 `.csv` 文件直接发到：
-   - bot 的私聊窗口；或
-   - 一个已经把 bot 拉进去的频道
-3. bot 会自动完成：
-   - 读取 CSV
-   - 导入交易记录
-   - 去重
-   - 重建当前持仓和可用现金
-4. 同步完成后，Slack 会回复一条摘要，通常包含：
-   - 文件名
-   - 解析记录数
-   - 新增记录数
-   - 重复跳过数
-   - 不支持行跳过数
-   - 当前持仓数量
-   - 当前关注数量
-   - 当前可用现金
-   - 若检测到历史可能不完整，也会附带 warning
-
-说明：
-
-- 这里同步的是**已经发生的历史交易记录**，不是实盘下单。
-- CSV 上传同步本身**不依赖实时价格**；它的核心作用是把系统的本地台账、当前持仓和现金，跟 Robinhood 的真实历史交易对齐。
-- 如果你之后还想刷新当前市值、盈亏和页面里的最新价格，再单独执行一次 `刷新 全部` 即可。
-- 同一个 CSV 重复上传不会重复导入；不同时间段但有重叠记录的 CSV，也会按 `import_key` 自动去重。
-
-第一版仍然不建议直接做自由聊天式 agent，而是先让 Slack 稳定地调用这些确定性命令，等执行链路稳定后再接 LLM 做解释层。
-
-### 未来可选：用小模型处理自然语言输入
-
-未来可以接入小模型（SLM）来把自然语言解析成结构化命令，但建议它作为“解析辅助层”，而不是直接控制执行逻辑。
-
-推荐方式：
-
-- 第一层：规则 / 正则解析器，处理最常见、最明确的命令。
-- 第二层：小模型把自然语言归一化成结构化 JSON，例如 `{"action":"BUY","symbol":"AAPL","shares":0.5}`。
-- 第三层：系统只执行通过校验的结构化动作。
-
-这样做的好处是：
-
-- 既能支持更自然的输入表达；
-- 又不会把核心执行逻辑完全交给模型“自由发挥”。
-
-本地 SLM 当前只负责把结构化原因转述得更自然，不负责研究、预测或自由决定交易动作；复杂解释和调研交给远程 LLM。
-
-## 项目取舍
-
-这个系统的首要目标是辅助真实交易并提高风险调整后收益，而不是堆叠看起来先进但无法稳定赚钱的功能。因此当前版本遵循以下取舍：
-
-- 优先做能改善胜率、盈亏比、回撤控制和执行纪律的功能。
-- 新功能如果不能明显改善交易决策质量，宁可不做。
-- 模型数量不是优势；稳定的数据流程、风险约束和可验证的回测更重要。
-- 对新闻、情绪和分析师信息采取“少量高置信度接入”的原则，而不是无差别喂给模型。
-- 仓位控制不应是僵硬的固定规则，也不应是无法解释的大黑盒；更适合走“风险状态 + 模型强度 + 组合约束”的混合资金分配引擎。
-
-## 目录结构
+## 文件布局
 
 ```text
-.
-├── frontend/                              # React/Vite 前端
-├── quant_core/                            # 核心业务（数据/风控/组合/通知/快照）
-├── integrations/                          # 外部集成（Slack Socket Mode bot / command service）
-├── strategies/                            # 周末离线规则基准
-├── engine/                                # 周末离线 Backtrader 适配器
-├── jobs/                                  # api_server / run_all / nightly_alerts / weekend_research
-├── config/strategies.json                 # 策略配置
-├── storage/config/*.example.json          # 示例配置
-├── storage/state/*.json                   # 本地运行态数据（不提交）
-└── tests/                                 # 单元测试
+quant_core/
+  data/            行情、Parquet缓存、数据健康
+  fundamentals/    SEC与备用财务数据
+  opportunities/   异常下跌、事件研判、机会评分
+  valuation/       LLM模型路由与确定性估值
+  research/        全量流水线、manifest、历史校准
+  risk/            市场风险环境
+  llm/             OpenAI兼容调用与叙述路由
+  notifications/   Slack与Email发送
+  api/             快照读取和后台动作
+frontend/          React WebUI
+jobs/              API、统一启动、夜间和周末任务
+storage/config/*.example.json  可提交的默认模板
+storage/config/*.json          每台机器的本地设置，不提交Git
+storage/state/valuation_radar/     运行快照，不提交Git
+storage/journals/valuation_radar/  推荐历史，不提交Git
+storage/cache/valuation_radar/     行情、指数与SEC缓存，不提交Git
+reports/           最新研究报告，不提交Git
 ```
 
-## 开发约定
+正式表格缓存使用 Parquet；配置与可审计快照使用 JSON；推荐历史使用 JSONL。不需要数据库。
 
-- 优先使用 TDD：先补测试，再修改实现。
-- 新增功能后运行完整测试：`python -m unittest discover -s tests -v`。
-- 不要把个人运行数据提交到 Git，例如 `storage/state/portfolio_input.json`、`storage/state/portfolio_data.json`、`storage/state/price_cache.json`、`storage/state/transactions.json`。
-- 新增策略优先走 `config/strategies.json`，只有通用接口无法表达时再修改注册逻辑。
+WebUI 会修改的实际配置均由 `.gitignore` 排除。新电脑首次启动时读取同名 `*.example.json`，在设置页保存后生成本机 JSON 覆盖；因此不同电脑的 LLM、Slack、Email、研究范围和调度设置不会互相冲突。
+
+## 单独运行与测试
+
+```bash
+~/venv/bin/python -m jobs.nightly_research --force --no-notify
+~/venv/bin/python -m jobs.weekend_research --force --no-notify
+~/venv/bin/python -m unittest discover -s tests -v
+cd frontend && npm run build
+```
+
+诊断时可在“系统管理”下载安全诊断包，其中不包含密钥。
+
+## 可靠性规则
+
+- 每个推荐每天只保留一条最新观察，手动重跑不会夸大校准样本。
+- 完整研究写入 `valuation_research_manifest.json`；失败会保留阶段与错误，行情和 SEC 缓存允许下次自然续跑。
+- 市场风险越高，要求的安全边际越大。
+- LLM 路由失败时只允许规则降级和观察，不会把未复核结果升级为强机会。
+- 数据缺失、估值离散过大、基本面损伤或价格未企稳都会阻断行动候选。
+- 周末校准只使用当时已记录的推荐，比较 63/126/252/504 个交易日后的对短期国债超额收益与相对 SPY 市场超额。

@@ -1,0 +1,26 @@
+{
+  "source_indexes": ["sp500", "nasdaq100"],
+  "manual_include": [
+    {"symbol": "MSFT", "sector": "Technology", "sector_etf": "XLK"},
+    {"symbol": "NVDA", "sector": "Semiconductors", "sector_etf": "SMH"},
+    {"symbol": "TSLA", "sector": "Consumer Discretionary", "sector_etf": "XLY"},
+    {"symbol": "GOOGL", "sector": "Communication Services", "sector_etf": "XLC"},
+    {"symbol": "AMZN", "sector": "Consumer Discretionary", "sector_etf": "XLY"},
+    {"symbol": "META", "sector": "Communication Services", "sector_etf": "XLC"},
+    {"symbol": "AMD", "sector": "Semiconductors", "sector_etf": "SMH"},
+    {"symbol": "MU", "sector": "Semiconductors", "sector_etf": "SMH"},
+    {"symbol": "BABA", "sector": "Consumer Discretionary", "sector_etf": "KWEB"},
+    {"symbol": "XPEV", "sector": "Consumer Discretionary", "sector_etf": "KWEB"},
+    {"symbol": "BYDDY", "sector": "Consumer Discretionary", "sector_etf": "KWEB"}
+  ],
+  "manual_exclude": ["GELYY"],
+  "etfs": [
+    {"symbol": "VOO", "asset_type": "etf", "role": "broad_market", "sector_etf": "SPY", "historical_earnings_yield": 0.042},
+    {"symbol": "QQQM", "asset_type": "etf", "role": "growth", "sector_etf": "QQQ", "historical_earnings_yield": 0.035},
+    {"symbol": "SCHD", "asset_type": "etf", "role": "dividend_quality", "sector_etf": "SPY", "historical_earnings_yield": 0.05},
+    {"symbol": "IAU", "asset_type": "etf", "role": "commodity", "sector": "commodity", "sector_etf": "GLD"}
+  ],
+  "max_universe_size": 700,
+  "max_deep_analysis": 30,
+  "minimum_dislocation_score": 35
+}
