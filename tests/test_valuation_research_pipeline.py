@@ -33,6 +33,13 @@ class ValuationResearchPipelineTests(unittest.TestCase):
             "distress_probability": 0.03,
             "source": "test",
             "fiscal_period": "2026-Q2",
+            "latest_filing_form": "10-Q",
+            "latest_filing_date": "2026-05-01",
+            "filing_context": {
+                "status": "READY",
+                "source": "sec_edgar_filing",
+                "filings": [{"form": "10-Q", "filing_date": "2026-05-01", "sections": []}],
+            },
         }
         route = {
             "asset_type": "equity",
@@ -46,6 +53,9 @@ class ValuationResearchPipelineTests(unittest.TestCase):
             },
             "confidence": 0.85,
             "evidence": ["test filing"],
+            "filing_summary": "需求仍在增长，资本开支同步上升。",
+            "fundamental_signals": ["需求增长", "资本开支上升"],
+            "risks": ["投资回报存在不确定性"],
         }
         with tempfile.TemporaryDirectory() as temp_dir:
             result = run_valuation_research(
@@ -69,6 +79,8 @@ class ValuationResearchPipelineTests(unittest.TestCase):
             self.assertNotIn(forbidden, row)
         self.assertIn("fair_value", row)
         self.assertIn("recommendation", row)
+        self.assertEqual(row["latest_filing_form"], "10-Q")
+        self.assertIn("资本开支", row["filing_summary"])
 
     def test_configured_etf_is_not_crowded_out_by_stock_scan_limit(self):
         universe = [

@@ -11,6 +11,8 @@ export default function Valuation() {
   const [explaining, setExplaining] = useState(false);
   useEffect(() => { if (!selected && rows.length) setSelected(text(rows[0].symbol)); }, [rows, selected]);
   const row = rows.find((item) => text(item.symbol) === selected) ?? rows[0];
+  const filingContext = asDict(row?.filing_context);
+  const filings = asArray(filingContext.filings).map(asDict);
 
   async function explain() {
     if (!row) return;
@@ -59,6 +61,19 @@ export default function Valuation() {
             <div><dt>校验提醒</dt><dd>{asArray(row.validation_warnings).map(label).join("；") || "无"}</dd></div>
           </dl>
         </Section>
+        {text(row.asset_type, "equity") !== "etf" ? <Section title="财报原文情报" note="SEC原文负责补充管理层讨论、风险因素与资本配置证据；估值数值仍由确定性引擎计算。">
+          <div className="filing-intelligence">
+            <div className="filing-status"><Badge value={filingContext.status ?? "MISSING"} /><span>{filings.length ? `已读取 ${filings.length} 份最新申报` : "尚未取得财报正文；下一次完整估值研究会重新尝试。"}</span></div>
+            {text(row.filing_summary) ? <p>{text(row.filing_summary)}</p> : <p className="muted">本次结果没有生成LLM财报摘要。请确认远程LLM已启用并重新运行完整估值研究。</p>}
+            {asArray(row.fundamental_signals).length ? <ul className="plain-list">{asArray(row.fundamental_signals).map((signal, index) => <li key={index}>{text(signal)}</li>)}</ul> : null}
+            {filings.map((filing) => <div className="filing-record" key={text(filing.accession_number, `${filing.form}-${filing.filing_date}`)}>
+              <div><b>{text(filing.form)}</b><span>提交于 {text(filing.filing_date)} · 报告期 {text(filing.report_date, "-")}</span></div>
+              {text(filing.url) ? <a href={text(filing.url)} target="_blank" rel="noreferrer">打开SEC原文</a> : null}
+              <small>{asArray(filing.sections).map((section) => text(asDict(section).title)).filter(Boolean).join("；") || "正文已缓存，但未识别出标准章节标题"}</small>
+            </div>)}
+            {asArray(row.route_risks).length ? <div className="filing-risks"><b>需要重点核验的风险</b><ul>{asArray(row.route_risks).map((risk, index) => <li key={index}>{text(risk)}</li>)}</ul></div> : null}
+          </div>
+        </Section> : null}
         <Section title="模型交叉估值" note="只纳入输入完整且与公司类型兼容的模型；模型分歧会降低最终可信度。">
           <div className="assumption-table"><div><b>估值模型</b><b>悲观</b><b>基准</b><b>乐观</b></div>{Object.entries(asDict(row.model_values)).map(([model, value]) => {
             const scenario = asDict(value);

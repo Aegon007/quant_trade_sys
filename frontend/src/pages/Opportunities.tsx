@@ -38,8 +38,10 @@ export default function Opportunities() {
               <div><dt>基本面质量 / 损伤</dt><dd>{text(row.quality_score)} / {text(row.damage_score)}</dd></div>
               <div><dt>下跌暂时性概率</dt><dd>{percent(event.transience_probability)}</dd></div>
               <div><dt>财报期间</dt><dd>{text(row.fiscal_period)}</dd></div>
+              <div><dt>最新SEC申报</dt><dd>{row.latest_filing_form ? `${text(row.latest_filing_form)} · ${text(row.latest_filing_date)}` : "未取得原文"}</dd></div>
             </dl>
             <p><b>事件判断：</b>{text(event.summary, "暂无可验证事件摘要")}</p>
+            {text(row.filing_summary, "") ? <p><b>财报判断：</b>{text(row.filing_summary)}</p> : null}
             <p><b>判定依据：</b>{asArray(row.reason_codes).map(label).join("；") || "证据不足"}</p>
           </div>
         </details>;

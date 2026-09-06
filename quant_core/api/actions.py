@@ -25,7 +25,14 @@ from quant_core.risk.market_regime import build_market_risk_snapshot, save_marke
 
 def _summary(payload) -> dict:
     value = dict(payload or {}) if isinstance(payload, Mapping) else {}
-    return dict(value.get("summary", {}) or {key: value.get(key) for key in ("status", "ran", "generated_at") if value.get(key) is not None})
+    return dict(
+        value.get("summary", {})
+        or {
+            key: value.get(key)
+            for key in ("status", "ran", "generated_at", "route", "channel", "model", "message")
+            if value.get(key) is not None
+        }
+    )
 
 
 def build_job_progress_callback(name: str):
@@ -68,7 +75,8 @@ def _exclusive_job(name: str):
 
 
 def run_with_job_status(name: str, runner: Callable, *, run_async: bool = True) -> dict:
-    current = dict(job_registry.load_job_status().get("jobs", {}).get(name, {}) or {})
+    registry = job_registry.mark_stale_jobs(job_registry.load_job_status())
+    current = dict(registry.get("jobs", {}).get(name, {}) or {})
     if str(current.get("state") or "").lower() in {"queued", "started", "running"}:
         return {"accepted": False, "error": "任务已经在运行", "job": current}
     job_registry.update_job_status(name, state="queued", detail="任务已进入队列", metadata={"stage": "queued", "progress_pct": 0})
@@ -88,7 +96,8 @@ def run_with_job_status(name: str, runner: Callable, *, run_async: bool = True) 
                 job_registry.update_job_status(name, state="failed", detail=f"{type(exc).__name__}: {exc}", metadata={"stage": "failed", "progress_pct": 100})
                 return
         outcome["result"] = result
-        job_registry.update_job_status(name, state="completed", detail="任务完成", metadata={"stage": "completed", "progress_pct": 100, "result_summary": _summary(result)})
+        result_detail = str(dict(result or {}).get("message") or "任务完成") if isinstance(result, Mapping) else "任务完成"
+        job_registry.update_job_status(name, state="completed", detail=result_detail, metadata={"stage": "completed", "progress_pct": 100, "result_summary": _summary(result)})
 
     if run_async:
         threading.Thread(target=execute, name=f"quant-{name}", daemon=True).start()

@@ -43,6 +43,14 @@ class ResearchApiContractTests(unittest.TestCase):
 
         self.assertIn("/api/research-manifest", paths)
         self.assertIn("/api/actions/test-notification", paths)
+        self.assertIn("/api/actions/test-llm", paths)
+
+    def test_llm_routes_have_independent_job_names(self):
+        from jobs.api_server import integration_test_job_name
+
+        self.assertEqual(integration_test_job_name("llm"), "settings-llm-test")
+        self.assertEqual(integration_test_job_name("local_slm"), "settings-local-slm-test")
+        self.assertEqual(integration_test_job_name("slack"), "settings-slack-test")
 
 
 if __name__ == "__main__":

@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import Mapping, Optional
 
 from quant_core.fundamentals.metrics import normalize_sec_company_facts
-from quant_core.fundamentals.sec_edgar import fetch_company_facts
+from quant_core.fundamentals.sec_edgar import DEFAULT_CACHE_DIR, fetch_company_facts, fetch_filing_context
 
 
 def _finite(value, default=None):
@@ -146,6 +146,8 @@ def load_financial_profile(
     force: bool = False,
     now: Optional[datetime] = None,
     user_agent: Optional[str] = None,
+    include_filings: bool = True,
+    filing_cache_dir=DEFAULT_CACHE_DIR,
 ) -> dict:
     symbol = str(symbol or "").strip().upper()
     metadata = dict(metadata or {})
@@ -155,6 +157,36 @@ def load_financial_profile(
         payload = fetch_company_facts(symbol, cik=metadata.get("cik"), force=force, user_agent=user_agent)
         profile = normalize_sec_company_facts(payload, symbol=symbol, as_of=now)
         profile["sector"] = metadata.get("sector") or profile.get("sector") or ""
+        if include_filings:
+            try:
+                filing_context = fetch_filing_context(
+                    symbol,
+                    cik=metadata.get("cik") or payload.get("cik"),
+                    cache_dir=filing_cache_dir,
+                    user_agent=user_agent,
+                    force=force,
+                    as_of=now,
+                )
+            except Exception as exc:
+                filing_context = {
+                    "status": "UNAVAILABLE",
+                    "source": "sec_edgar_filing",
+                    "filings": [],
+                    "errors": [{"error": f"{type(exc).__name__}: {exc}"}],
+                }
+            profile["filing_context"] = filing_context
+            latest = next(iter(filing_context.get("filings", []) or []), {})
+            profile["latest_filing_form"] = latest.get("form")
+            profile["latest_filing_date"] = latest.get("filing_date")
+            if latest:
+                profile.setdefault("evidence", []).append(
+                    {
+                        "source": "SEC EDGAR full filing",
+                        "form": latest.get("form"),
+                        "filed": latest.get("filing_date"),
+                        "url": latest.get("url"),
+                    }
+                )
         return profile
     except Exception as exc:
         profile = _load_yfinance_profile(symbol, metadata=metadata, now=now)

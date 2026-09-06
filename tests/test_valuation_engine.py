@@ -1,10 +1,54 @@
 import unittest
 
 from quant_core.valuation.engine import value_security
-from quant_core.valuation.router import normalize_valuation_route
+from quant_core.valuation.router import normalize_valuation_route, route_valuation_model
 
 
 class ValuationEngineTests(unittest.TestCase):
+    def test_route_preserves_filing_intelligence_for_user_review(self):
+        route = normalize_valuation_route(
+            {
+                "asset_type": "equity",
+                "archetype": "mature_growth",
+                "primary_model": "fcff_multistage",
+                "filing_summary": "资本开支上升，但经营现金流仍能覆盖投资。",
+                "fundamental_signals": ["云业务增长", "自由现金流承压"],
+                "risks": ["资本开支回报不确定"],
+            }
+        )
+
+        self.assertIn("资本开支", route["filing_summary"])
+        self.assertEqual(route["fundamental_signals"], ["云业务增长", "自由现金流承压"])
+
+    def test_llm_router_receives_extracted_filing_text_without_local_cache_path(self):
+        captured = {}
+
+        def runner(messages, _config):
+            captured["prompt"] = messages[-1]["content"]
+            return True, '{"asset_type":"equity","archetype":"mature_growth","primary_model":"fcff_multistage","filing_summary":"现金流仍然稳健","fundamental_signals":["现金流稳健"],"risks":[],"evidence":["10-Q MD&A"]}'
+
+        route = route_valuation_model(
+            symbol="ACME",
+            asset_type="equity",
+            financials={
+                "free_cash_flow": 100,
+                "filing_context": {
+                    "filings": [{
+                        "form": "10-Q",
+                        "filing_date": "2026-05-01",
+                        "cache_path": "/private/cache/filing.htm",
+                        "sections": [{"item": "2", "title": "MD&A", "text": "Capital expenditure increased."}],
+                    }]
+                },
+            },
+            llm_config={"enabled": True},
+            llm_runner=runner,
+        )
+
+        self.assertIn("Capital expenditure increased", captured["prompt"])
+        self.assertNotIn("/private/cache", captured["prompt"])
+        self.assertEqual(route["filing_summary"], "现金流仍然稳健")
+
     def test_mature_company_valuation_is_probabilistic_and_reproducible(self):
         financials = {
             "symbol": "ACME",

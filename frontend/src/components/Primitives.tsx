@@ -26,6 +26,7 @@ const LABELS: Record<string, string> = {
   LLM_ROUTE_REQUIRED: "行动候选必须经过LLM复核", missing_valuation_inputs: "估值输入不完整",
   sec_companyfacts: "SEC公司财报", yfinance_fallback: "Yahoo财务数据备用源", configured_etf_metadata: "ETF配置元数据", yfinance_etf_metadata: "ETF市场元数据",
   stooq: "Stooq主源", yfinance: "Yahoo备用源", local_history_cache: "本地行情缓存", unknown: "来源未知",
+  sec_edgar_filing: "SEC财报原文", UNAVAILABLE: "暂不可用", not_tested: "尚未测试", stale: "状态过期",
   completed: "已完成", running: "运行中", queued: "排队中", started: "已启动", failed: "失败", skipped: "未启用",
 };
 

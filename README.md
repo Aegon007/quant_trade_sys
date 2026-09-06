@@ -21,8 +21,8 @@
 2. 并发读取本地 Parquet 历史缓存；过期时先请求 Stooq，失败后回退到 yfinance。
 3. 计算相对 SPY、行业 ETF、52 周高点和近期波动的异常下跌分数。
 4. 只对前 30 个错位候选及指定 ETF 做深度分析，避免为全市场逐一调用 LLM。
-5. 股票财务数据优先使用 SEC Company Facts；无 SEC 覆盖时使用明确标记的 yfinance 备用数据。
-6. 远程 LLM 从白名单中选择公司类型和估值模型，并提取悲观、基准、乐观假设。
+5. 股票财务数字优先使用 SEC Company Facts；同时从 EDGAR Archives 缓存最新 10-K/10-Q/20-F/40-F 及较新的业绩 8-K/6-K 原文，并提取 Business、Risk Factors、MD&A 和市场风险章节。无 SEC 覆盖时使用明确标记的 yfinance 备用数据。
+6. 远程 LLM 基于结构化数字、财报原文证据和事件信息，从白名单中选择公司类型和估值模型，提取悲观、基准、乐观假设，并生成财报摘要与风险信号。
 7. 确定性估值引擎计算主模型与兼容辅助模型的交叉估值，再生成合理价值 P10/P50/P90、安全边际、模型离散度和可信度。
 8. 基本面损伤、困境概率、事件暂时性、价格企稳和市场风险共同决定是否进入研究名单。
 9. 夜间生成 JSON/Markdown 报告并推送 Slack/Email；周末同时校准历史推荐是否跑赢短期国债代理 SGOV，以及是否取得相对 SPY 的市场超额。
@@ -55,9 +55,9 @@ cd frontend && npm ci && cd ..
 
 1. 打开“系统管理”。
 2. 在“研究范围与门槛”中填写 SEC User-Agent，建议使用包含真实联系邮箱的应用标识。
-3. 在页面配置远程 LLM。支持 OpenAI、OpenRouter 及任意 OpenAI-compatible `/v1/chat/completions` 接口，并点击“测试远程LLM”。
+3. 在页面配置远程 LLM。支持 OpenAI、OpenRouter 及任意 OpenAI-compatible `/v1/chat/completions` 接口；点击“测试远程LLM”后，连接卡会持续显示排队、运行、成功或失败详情。
 4. 如使用 LM Studio，配置本地 SLM 地址与模型名。本地 SLM 仅润色结构化文字；研究、事件分析和估值路由仍使用远程 LLM。
-5. 按需配置 Slack、Email、研究范围和阈值，然后点击“保存全部设置”。
+5. 按需配置 Slack、Email、研究范围和阈值。每个连接均可在自己的设置卡片内测试并查看结果，然后点击“保存全部设置”。
 6. 点击“运行完整估值研究”，等待任务状态显示完成。
 
 密钥写入 `storage/config/notification_secrets.local.json`，文件权限尽量设为 `0600`，并由 `.gitignore` 排除。公开配置中只保留空密钥字段。
@@ -126,7 +126,8 @@ cd frontend && npm run build
 ## 可靠性规则
 
 - 每个推荐每天只保留一条最新观察，手动重跑不会夸大校准样本。
-- 完整研究写入 `valuation_research_manifest.json`；失败会保留阶段与错误，行情和 SEC 缓存允许下次自然续跑。
+- 完整研究写入 `valuation_research_manifest.json`；失败会保留阶段与错误，行情、SEC XBRL 和申报原文缓存允许下次自然续跑。
+- SEC 申报严格按提交日期过滤；原始 HTML 仅保存在本机缓存，研究快照只保存申报元数据、章节名称和 LLM 摘要，避免快照膨胀。
 - 市场风险越高，要求的安全边际越大。
 - LLM 路由失败时只允许规则降级和观察，不会把未复核结果升级为强机会。
 - 数据缺失、估值离散过大、基本面损伤或价格未企稳都会阻断行动候选。

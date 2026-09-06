@@ -158,6 +158,26 @@ def run_valuation_research(
                 "financial_source": financials.get("source"),
                 "route_reasoning": route.get("reasoning"),
                 "route_risks": route.get("risks"),
+                "filing_summary": route.get("filing_summary"),
+                "fundamental_signals": route.get("fundamental_signals"),
+                "filing_context": {
+                    "status": dict(financials.get("filing_context", {}) or {}).get("status"),
+                    "source": dict(financials.get("filing_context", {}) or {}).get("source"),
+                    "filings": [
+                        {
+                            "form": filing.get("form"),
+                            "filing_date": filing.get("filing_date"),
+                            "report_date": filing.get("report_date"),
+                            "url": filing.get("url"),
+                            "sections": [
+                                {"item": section.get("item"), "title": section.get("title"), "original_char_count": section.get("original_char_count")}
+                                for section in list(dict(filing or {}).get("sections", []) or [])
+                            ],
+                        }
+                        for filing in list(dict(financials.get("filing_context", {}) or {}).get("filings", []) or [])
+                    ],
+                    "errors": list(dict(financials.get("filing_context", {}) or {}).get("errors", []) or []),
+                },
             }
             valuations.append(valuation_row)
             opportunities.append(
@@ -180,6 +200,11 @@ def run_valuation_research(
                     **score,
                     "fiscal_period": financials.get("fiscal_period"),
                     "financial_source": financials.get("source"),
+                    "latest_filing_form": financials.get("latest_filing_form"),
+                    "latest_filing_date": financials.get("latest_filing_date"),
+                    "filing_summary": route.get("filing_summary"),
+                    "fundamental_signals": route.get("fundamental_signals"),
+                    "filing_risks": route.get("risks"),
                 }
             )
         except Exception as exc:
@@ -187,6 +212,7 @@ def run_valuation_research(
     opportunities.sort(key=lambda row: float(row.get("opportunity_score") or 0), reverse=True)
     generated_at = now.isoformat()
     actionable = [row for row in opportunities if row.get("actionable")]
+    filing_covered = [row for row in opportunities if row.get("latest_filing_form")]
     price_source_counts = {}
     for row in scanned:
         source = str(row.get("price_source") or "unknown")
@@ -201,6 +227,7 @@ def run_valuation_research(
             "deep_analysis_count": len(deep_candidates),
             "analyzed_count": len(opportunities),
             "actionable_count": len(actionable),
+            "filing_coverage_count": len(filing_covered),
             "error_count": len(errors),
             "price_source_counts": price_source_counts,
             "market_regime": dict(market_risk or {}).get("regime", "UNKNOWN"),

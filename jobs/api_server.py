@@ -14,6 +14,11 @@ API_TITLE = "估值与超跌机会研究系统"
 API_VERSION = "1.0.0"
 
 
+def integration_test_job_name(route: str) -> str:
+    normalized = str(route or "").strip().lower().replace("_", "-")
+    return f"settings-{normalized}-test"
+
+
 def _require_fastapi():
     try:
         from fastapi import FastAPI
@@ -105,15 +110,16 @@ def create_app():
     @app.post("/api/actions/test-llm")
     def test_llm(payload: dict):
         submitted = dict(payload or {})
-        return actions.run_with_job_status("settings-llm-test", lambda: actions.test_llm_settings(route=str(submitted.get("route") or "llm"), submitted_config=submitted.get("config")), run_async=False)
+        route = str(submitted.get("route") or "llm")
+        return actions.run_with_job_status(integration_test_job_name(route), lambda: actions.test_llm_settings(route=route, submitted_config=submitted.get("config")), run_async=True)
 
     @app.post("/api/actions/test-notification")
     def test_notification(payload: dict):
         channel = str(dict(payload or {}).get("channel") or "")
         return actions.run_with_job_status(
-            f"settings-{channel}-test",
+            integration_test_job_name(channel),
             lambda: actions.test_notification_channel(channel, submitted_config=dict(payload or {}).get("config")),
-            run_async=False,
+            run_async=True,
         )
 
     @app.post("/api/actions/explain-security")

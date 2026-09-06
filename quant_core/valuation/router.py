@@ -127,6 +127,8 @@ def normalize_valuation_route(route: Optional[Mapping]) -> dict:
         "confidence": max(0.0, min(_number(raw.get("confidence"), 0.45), 1.0)),
         "evidence": [str(item).strip() for item in list(raw.get("evidence", []) or []) if str(item).strip()],
         "reasoning": str(raw.get("reasoning") or "").strip(),
+        "filing_summary": str(raw.get("filing_summary") or "").strip(),
+        "fundamental_signals": [str(item).strip() for item in list(raw.get("fundamental_signals", []) or []) if str(item).strip()],
         "risks": [str(item).strip() for item in list(raw.get("risks", []) or []) if str(item).strip()],
         "validation_warnings": list(dict.fromkeys(warnings)),
         "route_source": str(raw.get("route_source") or "rules").strip().lower(),
@@ -196,11 +198,29 @@ def route_valuation_model(
     config = dict(llm_config or {})
     if not config.get("enabled"):
         return fallback
+    financial_payload = {key: value for key, value in dict(financials or {}).items() if key not in {"filing_context", "evidence"}}
+    filing_context = dict(dict(financials or {}).get("filing_context", {}) or {})
+    filing_documents = []
+    for filing in list(filing_context.get("filings", []) or [])[:2]:
+        filing = dict(filing or {})
+        filing_documents.append(
+            {
+                "form": filing.get("form"),
+                "filing_date": filing.get("filing_date"),
+                "report_date": filing.get("report_date"),
+                "url": filing.get("url"),
+                "sections": [
+                    {key: section.get(key) for key in ("item", "title", "text")}
+                    for section in list(filing.get("sections", []) or [])[:5]
+                ],
+            }
+        )
     prompt_payload = {
         "symbol": str(symbol).upper(),
         "asset_type": asset_type,
-        "financials": dict(financials or {}),
+        "financials": financial_payload,
         "filing_evidence": list(filing_evidence or [])[:12],
+        "filing_documents": filing_documents,
         "event_context": dict(event_context or {}),
         "allowed_archetypes": sorted(MODEL_BY_ARCHETYPE),
         "allowed_models": sorted(ALLOWED_MODELS),
@@ -218,7 +238,9 @@ def route_valuation_model(
             "role": "user",
             "content": (
                 "Classify this security and return keys asset_type, archetype, primary_model, secondary_models, "
-                "assumptions, confidence, evidence, reasoning, risks. Assumptions should include growth_rate, "
+                "assumptions, confidence, evidence, reasoning, filing_summary, fundamental_signals, risks. "
+                "Use filing text as qualitative evidence, explicitly distinguish disclosed facts from management claims, "
+                "and never infer an absent fact. Assumptions should include growth_rate, "
                 "discount_rate, terminal_growth, target_margin and normalized_multiple with bear/base/bull values.\n"
                 + json.dumps(prompt_payload, ensure_ascii=False, default=str)
             ),

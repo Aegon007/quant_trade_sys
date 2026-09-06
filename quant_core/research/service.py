@@ -88,15 +88,15 @@ def _report_markdown(recommendations: Mapping, market_risk: Mapping, brief: Mapp
         "",
         "## 候选排名",
         "",
-        "| 标的 | 结论 | 机会分 | 当前价 | 合理价值中位数 | 安全边际 | 基本面损伤 |",
-        "|---|---:|---:|---:|---:|---:|---:|",
+        "| 标的 | 结论 | 机会分 | 当前价 | 合理价值中位数 | 安全边际 | 基本面损伤 | 最新申报 |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for row in rows[:30]:
         fair = dict(row.get("fair_value", {}) or {})
         lines.append(
             f"| {row.get('symbol')} | {RECOMMENDATION_LABELS.get(str(row.get('recommendation')), row.get('recommendation'))} | {row.get('opportunity_score')} | "
             f"{row.get('current_price')} | {fair.get('p50')} | {float(row.get('margin_of_safety') or 0):.1%} | "
-            f"{row.get('damage_score')} |"
+            f"{row.get('damage_score')} | {row.get('latest_filing_form') or '-'} {row.get('latest_filing_date') or ''} |"
         )
     return "\n".join(lines) + "\n"
 

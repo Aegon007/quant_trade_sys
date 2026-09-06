@@ -43,6 +43,7 @@ def build_research_brief(
                 "symbol", "recommendation", "actionable", "opportunity_score", "current_price", "fair_value",
                 "margin_of_safety", "valuation_confidence", "valuation_model", "archetype", "quality_score",
                 "damage_score", "distress_probability", "reason_codes", "event",
+                "latest_filing_form", "latest_filing_date", "filing_summary", "fundamental_signals", "filing_risks",
             )
         }
         for row in rows[:15]
