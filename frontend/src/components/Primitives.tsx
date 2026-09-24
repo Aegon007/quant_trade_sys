@@ -28,6 +28,7 @@ const LABELS: Record<string, string> = {
   stooq: "Stooq主源", yfinance: "Yahoo备用源", local_history_cache: "本地行情缓存", unknown: "来源未知",
   sec_edgar_filing: "SEC财报原文", UNAVAILABLE: "暂不可用", not_tested: "尚未测试", stale: "状态过期",
   completed: "已完成", running: "运行中", queued: "排队中", started: "已启动", failed: "失败", skipped: "未启用",
+  blocked: "已有任务运行",
 };
 
 export const label = (value: unknown): string => LABELS[text(value, "")] ?? text(value);

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import json
 import os
 import threading
@@ -52,6 +53,43 @@ def _job_group(name: str) -> str:
     return lowered.replace("/", "-")
 
 
+def _read_lock_pid(path: Path) -> int | None:
+    try:
+        fields = {
+            key: value
+            for token in path.read_text(encoding="utf-8").split()
+            if "=" in token
+            for key, value in [token.split("=", 1)]
+        }
+        pid = int(fields.get("pid", ""))
+    except (OSError, TypeError, ValueError):
+        return None
+    return pid if pid > 0 else None
+
+
+def _process_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError as exc:
+        return exc.errno != errno.ESRCH
+    return True
+
+
+def _lock_is_stale(path: Path, *, max_age_seconds: int = 12 * 3600) -> bool:
+    try:
+        age_seconds = time.time() - path.stat().st_mtime
+    except FileNotFoundError:
+        return True
+    owner_pid = _read_lock_pid(path)
+    if owner_pid is not None and not _process_alive(owner_pid):
+        return True
+    return age_seconds > max_age_seconds
+
+
 @contextmanager
 def _exclusive_job(name: str):
     path = qpaths.RESEARCH_STATE_DIR / f".{_job_group(name)}.lock"
@@ -60,10 +98,13 @@ def _exclusive_job(name: str):
     for attempt in range(2):
         try:
             descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-            os.write(descriptor, f"pid={os.getpid()} started={datetime.now().isoformat()}\n".encode("utf-8"))
+            os.write(
+                descriptor,
+                f"pid={os.getpid()} name={name} started={datetime.now().isoformat()}\n".encode("utf-8"),
+            )
             break
         except FileExistsError:
-            if attempt == 0 and time.time() - path.stat().st_mtime > 12 * 3600:
+            if attempt == 0 and _lock_is_stale(path):
                 path.unlink(missing_ok=True)
                 continue
     try:
@@ -87,7 +128,12 @@ def run_with_job_status(name: str, runner: Callable, *, run_async: bool = True) 
         job_registry.update_job_status(name, state="running", detail="任务开始", metadata={"stage": "starting", "progress_pct": 1})
         with _exclusive_job(name) as acquired:
             if not acquired:
-                job_registry.update_job_status(name, state="failed", detail="同类任务已在另一个入口运行", metadata={"stage": "blocked", "progress_pct": 100})
+                job_registry.update_job_status(
+                    name,
+                    state="blocked",
+                    detail="同类任务正在运行，本次未重复启动",
+                    metadata={"stage": "blocked", "progress_pct": 100},
+                )
                 return
             try:
                 result = runner()
