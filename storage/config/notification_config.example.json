@@ -1,7 +1,9 @@
 {
   "slack": {
     "enabled": false,
-    "webhook_url": ""
+    "webhook_url": "",
+    "bot_token": "",
+    "app_token": ""
   },
   "email": {
     "enabled": false,
@@ -11,51 +13,28 @@
     "username": "",
     "password": "",
     "from_email": "",
-    "to_emails": [
-      "your_gmail@gmail.com"
-    ]
+    "to_emails": []
   },
   "llm": {
     "enabled": false,
-    "provider": "openai",
-    "base_url": "https://api.openai.com/v1",
+    "provider": "openrouter",
+    "base_url": "https://openrouter.ai/api/v1",
     "api_key": "",
-    "model": "gpt-5-mini",
+    "model": "openrouter/free",
     "temperature": 0.2,
-    "max_tokens": 300,
+    "max_tokens": 16000,
     "context_window_tokens": 200000,
-    "timeout_seconds": 30,
-    "site_url": "",
-    "app_name": "quant-trade-system"
+    "timeout_seconds": 90
   },
   "local_slm": {
     "enabled": false,
-    "provider": "openai",
     "base_url": "http://127.0.0.1:8000/v1",
     "api_key": "EMPTY",
     "model": "Qwen/Qwen3-0.6B",
-    "temperature": 0.1,
-    "max_tokens": 220,
+    "max_tokens": 1000,
     "timeout_seconds": 20
   },
-  "alert_settings": {
-    "cooldown_hours": 6,
-    "send_daily_summary": true,
-    "send_premarket_brief": true,
-    "send_intraday_alerts": true,
-    "send_hourly_market_summary": true,
-    "send_hourly_market_summary_market_hours_only": true,
-    "send_weekend_research_summary": true,
-    "enable_llm_notification_digest": true,
-    "enable_llm_decision_brief": true,
-    "refresh_llm_brief_on_material_change": true,
-    "send_llm_brief_on_material_change": true,
-    "decision_brief_max_output_tokens": 16000,
-    "decision_brief_wall_timeout_seconds": 90,
-    "enable_weekend_research": true,
-    "weekend_research_day_local": "saturday",
-    "weekend_research_hour_local": 10,
-    "weekend_research_minute_local": 0,
-    "weekend_research_history_period": "5y"
+  "delivery": {
+    "use_llm_narration": true
   }
 }

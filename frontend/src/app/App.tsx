@@ -1,68 +1,41 @@
 import { useState } from "react";
-import CoreEtfs from "../pages/CoreEtfs";
 import Dashboard from "../pages/Dashboard";
-import MarketMonitor from "../pages/MarketMonitor";
-import Operations from "../pages/Operations";
-import Portfolio from "../pages/Portfolio";
-import ResearchModels from "../pages/ResearchModels";
-import RiskDiscipline from "../pages/RiskDiscipline";
-import SatelliteRadar from "../pages/SatelliteRadar";
-import Settings from "../pages/Settings";
-import WeekendResearch from "../pages/WeekendResearch";
+import Opportunities from "../pages/Opportunities";
+import Valuation from "../pages/Valuation";
+import MarketRisk from "../pages/MarketRisk";
+import System from "../pages/System";
+import TrendRadar from "../pages/TrendRadar";
+import EtfAllocation from "../pages/EtfAllocation";
 
-type PageKey = "dashboard" | "portfolio" | "core" | "satellite" | "risk" | "monitor" | "research" | "weekend" | "operations" | "settings";
-
-const pages: Array<{ key: PageKey; label: string; detail: string }> = [
-  { key: "dashboard", label: "决策首页", detail: "买、卖、等" },
-  { key: "portfolio", label: "持仓账户", detail: "仓位与流水" },
-  { key: "core", label: "核心ETF", detail: "配置与轮动" },
-  { key: "satellite", label: "卫星雷达", detail: "前三候选" },
-  { key: "risk", label: "风险纪律", detail: "最终门控" },
-  { key: "monitor", label: "盘中监控", detail: "紧急信号" },
-  { key: "research", label: "模型研究", detail: "质量治理" },
-  { key: "weekend", label: "周末研究", detail: "长任务挖掘" },
-  { key: "operations", label: "运行操作", detail: "任务与导入" },
-  { key: "settings", label: "系统设置", detail: "全部配置" },
+type PageKey = "dashboard" | "opportunities" | "trends" | "etfs" | "valuation" | "risk" | "system";
+const pages: Array<{ key: PageKey; label: string; short: string }> = [
+  { key: "dashboard", label: "研究首页", short: "今日结论" },
+  { key: "opportunities", label: "价值反转", short: "超跌与错定价" },
+  { key: "trends", label: "趋势雷达", short: "中期加速信号" },
+  { key: "etfs", label: "核心ETF", short: "定投与配置节奏" },
+  { key: "valuation", label: "公司估值", short: "模型与假设" },
+  { key: "risk", label: "市场风险", short: "环境与校准" },
+  { key: "system", label: "系统管理", short: "运行与设置" },
 ];
 
 export default function App() {
   const [active, setActive] = useState<PageKey>("dashboard");
   const meta = pages.find((page) => page.key === active) ?? pages[0];
-  return (
-    <main className="app-shell">
-      <aside className="sidebar">
-        <div className="brand">
-          <span>Quant Trade</span>
-          <b>交易辅助系统</b>
-          <small>长期逻辑优先，入场时机其次，风险永远在前。</small>
-        </div>
-        <nav>
-          {pages.map((page) => (
-            <button key={page.key} className={page.key === active ? "active" : ""} onClick={() => setActive(page.key)}>
-              <b>{page.label}</b><span>{page.detail}</span>
-            </button>
-          ))}
-        </nav>
-      </aside>
-      <section className="content">
-        <header className="topbar">
-          <div>
-            <span className="eyebrow">个人量化投研与交易决策工作台</span>
-            <h1>{meta.label}</h1>
-          </div>
-          <p>后台任务负责计算稳定快照，前端只读取结果，尽量保持快速和可信。</p>
-        </header>
-        {active === "dashboard" ? <Dashboard /> : null}
-        {active === "portfolio" ? <Portfolio /> : null}
-        {active === "core" ? <CoreEtfs /> : null}
-        {active === "satellite" ? <SatelliteRadar /> : null}
-        {active === "risk" ? <RiskDiscipline /> : null}
-        {active === "monitor" ? <MarketMonitor /> : null}
-        {active === "research" ? <ResearchModels /> : null}
-        {active === "weekend" ? <WeekendResearch /> : null}
-        {active === "operations" ? <Operations /> : null}
-        {active === "settings" ? <Settings /> : null}
-      </section>
+  return <div className="shell">
+    <aside>
+      <div className="brand"><i>Q</i><div><b>多策略研究台</b><span>价值 · 趋势 · 配置</span></div></div>
+      <nav>{pages.map((page) => <button key={page.key} className={active === page.key ? "active" : ""} onClick={() => setActive(page.key)}><b>{page.label}</b><span>{page.short}</span></button>)}</nav>
+      <p className="philosophy">价值回答是否便宜。<br />趋势回答资金是否确认。<br />配置回答该如何投入。</p>
+    </aside>
+    <main>
+      <header className="top"><div><span>个人多策略研究系统</span><h1>{meta.label}</h1></div><p>独立于个人持仓，分别评估价值反转、趋势加速和核心ETF配置，不把不同信号混成一个答案。</p></header>
+      {active === "dashboard" ? <Dashboard /> : null}
+      {active === "opportunities" ? <Opportunities /> : null}
+      {active === "trends" ? <TrendRadar /> : null}
+      {active === "etfs" ? <EtfAllocation /> : null}
+      {active === "valuation" ? <Valuation /> : null}
+      {active === "risk" ? <MarketRisk /> : null}
+      {active === "system" ? <System /> : null}
     </main>
-  );
+  </div>;
 }

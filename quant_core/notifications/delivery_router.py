@@ -6,8 +6,8 @@ from quant_core.notifications import notification_config as ncfg
 
 
 def _notification_body_for_delivery(delivery_type: str, *, subject: str, body: str, config: dict) -> tuple[str, dict]:
-    alert_settings = dict(config.get("alert_settings", {}) or {})
-    if not bool(alert_settings.get("enable_llm_notification_digest", True)):
+    delivery = dict(config.get("delivery", {}) or {})
+    if not bool(delivery.get("use_llm_narration", True)):
         return str(body), {"status": "DISABLED"}
     ok, text, meta = explainer.summarize_notification_message(
         delivery_type=delivery_type,
