@@ -1,4 +1,5 @@
 {
+  "allow_development_proxy": false,
   "backend_priority": [
     "chronos",
     "timesfm",
@@ -8,8 +9,8 @@
     "chronos": {
       "batch_size": 8,
       "context_length": 2048,
-      "cross_learning": false,
-      "device": "auto",
+      "cross_learning": true,
+      "device": "cuda",
       "enabled": true,
       "model_name": "amazon/chronos-2",
       "quantile_levels": [
@@ -38,15 +39,14 @@
     }
   },
   "decision": {
-    "core_max_weight_pct": 70.0,
-    "minimum_core_weight_delta_pct": 3.0,
+    "core_max_weight_pct": 70,
+    "minimum_core_weight_delta_pct": 3,
     "minimum_risk_free_outperformance_probability": 0.52,
     "minimum_upside_probability": 0.55,
-    "satellite_max_weight_pct": 5.0
+    "satellite_max_weight_pct": 5
   },
   "default_backend": "auto",
   "enabled": true,
-  "allow_development_proxy": false,
   "growth_benchmark": "QQQ",
   "history_period": "10y",
   "horizons": [
