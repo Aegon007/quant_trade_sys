@@ -14,6 +14,34 @@ def history(prices):
 
 
 class OpportunityEngineTests(unittest.TestCase):
+    def test_insufficient_data_explains_the_blocking_quality_checks(self):
+        result = score_opportunity(
+            dislocation={"dislocation_score": 90, "stabilization_score": 70},
+            valuation={"margin_of_safety": 0.7, "confidence": 0.42, "dispersion": 1.1, "valuation_usable": True},
+            fundamentals={"quality_score": 85, "damage_score": 10, "distress_probability": 0.03},
+            event={"transience_probability": 0.8, "catalyst_score": 70},
+            market_risk={"risk_score": 20},
+        )
+
+        self.assertEqual(result["recommendation"], "INSUFFICIENT_DATA")
+        self.assertIn("LOW_VALUATION_CONFIDENCE", result["blocking_reasons"])
+        self.assertIn("HIGH_VALUATION_DISPERSION", result["blocking_reasons"])
+        self.assertIn("42.0%", result["recommendation_detail"])
+
+    def test_unusable_valuation_cannot_create_margin_score(self):
+        result = score_opportunity(
+            dislocation={"dislocation_score": 90, "stabilization_score": 70},
+            valuation={"margin_of_safety": 10_000_000, "confidence": 0.9, "dispersion": 0.1, "valuation_usable": False},
+            fundamentals={"quality_score": 85, "damage_score": 10, "distress_probability": 0.03},
+            event={"transience_probability": 0.8, "catalyst_score": 70},
+            market_risk={"risk_score": 20},
+        )
+
+        self.assertEqual(result["recommendation"], "INSUFFICIENT_DATA")
+        self.assertEqual(result["components"]["valuation_margin"], 0.0)
+        self.assertNotIn("VALUATION_MARGIN", result["reason_codes"])
+        self.assertIn("UNUSABLE_VALUATION", result["blocking_reasons"])
+
     def test_dislocation_removes_market_and_sector_move(self):
         stock = history([100 + index * 0.2 for index in range(55)] + [108, 102, 94, 88, 86])
         market = history([100 + index * 0.1 for index in range(55)] + [105, 104, 103, 102, 101])

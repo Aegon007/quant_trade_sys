@@ -78,13 +78,23 @@ def load_dashboard_response(*, now: Optional[datetime] = None) -> dict:
     market_risk = _load(qpaths.MARKET_RISK_SNAPSHOT_FILE)
     data_health = _load(qpaths.DATA_HEALTH_SNAPSHOT_FILE)
     change_feed = _load(qpaths.CHANGE_FEED_FILE)
-    payload = {"recommendations": recommendations, "brief": brief, "market_risk": market_risk, "data_health": data_health, "change_feed": change_feed}
+    trends = _load(qpaths.TREND_SNAPSHOT_FILE)
+    etf_allocation = _load(qpaths.ETF_ALLOCATION_SNAPSHOT_FILE)
+    payload = {"recommendations": recommendations, "trends": trends, "etf_allocation": etf_allocation, "brief": brief, "market_risk": market_risk, "data_health": data_health, "change_feed": change_feed}
     generated = recommendations.get("generated_at") or brief.get("generated_at")
     return _envelope("dashboard", {"generated_at": generated, "summary": recommendations.get("summary", {}), **payload}, path="composed:valuation-research", now=now)
 
 
 def load_opportunities_response(*, now: Optional[datetime] = None) -> dict:
     return load_snapshot_response("opportunities", qpaths.OPPORTUNITY_SNAPSHOT_FILE, now=now)
+
+
+def load_trends_response(*, now: Optional[datetime] = None) -> dict:
+    return load_snapshot_response("trends", qpaths.TREND_SNAPSHOT_FILE, now=now)
+
+
+def load_etf_allocation_response(*, now: Optional[datetime] = None) -> dict:
+    return load_snapshot_response("etf-allocation", qpaths.ETF_ALLOCATION_SNAPSHOT_FILE, now=now)
 
 
 def load_valuations_response(symbol: str = "", *, now: Optional[datetime] = None) -> dict:

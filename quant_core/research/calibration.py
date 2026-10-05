@@ -63,10 +63,12 @@ def calibrate_recommendations(
             risk_free_return = _forward_return(risk_free_benchmark, generated, int(horizon))
             observations.append({
                 "symbol": symbol,
+                "signal_lane": str(row.get("signal_lane") or "VALUE_REVERSAL"),
                 "generated_at": generated.isoformat(),
                 "horizon_days": int(horizon),
                 "recommendation": row.get("recommendation"),
                 "margin_of_safety": row.get("margin_of_safety"),
+                "signal_score": row.get("signal_score", row.get("opportunity_score", row.get("allocation_score"))),
                 "return": round(security_return, 4),
                 "market_return": round(market_return, 4) if market_return is not None else None,
                 "risk_free_return": round(risk_free_return, 4) if risk_free_return is not None else None,
@@ -87,6 +89,18 @@ def calibrate_recommendations(
             "median_excess_over_market": round(median(market_values), 4) if market_values else None,
             "median_excess_over_risk_free": round(median(risk_free_values), 4) if risk_free_values else None,
         }
+    lane_summary = {}
+    for lane in sorted({str(row.get("signal_lane") or "VALUE_REVERSAL") for row in observations}):
+        lane_rows = [row for row in observations if str(row.get("signal_lane") or "VALUE_REVERSAL") == lane]
+        market_values = [row["excess_over_market"] for row in lane_rows if row["excess_over_market"] is not None]
+        risk_free_values = [row["excess_over_risk_free"] for row in lane_rows if row["excess_over_risk_free"] is not None]
+        lane_summary[lane] = {
+            "count": len(lane_rows),
+            "market_win_rate": round(sum(value > 0 for value in market_values) / len(market_values), 3) if market_values else None,
+            "risk_free_win_rate": round(sum(value > 0 for value in risk_free_values) / len(risk_free_values), 3) if risk_free_values else None,
+            "median_excess_over_market": round(median(market_values), 4) if market_values else None,
+            "median_excess_over_risk_free": round(median(risk_free_values), 4) if risk_free_values else None,
+        }
     return {
         "schema_version": 2,
         "generated_at": now.isoformat(),
@@ -94,6 +108,7 @@ def calibrate_recommendations(
         "benchmarks": {"market": market_symbol, "risk_free": risk_free_symbol},
         "summary": {"recommendation_count": len(journal_rows), "matured_observation_count": len(observations)},
         "horizons": horizon_summary,
+        "by_signal_lane": lane_summary,
         "observations": observations[-2000:],
     }
 
@@ -115,18 +130,32 @@ def load_recommendation_journal(path: str = qpaths.RECOMMENDATION_JOURNAL_FILE) 
 
 
 def record_recommendations(snapshot: Mapping, *, path: str = qpaths.RECOMMENDATION_JOURNAL_FILE) -> str:
-    """Keep the latest observation for each symbol/day to avoid rerun bias."""
+    """Keep one latest observation per strategy lane, symbol and day."""
     generated_at = str(dict(snapshot or {}).get("generated_at") or datetime.now().isoformat())
     day = generated_at[:10]
     indexed = {}
     for row in load_recommendation_journal(path):
-        key = (str(row.get("generated_at") or "")[:10], str(row.get("symbol") or "").upper())
-        if key[0] and key[1]:
+        key = (
+            str(row.get("generated_at") or "")[:10],
+            str(row.get("symbol") or "").upper(),
+            str(row.get("signal_lane") or "VALUE_REVERSAL"),
+        )
+        if key[0] and key[1] and key[2]:
             indexed[key] = row
-    for row in list(dict(snapshot or {}).get("recommendations", []) or []):
-        symbol = str(dict(row or {}).get("symbol") or "").strip().upper()
-        if symbol:
-            indexed[(day, symbol)] = {"generated_at": generated_at, **dict(row or {}), "symbol": symbol}
+    lane_rows = (
+        ("VALUE_REVERSAL", list(dict(snapshot or {}).get("recommendations", []) or [])),
+        ("TREND_ACCELERATION", list(dict(snapshot or {}).get("trend_signals", []) or [])),
+        ("CORE_ETF", list(dict(snapshot or {}).get("etf_allocations", []) or [])),
+    )
+    for lane, rows in lane_rows:
+        for row in rows:
+            row = dict(row or {})
+            symbol = str(row.get("symbol") or "").strip().upper()
+            if not symbol:
+                continue
+            if lane == "CORE_ETF":
+                row.setdefault("recommendation", row.get("action"))
+            indexed[(day, symbol, lane)] = {"generated_at": generated_at, **row, "symbol": symbol, "signal_lane": lane}
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
     temporary = target.with_suffix(target.suffix + ".tmp")

@@ -24,21 +24,26 @@ def build_data_health_snapshot(
     price_health = cache_status()
     opportunity_rows = list(opportunities.get("opportunities", []) or [])
     valuation_rows = list(valuations.get("valuations", []) or [])
+    insufficient_count = sum(1 for row in opportunity_rows if str(row.get("recommendation") or "") == "INSUFFICIENT_DATA")
+    usable_valuation_count = sum(1 for row in valuation_rows if row.get("valuation_usable") is not False)
     source_counts = {}
     llm_routes = 0
     for row in valuation_rows:
         source = str(row.get("financial_source") or "unknown")
         source_counts[source] = source_counts.get(source, 0) + 1
-        if str(row.get("route_source") or "") == "llm":
+        if str(row.get("route_source") or "") in {"llm", "llm_cache"}:
             llm_routes += 1
     errors = list(opportunities.get("errors", []) or [])
     opportunity_summary = dict(opportunities.get("summary", {}) or {})
+    llm_routing = dict(opportunity_summary.get("llm_routing", {}) or {})
     has_research_payload = bool(opportunity_summary or opportunity_rows or errors)
-    analyzed = len(opportunity_rows)
+    analyzed = len(valuation_rows)
+    etf_analyzed = int(opportunity_summary.get("etf_analysis_count") or 0)
+    completed = analyzed + etf_analyzed
     requested = int(opportunity_summary.get("deep_analysis_count") or analyzed or 1)
     scanned = int(opportunity_summary.get("scanned_count") or 0)
     universe_count = int(opportunity_summary.get("universe_count") or scanned or requested)
-    coverage = analyzed / max(requested, 1)
+    coverage = completed / max(requested, 1)
     error_ratio = len(errors) / max(universe_count, 1)
     status = "OK"
     reasons = []
@@ -59,23 +64,33 @@ def build_data_health_snapshot(
         reasons.append("标的处理失败比例超过15%")
     elif has_research_payload and errors:
         warnings.append(f"{len(errors)}条标的级错误未达到全局降级阈值")
+    if insufficient_count:
+        warnings.append(f"{insufficient_count}个候选未通过估值质量门槛")
     if has_research_payload and require_llm_route and analyzed and llm_routes / analyzed < 0.5:
         status = "DEGRADED"
         reasons.append("多数标的缺少LLM估值路由确认")
+    elif llm_routing.get("circuit_open"):
+        warnings.append("远程LLM本轮不可用，已熔断并使用确定性模型路由；趋势与ETF引擎不受影响")
     return {
         "schema_version": 1,
         "generated_at": now.isoformat(),
         "status": status,
         "summary": {
             "status": status,
-            "reason": "；".join(reasons) if reasons else "价格、财报、估值与风险快照正常",
+            "reason": "；".join(reasons) if reasons else "行情、财报、估值流程与风险快照已生成",
             "warnings": "；".join(warnings),
             "price_cache": price_health,
             "history_source_counts": dict(opportunity_summary.get("price_source_counts", {}) or {}),
             "scan_count": scanned,
             "analyzed_count": analyzed,
+            "etf_analyzed_count": etf_analyzed,
+            "completed_analysis_count": completed,
             "valuation_count": len(valuation_rows),
+            "usable_valuation_count": usable_valuation_count,
+            "insufficient_recommendation_count": insufficient_count,
             "llm_route_count": llm_routes,
+            "route_source_counts": dict(opportunity_summary.get("route_source_counts", {}) or {}),
+            "llm_routing": llm_routing,
             "financial_source_counts": source_counts,
             "error_count": len(errors),
             "error_ratio": round(error_ratio, 4),

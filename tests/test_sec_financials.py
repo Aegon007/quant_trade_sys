@@ -10,6 +10,46 @@ def fact(values):
 
 
 class SecFinancialMetricsTests(unittest.TestCase):
+    def test_weighted_average_shares_are_used_when_dei_share_count_is_missing(self):
+        payload = {
+            "entityName": "Acme Corp",
+            "facts": {
+                "us-gaap": {
+                    "Revenues": fact([
+                        {"start": "2025-01-01", "end": "2025-12-31", "filed": "2026-02-01", "form": "10-K", "val": 1000},
+                    ]),
+                    "WeightedAverageNumberOfDilutedSharesOutstanding": {
+                        "units": {"shares": [
+                            {"start": "2026-04-01", "end": "2026-06-30", "filed": "2026-08-01", "form": "10-Q", "val": 434_000_000},
+                        ]}
+                    },
+                }
+            },
+        }
+
+        result = normalize_sec_company_facts(payload, symbol="ACME", as_of=datetime(2026, 9, 1))
+
+        self.assertEqual(result["shares_outstanding"], 434_000_000)
+        self.assertTrue(any(row.get("metric") == "shares_outstanding" for row in result["evidence"]))
+
+    def test_old_financial_period_is_marked_stale(self):
+        payload = {
+            "entityName": "Old Corp",
+            "facts": {
+                "us-gaap": {
+                    "Revenues": fact([
+                        {"start": "2020-01-01", "end": "2020-12-31", "filed": "2021-03-01", "form": "20-F", "val": 1000},
+                    ])
+                }
+            },
+        }
+
+        result = normalize_sec_company_facts(payload, symbol="OLD", as_of=datetime(2026, 9, 1))
+
+        self.assertEqual(result["status"], "STALE")
+        self.assertGreater(result["fiscal_age_days"], 365 * 5)
+        self.assertIn("stale_financial_period", result["data_warnings"])
+
     def test_normalization_respects_filing_date_and_computes_cash_flow(self):
         payload = {
             "entityName": "Acme Corp",

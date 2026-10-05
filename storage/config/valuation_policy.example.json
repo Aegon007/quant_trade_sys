@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "history_period": "2y",
   "simulation_count": 1200,
   "minimum_margin_of_safety": 0.15,
@@ -8,7 +8,8 @@
   "maximum_damage_score": 60,
   "maximum_distress_probability": 0.35,
   "maximum_valuation_dispersion": 0.8,
+  "minimum_trend_score": 58,
   "recommendation_horizons_months": [3, 6, 12, 24],
-  "require_llm_route_for_action": true,
+  "require_llm_route_for_action": false,
   "sec_user_agent": "personal-valuation-research contact@example.com"
 }

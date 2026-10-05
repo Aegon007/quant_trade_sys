@@ -49,6 +49,14 @@ def create_app():
     def valuations(symbol: str = ""):
         return snapshot_loader.load_valuations_response(symbol)
 
+    @app.get("/api/trends")
+    def trends():
+        return snapshot_loader.load_trends_response()
+
+    @app.get("/api/etf-allocation")
+    def etf_allocation():
+        return snapshot_loader.load_etf_allocation_response()
+
     @app.get("/api/market-risk")
     def market_risk():
         return snapshot_loader.load_market_risk_response()

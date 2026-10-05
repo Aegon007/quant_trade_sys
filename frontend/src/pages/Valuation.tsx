@@ -43,22 +43,25 @@ export default function Valuation() {
           <div><span>{label(row.archetype)}</span><h2>{text(row.symbol)}</h2><p>财务来源：{label(row.financial_source)} · 财报期间：{text(row.fiscal_period)}</p></div>
           <button onClick={explain} disabled={explaining}>{explaining ? "LLM正在解释..." : "让LLM解释这份估值"}</button>
         </section>
+        {row.valuation_usable === false ? <div className="valuation-warning"><Badge value="INSUFFICIENT_DATA" /><div><b>本次估值已被质量闸门拦截</b><span>{asArray(row.validation_warnings).map(label).join("；") || "关键估值输入不完整"}。系统不会使用该结果形成行动建议。</span></div></div> : null}
         <div className="valuation-band">
           <div><span>当前价格</span><strong>{money(row.current_price)}</strong></div>
           <div><span>保守价值</span><strong>{money(asDict(row.fair_value).p10)}</strong></div>
           <div className="focus"><span>中位合理价值</span><strong>{money(asDict(row.fair_value).p50)}</strong></div>
           <div><span>乐观价值</span><strong>{money(asDict(row.fair_value).p90)}</strong></div>
         </div>
-        <Section title="模型与可信度">
+        <Section title="模型与证据质量">
           <dl className="definition-grid">
             <div><dt>主估值模型</dt><dd>{label(row.primary_model)}</dd></div>
             <div><dt>安全边际</dt><dd>{percent(row.margin_of_safety)}</dd></div>
-            <div><dt>估值可信度</dt><dd>{percent(row.confidence)}</dd></div>
+            <div><dt>估值证据强度</dt><dd>{percent(row.confidence)}</dd></div>
             <div><dt>区间离散度</dt><dd>{percent(row.dispersion)}</dd></div>
             <div><dt>实际参与模型</dt><dd>{text(row.model_count, "1")} 个</dd></div>
             <div><dt>模型间离散度</dt><dd>{percent(row.model_dispersion)}</dd></div>
             <div><dt>模型选择来源</dt><dd><Badge value={row.route_source} /></dd></div>
             <div><dt>校验提醒</dt><dd>{asArray(row.validation_warnings).map(label).join("；") || "无"}</dd></div>
+            <div><dt>模型路由证据</dt><dd>{percent(asDict(row.confidence_components).route_confidence)}</dd></div>
+            <div><dt>关键输入覆盖</dt><dd>{percent(asDict(row.confidence_components).input_coverage)}</dd></div>
           </dl>
         </Section>
         {text(row.asset_type, "equity") !== "etf" ? <Section title="财报原文情报" note="SEC原文负责补充管理层讨论、风险因素与资本配置证据；估值数值仍由确定性引擎计算。">

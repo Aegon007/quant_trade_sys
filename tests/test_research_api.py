@@ -42,6 +42,8 @@ class ResearchApiContractTests(unittest.TestCase):
         paths = {route.path for route in create_app().routes}
 
         self.assertIn("/api/research-manifest", paths)
+        self.assertIn("/api/trends", paths)
+        self.assertIn("/api/etf-allocation", paths)
         self.assertIn("/api/actions/test-notification", paths)
         self.assertIn("/api/actions/test-llm", paths)
 

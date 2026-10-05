@@ -33,6 +33,15 @@ ACTION_LABELS = {
     "DEGRADED": "需关注",
     "MISSING": "缺失",
     "PARTIAL": "部分可用",
+    "TREND_CONFIRMED": "趋势已确认",
+    "TREND_WATCH": "趋势观察",
+    "WAIT_FOR_PULLBACK": "等待回撤",
+    "TREND_REJECTED": "趋势被阻断",
+    "NO_TREND": "尚无趋势",
+    "ACCUMULATE_MORE": "增加投入",
+    "REGULAR_DCA": "常规定投",
+    "REDUCE_PACE": "放慢投入",
+    "PAUSE_LUMP_SUM": "暂停一次性投入",
     "fcff_multistage": "多阶段自由现金流折现",
     "revenue_growth_dcf": "成长型收入折现",
     "residual_income": "剩余收益模型",
@@ -72,7 +81,9 @@ def supported_commands_text() -> str:
             "可用命令",
             "• 概览：查看今日研究结论",
             "• 机会：查看当前超跌估值候选",
-            "• 分析 股票代码：查看单一标的估值",
+            "• 趋势：查看中期趋势与相对强度候选",
+            "• ETF配置：查看核心ETF定投与投入节奏",
+            "• 分析 股票代码：查看单一标的研究结果",
             "• 风险：查看市场风险环境",
             "• 关注列表",
             "• 关注 股票代码 / 取消关注 股票代码",
@@ -140,23 +151,70 @@ def _opportunities() -> CommandExecutionResult:
     return CommandExecutionResult(True, "SHOW_OPPORTUNITIES", "\n".join(["超跌估值机会", *_opportunity_lines(rows)]), envelope)
 
 
+def _trend_lines(rows, *, limit=6) -> list[str]:
+    if not rows:
+        return ["当前没有趋势研究结果。"]
+    lines = []
+    for index, row in enumerate(list(rows)[:limit], start=1):
+        trend = dict(row.get("trend", {}) or {})
+        lines.append(
+            f"{index}. {row.get('symbol')}：{_label(row.get('recommendation'))}，信号分 {float(row.get('signal_score') or 0):.0f}；"
+            f"20日收益 {_percent(trend.get('return_20d'))}，相对市场与行业 {_percent(trend.get('relative_return_20d'))}"
+        )
+    return lines
+
+
+def _trends() -> CommandExecutionResult:
+    envelope = snapshot_loader.load_trends_response()
+    rows = list(dict(envelope.get("payload", {}) or {}).get("trends", []) or [])
+    return CommandExecutionResult(True, "SHOW_TRENDS", "\n".join(["中期趋势雷达", *_trend_lines(rows)]), envelope)
+
+
+def _etfs() -> CommandExecutionResult:
+    envelope = snapshot_loader.load_etf_allocation_response()
+    rows = list(dict(envelope.get("payload", {}) or {}).get("allocations", []) or [])
+    lines = ["核心ETF配置节奏"]
+    for index, row in enumerate(rows[:8], start=1):
+        expected = dict(row.get("expected_annual_return", {}) or {})
+        lines.append(
+            f"{index}. {row.get('symbol')}：{_label(row.get('action'))}，配置分 {float(row.get('allocation_score') or 0):.0f}；"
+            f"当前价 {_money(row.get('current_price'))}，3至5年年化回报中枢 {_percent(expected.get('central'))}"
+        )
+    if len(lines) == 1:
+        lines.append("当前没有ETF配置结果。")
+    return CommandExecutionResult(True, "SHOW_ETFS", "\n".join(lines), envelope)
+
+
 def _analyze(symbol: str) -> CommandExecutionResult:
     envelope = snapshot_loader.load_valuations_response(symbol)
     rows = list(dict(envelope.get("payload", {}) or {}).get("valuations", []) or [])
-    if not rows:
-        return CommandExecutionResult(False, "ANALYZE", f"尚无 {symbol} 的估值结果。请先加入关注列表并运行完整研究。")
-    row = dict(rows[0])
-    fair = dict(row.get("fair_value", {}) or {})
-    lines = [
-        f"{symbol} 估值摘要",
-        f"适用模型：{_label(row.get('primary_model'))}；公司类型：{_label(row.get('archetype'))}",
-        f"当前价 {_money(row.get('current_price'))}；合理价值区间 {_money(fair.get('p10'))} 至 {_money(fair.get('p90'))}",
-        f"中位合理价值 {_money(fair.get('p50'))}；安全边际 {_percent(row.get('margin_of_safety'))}；可信度 {_percent(row.get('confidence'))}",
-    ]
-    risks = [str(item) for item in list(row.get("risks", []) or []) if str(item)]
-    if risks:
-        lines.append("主要风险：" + "；".join(risks[:3]))
-    return CommandExecutionResult(True, "ANALYZE", "\n".join(lines), envelope)
+    trend_envelope = snapshot_loader.load_trends_response()
+    trends = [dict(row) for row in list(dict(trend_envelope.get("payload", {}) or {}).get("trends", []) or []) if str(row.get("symbol") or "").upper() == symbol]
+    etf_envelope = snapshot_loader.load_etf_allocation_response()
+    etfs = [dict(row) for row in list(dict(etf_envelope.get("payload", {}) or {}).get("allocations", []) or []) if str(row.get("symbol") or "").upper() == symbol]
+    lines = [f"{symbol} 多引擎研究摘要"]
+    if rows:
+        row = dict(rows[0])
+        fair = dict(row.get("fair_value", {}) or {})
+        lines.extend([
+            f"价值模型：{_label(row.get('primary_model'))}；公司类型：{_label(row.get('archetype'))}",
+            f"当前价 {_money(row.get('current_price'))}；合理价值区间 {_money(fair.get('p10'))} 至 {_money(fair.get('p90'))}",
+            f"中位合理价值 {_money(fair.get('p50'))}；安全边际 {_percent(row.get('margin_of_safety'))}；证据强度 {_percent(row.get('confidence'))}",
+        ])
+        risks = [str(item) for item in list(row.get("risks", []) or []) if str(item)]
+        if risks:
+            lines.append("主要风险：" + "；".join(risks[:3]))
+    if trends:
+        row = trends[0]
+        trend = dict(row.get("trend", {}) or {})
+        lines.append(f"趋势通道：{_label(row.get('recommendation'))}，信号分 {float(row.get('signal_score') or 0):.0f}；20日收益 {_percent(trend.get('return_20d'))}，相对强度 {_percent(trend.get('relative_return_20d'))}")
+    if etfs:
+        row = etfs[0]
+        expected = dict(row.get("expected_annual_return", {}) or {})
+        lines.append(f"ETF配置：{_label(row.get('action'))}，配置分 {float(row.get('allocation_score') or 0):.0f}；当前价 {_money(row.get('current_price'))}，3至5年年化回报中枢 {_percent(expected.get('central'))}")
+    if not rows and not trends and not etfs:
+        return CommandExecutionResult(False, "ANALYZE", f"尚无 {symbol} 的研究结果。请先加入关注列表并运行完整研究。")
+    return CommandExecutionResult(True, "ANALYZE", "\n".join(lines), {"valuation": envelope, "trend": trend_envelope, "etf": etf_envelope})
 
 
 def _risk() -> CommandExecutionResult:
@@ -221,6 +279,10 @@ def execute_command(text: str) -> CommandExecutionResult:
         return _overview()
     if command.name == "SHOW_OPPORTUNITIES":
         return _opportunities()
+    if command.name == "SHOW_TRENDS":
+        return _trends()
+    if command.name == "SHOW_ETFS":
+        return _etfs()
     if command.name == "ANALYZE":
         return _analyze(command.symbol or "")
     if command.name == "SHOW_RISK":

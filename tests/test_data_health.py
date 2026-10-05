@@ -18,6 +18,26 @@ def _opportunities(*, scanned=30, analyzed=20, deep=20, errors=None):
 
 
 class DataHealthTests(unittest.TestCase):
+    @patch("quant_core.data.data_health.cache_status", return_value={"status": "OK", "symbol_count": 40})
+    def test_quality_gate_rejections_are_reported_without_calling_the_pipeline_broken(self, _cache):
+        opportunities = _opportunities(analyzed=4, deep=4)
+        opportunities["opportunities"] = [
+            {"symbol": "A", "recommendation": "INSUFFICIENT_DATA"},
+            {"symbol": "B", "recommendation": "INSUFFICIENT_DATA"},
+            {"symbol": "C", "recommendation": "WATCH"},
+            {"symbol": "D", "recommendation": "ACCUMULATE"},
+        ]
+        snapshot = build_data_health_snapshot(
+            opportunities=opportunities,
+            valuations={"valuations": [{"route_source": "llm", "valuation_usable": True}] * 3 + [{"route_source": "llm", "valuation_usable": False}]},
+            market_risk={"status": "READY"},
+        )
+
+        self.assertEqual(snapshot["status"], "OK")
+        self.assertEqual(snapshot["summary"]["insufficient_recommendation_count"], 2)
+        self.assertEqual(snapshot["summary"]["usable_valuation_count"], 3)
+        self.assertIn("2个候选未通过估值质量门槛", snapshot["summary"]["warnings"])
+
     @patch("quant_core.data.data_health.cache_status", return_value={"status": "MISSING", "symbol_count": 0})
     def test_completed_research_is_not_degraded_by_optional_latest_price_cache(self, _cache):
         snapshot = build_data_health_snapshot(

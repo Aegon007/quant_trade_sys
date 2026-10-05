@@ -36,6 +36,23 @@ class ValuationCalibrationTests(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertIn("ACCUMULATE", rows[0])
 
+    def test_journal_keeps_independent_strategy_lanes_for_same_symbol(self):
+        with TemporaryDirectory() as temp:
+            path = str(Path(temp) / "journal.jsonl")
+            record_recommendations(
+                {
+                    "generated_at": "2026-07-01T20:00:00",
+                    "recommendations": [{"symbol": "MSFT", "recommendation": "WATCH"}],
+                    "trend_signals": [{"symbol": "MSFT", "recommendation": "TREND_CONFIRMED", "signal_score": 75}],
+                    "etf_allocations": [{"symbol": "VOO", "action": "REGULAR_DCA", "allocation_score": 62}],
+                },
+                path=path,
+            )
+            payloads = [__import__("json").loads(line) for line in Path(path).read_text(encoding="utf-8").splitlines() if line]
+
+        self.assertEqual(len(payloads), 3)
+        self.assertEqual({row["signal_lane"] for row in payloads}, {"VALUE_REVERSAL", "TREND_ACCELERATION", "CORE_ETF"})
+
 
 if __name__ == "__main__":
     unittest.main()

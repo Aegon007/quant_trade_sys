@@ -38,6 +38,7 @@ DEFAULT_CONFIG = {
     "max_universe_size": 700,
     "max_deep_analysis": 30,
     "minimum_dislocation_score": 35,
+    "minimum_trend_score": 58,
 }
 
 

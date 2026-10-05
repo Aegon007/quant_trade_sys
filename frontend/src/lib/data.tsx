@@ -8,6 +8,7 @@ export const asArray = (value: unknown): unknown[] => Array.isArray(value) ? val
 export const text = (value: unknown, fallback = "-"): string => value === undefined || value === null || value === "" ? fallback : String(value);
 
 export function numberValue(value: unknown): number | null {
+  if (value === null || value === undefined || value === "") return null;
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : null;
 }

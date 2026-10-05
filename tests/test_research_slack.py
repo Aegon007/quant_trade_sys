@@ -8,12 +8,26 @@ from integrations.slack.command_service import execute_command, supported_comman
 class ResearchSlackTests(unittest.TestCase):
     def test_parser_only_exposes_research_commands(self):
         self.assertEqual(parse_slack_command("机会").name, "SHOW_OPPORTUNITIES")
+        self.assertEqual(parse_slack_command("趋势").name, "SHOW_TRENDS")
+        self.assertEqual(parse_slack_command("ETF配置").name, "SHOW_ETFS")
         self.assertEqual(parse_slack_command("分析 msft").name, "ANALYZE")
         self.assertEqual(parse_slack_command("关注 nvda").name, "ADD_WATCH")
         self.assertEqual(parse_slack_command("运行完整研究").name, "RUN_RESEARCH")
         self.assertEqual(parse_slack_command("买入 MSFT 1").name, "UNKNOWN")
         self.assertNotIn("买入", supported_commands_text())
         self.assertNotIn("持仓", supported_commands_text())
+        self.assertIn("趋势", supported_commands_text())
+        self.assertIn("ETF", supported_commands_text())
+
+    @patch("integrations.slack.command_service.snapshot_loader.load_trends_response")
+    def test_trend_command_reports_relative_strength_without_tables(self, load_snapshot):
+        load_snapshot.return_value = {"payload": {"trends": [{"symbol": "MU", "recommendation": "TREND_CONFIRMED", "signal_score": 76, "trend": {"return_20d": 0.15, "relative_return_20d": 0.10}}]}}
+
+        result = execute_command("趋势")
+
+        self.assertIn("MU", result.message)
+        self.assertIn("相对市场与行业", result.message)
+        self.assertNotIn("|", result.message)
 
     @patch("integrations.slack.command_service.snapshot_loader.load_opportunities_response")
     def test_opportunity_message_is_readable_chinese_prose(self, load_snapshot):
@@ -37,6 +51,18 @@ class ResearchSlackTests(unittest.TestCase):
         self.assertIn("MSFT", result.message)
         self.assertIn("合理价值", result.message)
         self.assertNotIn("|", result.message)
+
+    @patch("integrations.slack.command_service.snapshot_loader.load_trends_response", return_value={"payload": {"trends": []}})
+    @patch("integrations.slack.command_service.snapshot_loader.load_etf_allocation_response")
+    @patch("integrations.slack.command_service.snapshot_loader.load_valuations_response", return_value={"payload": {"valuations": []}})
+    def test_analyze_command_supports_etf_allocation_results(self, _valuations, load_etfs, _trends):
+        load_etfs.return_value = {"payload": {"allocations": [{"symbol": "VOO", "action": "REGULAR_DCA", "allocation_score": 62, "current_price": 700, "expected_annual_return": {"central": 0.07}}]}}
+
+        result = execute_command("分析 VOO")
+
+        self.assertTrue(result.ok)
+        self.assertIn("常规定投", result.message)
+        self.assertIn("年化回报中枢", result.message)
 
     @patch("integrations.slack.command_service.snapshot_loader.load_snapshot_response")
     def test_data_health_command_reads_current_health_schema(self, load_snapshot):

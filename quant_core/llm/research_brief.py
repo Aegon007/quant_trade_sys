@@ -15,10 +15,15 @@ REGIME_LABELS = {"NORMAL": "正常", "CAUTION": "谨慎", "HIGH_RISK": "高风�
 def _fallback(recommendations: Mapping, market_risk: Mapping) -> str:
     rows = list(dict(recommendations or {}).get("recommendations", []) or [])
     actionable = [row for row in rows if row.get("actionable")]
+    trends = list(dict(recommendations or {}).get("trend_signals", []) or [])
+    trend_leaders = [row for row in trends if str(row.get("recommendation")) in {"TREND_CONFIRMED", "WAIT_FOR_PULLBACK"}]
+    etfs = list(dict(recommendations or {}).get("etf_allocations", []) or [])
     raw_regime = str(dict(market_risk or {}).get("regime") or "未知")
     regime = REGIME_LABELS.get(raw_regime, raw_regime)
     if not actionable:
-        return f"当前市场风险状态为{regime}。估值与超跌筛选没有发现通过全部校验的强机会，今天的明确结论是不追涨、不勉强交易。"
+        trend_text = "" if not trend_leaders else " 趋势雷达关注" + "、".join(str(row.get("symbol")) for row in trend_leaders[:4]) + "，其中过热标的只等待回撤。"
+        etf_text = "" if not etfs else " 核心ETF按" + "、".join(f"{row.get('symbol')}：{row.get('action')}" for row in etfs[:4]) + "执行配置节奏。"
+        return f"当前市场风险状态为{regime}。价值反转筛选没有发现通过全部校验的强机会，不为制造交易而降低门槛。{trend_text}{etf_text}"
     leaders = "、".join(
         f"{row.get('symbol')}（安全边际{float(row.get('margin_of_safety') or 0):.0%}）"
         for row in actionable[:5]
@@ -48,6 +53,9 @@ def build_research_brief(
         }
         for row in rows[:15]
     ]
+    trend_compact = list(dict(recommendations or {}).get("trend_signals", []) or [])[:12]
+    etf_compact = list(dict(recommendations or {}).get("etf_allocations", []) or [])[:8]
+    trend_actionable_count = sum(1 for row in trend_compact if row.get("actionable"))
     config = dict(llm_config or {})
     text = ""
     llm_meta = {"status": "SKIPPED"}
@@ -64,8 +72,8 @@ def build_research_brief(
             {
                 "role": "user",
                 "content": (
-                    "请形成今日市场估值与超跌机会摘要。先给结论，再解释最重要机会、主要风险和为什么其他标的不行动。\n"
-                    + json.dumps({"market_risk": dict(market_risk or {}), "recommendations": compact}, ensure_ascii=False, default=str)
+                    "请形成今日三引擎研究摘要：分别说明价值反转、趋势加速、核心ETF配置，再说明主要风险和不行动原因。不要把趋势强等同于低估，也不要把ETF配置节奏写成精确价格预测。\n"
+                    + json.dumps({"market_risk": dict(market_risk or {}), "value_reversal": compact, "trend_signals": trend_compact, "etf_allocation": etf_compact}, ensure_ascii=False, default=str)
                 ),
             },
         ]
@@ -81,10 +89,10 @@ def build_research_brief(
         "schema_version": 1,
         "generated_at": now.isoformat(),
         "status": "READY",
-        "headline": "发现强机会" if any(row.get("actionable") for row in rows) else "当前无强信号",
+        "headline": "发现强机会" if any(row.get("actionable") for row in rows) or trend_actionable_count else "当前无强信号",
         "summary_text": text,
         "market_regime": dict(market_risk or {}).get("regime"),
-        "actionable_count": sum(1 for row in rows if row.get("actionable")),
+        "actionable_count": sum(1 for row in rows if row.get("actionable")) + trend_actionable_count,
         "llm": llm_meta,
     }
 

@@ -15,6 +15,8 @@ DIAGNOSTIC_FILES = {
     "opportunities.json": qpaths.OPPORTUNITY_SNAPSHOT_FILE,
     "valuations.json": qpaths.VALUATION_SNAPSHOT_FILE,
     "recommendations.json": qpaths.RECOMMENDATION_SNAPSHOT_FILE,
+    "trends.json": qpaths.TREND_SNAPSHOT_FILE,
+    "etf_allocation.json": qpaths.ETF_ALLOCATION_SNAPSHOT_FILE,
     "market_risk.json": qpaths.MARKET_RISK_SNAPSHOT_FILE,
     "data_health.json": qpaths.DATA_HEALTH_SNAPSHOT_FILE,
     "change_feed.json": qpaths.CHANGE_FEED_FILE,

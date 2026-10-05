@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import math
 import re
+from pathlib import Path
 from typing import Mapping, Optional
 
 from quant_core.llm.openai_compatible import call_openai_compatible_chat
@@ -64,6 +66,11 @@ def _scenario(value, defaults) -> dict:
     }
 
 
+def _string_list(value) -> list[str]:
+    values = value if isinstance(value, (list, tuple, set)) else [value] if value is not None else []
+    return [str(item).strip() for item in values if str(item).strip()]
+
+
 def _bounded_scenario(value, defaults, *, low: float, high: float, descending: bool = False) -> tuple[dict, bool]:
     supplied = _scenario(value, defaults)
     bounded = [max(low, min(_number(supplied[name], defaults[index]), high)) for index, name in enumerate(("bear", "base", "bull"))]
@@ -92,12 +99,13 @@ def normalize_valuation_route(route: Optional[Mapping]) -> dict:
     supplied_assumptions = dict(raw.get("assumptions", {}) or {})
     assumptions = {}
     changed = False
+    growth_ceiling = 0.35 if primary in {"fcff_multistage", "revenue_growth_dcf", "distress_weighted"} else 0.60
     assumptions["growth_rate"], sanitized = _bounded_scenario(
-        supplied_assumptions.get("growth_rate"), (0.01, 0.06, 0.11), low=-0.25, high=0.60
+        supplied_assumptions.get("growth_rate"), (0.01, 0.06, 0.11), low=-0.25, high=growth_ceiling
     )
     changed = changed or sanitized
     assumptions["discount_rate"], sanitized = _bounded_scenario(
-        supplied_assumptions.get("discount_rate"), (0.12, 0.095, 0.08), low=0.04, high=0.35, descending=True
+        supplied_assumptions.get("discount_rate"), (0.12, 0.095, 0.08), low=0.07, high=0.35, descending=True
     )
     changed = changed or sanitized
     terminal, sanitized = _bounded_scenario(
@@ -125,13 +133,15 @@ def normalize_valuation_route(route: Optional[Mapping]) -> dict:
         "secondary_models": secondary,
         "assumptions": assumptions,
         "confidence": max(0.0, min(_number(raw.get("confidence"), 0.45), 1.0)),
-        "evidence": [str(item).strip() for item in list(raw.get("evidence", []) or []) if str(item).strip()],
+        "confidence_components": dict(raw.get("confidence_components", {}) or {}),
+        "evidence": _string_list(raw.get("evidence")),
         "reasoning": str(raw.get("reasoning") or "").strip(),
         "filing_summary": str(raw.get("filing_summary") or "").strip(),
-        "fundamental_signals": [str(item).strip() for item in list(raw.get("fundamental_signals", []) or []) if str(item).strip()],
-        "risks": [str(item).strip() for item in list(raw.get("risks", []) or []) if str(item).strip()],
+        "fundamental_signals": _string_list(raw.get("fundamental_signals")),
+        "risks": _string_list(raw.get("risks")),
         "validation_warnings": list(dict.fromkeys(warnings)),
         "route_source": str(raw.get("route_source") or "rules").strip().lower(),
+        "route_diagnostics": dict(raw.get("route_diagnostics", {}) or {}),
     }
 
 
@@ -172,16 +182,69 @@ def _rule_route(asset_type: str, financials: Mapping) -> dict:
         archetype = "high_growth_profitable"
     else:
         archetype = "mature_growth"
+    relevant = ("revenue", "net_income", "free_cash_flow", "shares_outstanding", "cash", "total_debt")
+    available = sum(1 for key in relevant if financials.get(key) is not None)
+    coverage = available / len(relevant)
+    if kind == "etf":
+        coverage = sum(financials.get(key) is not None for key in ("earnings_yield", "historical_earnings_yield")) / 2
+    status_bonus = 0.05 if str(financials.get("status") or "").upper() == "READY" else 0.0
+    filing_bonus = 0.04 if financials.get("latest_filing_date") else 0.0
+    confidence = min(0.78, 0.42 + coverage * 0.24 + status_bonus + filing_bonus)
     return normalize_valuation_route(
         {
             "asset_type": kind,
             "archetype": archetype,
-            "confidence": 0.42,
+            "confidence": confidence,
+            "confidence_components": {
+                "deterministic_input_coverage": round(coverage, 3),
+                "financial_status": str(financials.get("status") or "UNKNOWN"),
+                "filing_available": bool(financials.get("latest_filing_date")),
+            },
             "reasoning": "Deterministic fallback used because no validated LLM route was available.",
             "evidence": [str(financials.get("fiscal_period") or "latest available financial record")],
             "route_source": "rules",
         }
     )
+
+
+def _route_fingerprint(symbol: str, financials: Mapping, config: Mapping) -> str:
+    keys = (
+        "status", "asset_type", "sector", "industry", "fiscal_period", "latest_filing_date",
+        "revenue", "revenue_growth", "net_income", "free_cash_flow", "cash", "total_debt",
+        "equity", "shares_outstanding", "operating_margin", "distress_probability",
+    )
+    payload = {
+        "symbol": str(symbol).upper(),
+        "model": str(config.get("model") or ""),
+        "financials": {key: financials.get(key) for key in keys},
+    }
+    return hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode("utf-8")).hexdigest()
+
+
+def _cached_route(cache_dir, symbol: str, fingerprint: str) -> Optional[dict]:
+    if not cache_dir:
+        return None
+    path = Path(cache_dir) / f"{str(symbol).upper()}.json"
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if payload.get("fingerprint") != fingerprint or not isinstance(payload.get("route"), Mapping):
+        return None
+    route = normalize_valuation_route(payload["route"])
+    route["route_source"] = "llm_cache"
+    route["route_diagnostics"] = {"cache": "hit"}
+    return route
+
+
+def _save_cached_route(cache_dir, symbol: str, fingerprint: str, route: Mapping) -> None:
+    if not cache_dir:
+        return
+    path = Path(cache_dir) / f"{str(symbol).upper()}.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(json.dumps({"fingerprint": fingerprint, "route": dict(route)}, ensure_ascii=False, indent=2), encoding="utf-8")
+    temporary.replace(path)
 
 
 def route_valuation_model(
@@ -193,10 +256,18 @@ def route_valuation_model(
     event_context=None,
     llm_config: Optional[Mapping] = None,
     llm_runner=None,
+    cache_dir=None,
+    allow_network: bool = True,
 ) -> dict:
     fallback = _rule_route(asset_type, financials)
     config = dict(llm_config or {})
-    if not config.get("enabled"):
+    fingerprint = _route_fingerprint(symbol, financials, config)
+    cached = _cached_route(cache_dir, symbol, fingerprint)
+    if cached:
+        return cached
+    if not config.get("enabled") or not allow_network:
+        if config.get("enabled") and not allow_network:
+            fallback["validation_warnings"].append("llm_route_circuit_open")
         return fallback
     financial_payload = {key: value for key, value in dict(financials or {}).items() if key not in {"filing_context", "evidence"}}
     filing_context = dict(dict(financials or {}).get("filing_context", {}) or {})
@@ -250,6 +321,7 @@ def route_valuation_model(
     ok, response = runner(messages, config)
     if not ok:
         fallback["validation_warnings"].append("llm_route_unavailable")
+        fallback["route_diagnostics"] = {"cache": "miss", "llm_error": str(response)[:500]}
         return fallback
     try:
         routed = parse_route_response(response)
@@ -259,4 +331,6 @@ def route_valuation_model(
     if not routed["evidence"]:
         routed["confidence"] = min(routed["confidence"], 0.4)
         routed["validation_warnings"].append("missing_evidence")
+    routed["route_diagnostics"] = {"cache": "miss"}
+    _save_cached_route(cache_dir, symbol, fingerprint, routed)
     return routed

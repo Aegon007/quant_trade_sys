@@ -10,6 +10,13 @@ const LABELS: Record<string, string> = {
   INSUFFICIENT_DATA: "数据不足", OVERVALUED: "估值偏高", FAIR_VALUE_NOT_OVERSOLD: "未明显超跌",
   OPPORTUNITIES_FOUND: "发现估值机会", NO_STRONG_SIGNAL: "暂无强信号", COLLECTING_DATA: "积累样本中",
   HIGH: "高优先级", MEDIUM: "中优先级", LOW: "低优先级", llm: "远程LLM", rules: "规则降级",
+  llm_cache: "LLM缓存路由", TREND_CONFIRMED: "趋势已确认", TREND_WATCH: "趋势观察", WAIT_FOR_PULLBACK: "等待回撤",
+  TREND_REJECTED: "趋势被阻断", NO_TREND: "尚无趋势", ACCELERATING: "加速中", EMERGING: "趋势萌芽", WEAK: "弱势", EXTENDED: "短期过热",
+  ACCUMULATE_MORE: "增加投入", REGULAR_DCA: "常规定投", REDUCE_PACE: "放慢投入", PAUSE_LUMP_SUM: "暂停一次性投入",
+  ATTRACTIVE: "相对有吸引力", FAIR: "接近长期参考", PREMIUM: "存在溢价", EXPENSIVE: "估值较高", LIMITED_DATA: "估值数据有限", NOT_APPLICABLE: "不适用盈利收益率",
+  RELATIVE_STRENGTH: "相对强度领先", ABOVE_LONG_TERM_TREND: "站上中长期趋势", MOMENTUM_ACCELERATION: "动量正在加速", NEAR_52W_HIGH: "接近52周高位", PRICE_EXTENDED: "偏离均线较远",
+  INSUFFICIENT_PRICE_HISTORY: "价格历史不足", MARKET_RISK_EXTREME: "市场风险极高", NOT_ANALYZED: "尚未深度分析",
+  VALUE_REVERSAL: "价值反转", TREND_ACCELERATION: "趋势加速", CORE_ETF: "核心ETF",
   fcff_multistage: "多阶段自由现金流折现", revenue_growth_dcf: "成长型收入折现", residual_income: "剩余收益模型",
   normalized_earnings: "标准化盈利估值", revenue_multiple: "收入倍数估值", reit_ffo_nav: "REIT现金流与净资产估值",
   sum_of_parts: "分部估值", distress_weighted: "困境概率加权估值", etf_risk_premium: "ETF风险溢价估值",
@@ -23,7 +30,10 @@ const LABELS: Record<string, string> = {
   EVENT_LIKELY_TEMPORARY: "事件更可能是暂时冲击", PRICE_STABILIZING: "价格正在企稳",
   route_corrected: "估值路线已校正", assumptions_sanitized: "假设已通过边界校验", missing_evidence: "证据不足",
   llm_route_unavailable: "LLM路线不可用", llm_route_invalid: "LLM路线格式无效",
+  llm_route_circuit_open: "LLM批量调用已熔断",
   LLM_ROUTE_REQUIRED: "行动候选必须经过LLM复核", missing_valuation_inputs: "估值输入不完整",
+  stale_financial_period: "财报期间过旧", LOW_VALUATION_CONFIDENCE: "估值置信度不足",
+  HIGH_VALUATION_DISPERSION: "估值区间分歧过大", UNUSABLE_VALUATION: "估值不可用",
   sec_companyfacts: "SEC公司财报", yfinance_fallback: "Yahoo财务数据备用源", configured_etf_metadata: "ETF配置元数据", yfinance_etf_metadata: "ETF市场元数据",
   stooq: "Stooq主源", yfinance: "Yahoo备用源", local_history_cache: "本地行情缓存", unknown: "来源未知",
   sec_edgar_filing: "SEC财报原文", UNAVAILABLE: "暂不可用", not_tested: "尚未测试", stale: "状态过期",
@@ -35,7 +45,7 @@ export const label = (value: unknown): string => LABELS[text(value, "")] ?? text
 
 export function Badge({ value }: { value: unknown }) {
   const raw = text(value, "UNKNOWN").toLowerCase();
-  const tone = /ready|ok|normal|deep_research|completed/.test(raw) ? "good" : /failed|missing|damaged|trap|high_risk/.test(raw) ? "bad" : "warn";
+  const tone = /ready|ok|normal|deep_research|completed|trend_confirmed|accumulate_more|regular_dca|attractive/.test(raw) ? "good" : /failed|missing|damaged|trap|high_risk|rejected|pause/.test(raw) ? "bad" : "warn";
   return <span className={`badge ${tone}`}>{label(value)}</span>;
 }
 

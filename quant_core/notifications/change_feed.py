@@ -19,6 +19,14 @@ RECOMMENDATION_LABELS = {
     "OVERVALUED": "估值偏高",
     "FAIR_VALUE_NOT_OVERSOLD": "未明显超跌",
     "LLM_REVIEW_REQUIRED": "等待模型复核",
+    "TREND_CONFIRMED": "趋势已确认",
+    "TREND_WATCH": "趋势观察",
+    "WAIT_FOR_PULLBACK": "等待回撤",
+    "NO_TREND": "尚无趋势",
+    "ACCUMULATE_MORE": "增加投入",
+    "REGULAR_DCA": "常规定投",
+    "REDUCE_PACE": "放慢投入",
+    "PAUSE_LUMP_SUM": "暂停一次性投入",
 }
 
 
@@ -42,6 +50,25 @@ def build_change_feed(previous: Optional[Mapping], current: Optional[Mapping], *
             items.append({"priority": "MEDIUM", "category": "recommendation_change", "symbol": symbol, "title": f"{symbol}结论变化", "message": f"{_label(before)} → {_label(after)}"})
         elif old and abs(float(row.get("opportunity_score") or 0) - float(old.get("opportunity_score") or 0)) >= 10:
             items.append({"priority": "LOW", "category": "score_change", "symbol": symbol, "title": f"{symbol}机会分变化", "message": f"{old.get('opportunity_score')} → {row.get('opportunity_score')}"})
+    previous_trends = {str(row.get("symbol") or "").upper(): dict(row) for row in list(dict(previous or {}).get("trend_signals", []) or [])}
+    current_trends = {str(row.get("symbol") or "").upper(): dict(row) for row in list(dict(current or {}).get("trend_signals", []) or [])}
+    for symbol, row in current_trends.items():
+        old = previous_trends.get(symbol, {})
+        before = str(old.get("recommendation") or "")
+        after = str(row.get("recommendation") or "")
+        if row.get("actionable") and not old.get("actionable"):
+            items.append({"priority": "HIGH", "category": "new_trend_signal", "symbol": symbol, "title": f"{symbol}趋势得到确认", "message": f"结论变为{_label(after)}，趋势综合分{row.get('signal_score')}。"})
+        elif before and before != after:
+            priority = "MEDIUM" if after == "WAIT_FOR_PULLBACK" else "LOW"
+            items.append({"priority": priority, "category": "trend_state_change", "symbol": symbol, "title": f"{symbol}趋势状态变化", "message": f"{_label(before)} → {_label(after)}"})
+    previous_etfs = {str(row.get("symbol") or "").upper(): dict(row) for row in list(dict(previous or {}).get("etf_allocations", []) or [])}
+    current_etfs = {str(row.get("symbol") or "").upper(): dict(row) for row in list(dict(current or {}).get("etf_allocations", []) or [])}
+    for symbol, row in current_etfs.items():
+        before = str(previous_etfs.get(symbol, {}).get("action") or "")
+        after = str(row.get("action") or "")
+        if before and before != after:
+            priority = "MEDIUM" if after in {"ACCUMULATE_MORE", "PAUSE_LUMP_SUM"} else "LOW"
+            items.append({"priority": priority, "category": "etf_pacing_change", "symbol": symbol, "title": f"{symbol}配置节奏变化", "message": f"{_label(before)} → {_label(after)}"})
     priority_order = {"HIGH": 0, "MEDIUM": 1, "LOW": 2}
     items.sort(key=lambda row: priority_order.get(row["priority"], 3))
     return {

@@ -31,6 +31,8 @@ def parse_slack_command(text) -> ParsedSlackCommand:
         "HELP": {"", "帮助", "可用命令", "help", "commands"},
         "SHOW_OVERVIEW": {"概览", "系统概览", "overview"},
         "SHOW_OPPORTUNITIES": {"机会", "超跌机会", "推荐", "opportunities"},
+        "SHOW_TRENDS": {"趋势", "趋势雷达", "动量", "trends", "momentum"},
+        "SHOW_ETFS": {"etf", "etf配置", "核心etf", "配置", "allocation"},
         "SHOW_RISK": {"风险", "市场风险", "risk"},
         "SHOW_WATCHLIST": {"关注列表", "当前关注", "watchlist"},
         "SHOW_DATA_HEALTH": {"数据状态", "数据健康", "data", "data health"},

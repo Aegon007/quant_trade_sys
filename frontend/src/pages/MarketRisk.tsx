@@ -13,11 +13,13 @@ export default function MarketRisk() {
   const historySources = asDict(healthSummary.history_source_counts);
   const latestSources = asDict(priceCache.source_counts);
   const calibration = asDict(calibrationState.data?.payload);
+  const laneCalibration = asDict(calibration.by_signal_lane);
+  const llmRouting = asDict(healthSummary.llm_routing);
 
   return <>
     <SnapshotState snapshot={riskState.data} loading={riskState.loading} error={riskState.error} reload={() => void riskState.reload()} />
     <section className="risk-hero">
-      <div><span>市场环境</span><h2>{risk.regime ? <Badge value={risk.regime} /> : "尚未计算"}</h2><p>风险分越高，超跌候选需要更大的安全边际和更强的基本面证据。</p></div>
+      <div><span>市场环境</span><h2>{risk.regime ? <Badge value={risk.regime} /> : "尚未计算"}</h2><p>风险分越高，各研究引擎需要更强的证据，ETF额外投入也会更保守。</p></div>
       <strong>{text(risk.risk_score, "-")}<small>/100</small></strong>
     </section>
     <StatRow items={[
@@ -40,6 +42,7 @@ export default function MarketRisk() {
           <div><dt>本次历史行情来源</dt><dd>{Object.entries(historySources).map(([source, count]) => `${label(source)} ${count}`).join("；") || "尚无记录"}</dd></div>
           <div><dt>完成估值</dt><dd>{text(healthSummary.valuation_count, "0")}</dd></div>
           <div><dt>LLM路由</dt><dd>{text(healthSummary.llm_route_count, "0")}</dd></div>
+          <div><dt>LLM批量状态</dt><dd>{llmRouting.circuit_open ? "已熔断并降级" : llmRouting.configured ? "可用或使用缓存" : "未启用"}</dd></div>
           <div><dt>标的级异常</dt><dd>{text(healthSummary.error_count, "0")}</dd></div>
         </dl>
         <p className="muted">{text(healthSummary.reason, "尚未运行健康检查")}</p>
@@ -51,6 +54,9 @@ export default function MarketRisk() {
         const row = asDict(value);
         return <div key={horizon}><b>{horizon}日</b><span>样本 {text(row.count, "0")}</span><span>跑赢短债 {percent(row.risk_free_win_rate)}</span><span>跑赢SPY {percent(row.market_win_rate)}</span><span>对短债超额 {percent(row.median_excess_over_risk_free)}</span><span>对SPY超额 {percent(row.median_excess_over_market)}</span></div>;
       })}</div> : <Empty>推荐样本尚未达到第一个63交易日观察窗口。</Empty>}
+    </Section>
+    <Section title="分引擎表现" note="价值、趋势和ETF分别记账，避免一个策略的结果掩盖另一个策略。">
+      {Object.keys(laneCalibration).length ? <div className="calibration-list">{Object.entries(laneCalibration).map(([lane, value]) => { const row = asDict(value); return <div key={lane}><b>{label(lane)}</b><span>样本 {text(row.count, "0")}</span><span>跑赢短债 {percent(row.risk_free_win_rate)}</span><span>跑赢SPY {percent(row.market_win_rate)}</span><span>对短债超额 {percent(row.median_excess_over_risk_free)}</span><span>对SPY超额 {percent(row.median_excess_over_market)}</span></div>; })}</div> : <Empty>新引擎仍在积累达到观察期限的历史样本。</Empty>}
     </Section>
   </>;
 }

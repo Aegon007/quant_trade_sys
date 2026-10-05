@@ -17,6 +17,48 @@ def price_history(last_price=90.0):
 
 
 class ValuationResearchPipelineTests(unittest.TestCase):
+    def test_pipeline_reserves_capacity_for_upward_trend_candidates(self):
+        steady_market = pd.DataFrame(
+            {"Close": [100 + index * 0.04 for index in range(260)], "Volume": [1_000_000] * 260},
+            index=pd.date_range("2025-01-01", periods=260, freq="B"),
+        )
+        accelerating = pd.DataFrame(
+            {"Close": [80 + index * 0.03 for index in range(190)] + [85.7 + index * 0.45 for index in range(70)], "Volume": [1_000_000] * 260},
+            index=pd.date_range("2025-01-01", periods=260, freq="B"),
+        )
+        falling = price_history(75)
+        financial = {
+            "status": "READY", "asset_type": "equity", "free_cash_flow": 1000,
+            "cash": 100, "total_debt": 10, "shares_outstanding": 10,
+            "quality_score": 80, "damage_score": 10, "distress_probability": 0.02,
+        }
+        route = {"asset_type": "equity", "archetype": "mature_growth", "primary_model": "fcff_multistage", "confidence": 0.75}
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            trend_path = str(Path(temp_dir) / "trends.json")
+            result = run_valuation_research(
+                universe=[
+                    {"symbol": "DROP", "asset_type": "equity"},
+                    {"symbol": "MOMO", "asset_type": "equity"},
+                ],
+                history_loader=lambda symbol, period="2y": accelerating if symbol == "MOMO" else falling if symbol == "DROP" else steady_market,
+                financial_loader=lambda symbol: {**financial, "symbol": symbol},
+                route_loader=lambda **kwargs: route,
+                event_loader=lambda symbol: {},
+                market_risk={"risk_score": 20, "regime": "NORMAL"},
+                snapshot_path=str(Path(temp_dir) / "opportunities.json"),
+                valuation_path=str(Path(temp_dir) / "valuations.json"),
+                recommendation_path=str(Path(temp_dir) / "recommendations.json"),
+                trend_snapshot_path=trend_path,
+                policy={"max_deep_analysis": 2, "minimum_dislocation_score": 20, "minimum_trend_score": 55},
+            )
+
+            trend_payload = __import__("json").loads(Path(trend_path).read_text())
+
+        self.assertEqual(result["summary"]["trend_candidate_count"], 1)
+        self.assertIn("MOMO", {row["symbol"] for row in trend_payload["trends"]})
+        self.assertNotIn("MOMO", {row["symbol"] for row in result["opportunities"]})
+
     def test_pipeline_generates_position_independent_recommendations(self):
         financial = {
             "symbol": "ACME",
@@ -122,7 +164,7 @@ class ValuationResearchPipelineTests(unittest.TestCase):
                 policy={"max_deep_analysis": 2, "minimum_dislocation_score": 10},
             )
 
-        self.assertIn("VOO", {row["symbol"] for row in result["opportunities"]})
+        self.assertIn("VOO", {row["symbol"] for row in result["etf_allocations"]})
         self.assertEqual(result["summary"]["deep_analysis_count"], 2)
 
 

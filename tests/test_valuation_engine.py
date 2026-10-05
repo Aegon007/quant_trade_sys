@@ -5,6 +5,41 @@ from quant_core.valuation.router import normalize_valuation_route, route_valuati
 
 
 class ValuationEngineTests(unittest.TestCase):
+    def test_missing_share_count_never_emits_fake_per_share_value(self):
+        result = value_security(
+            {"symbol": "ACME", "free_cash_flow": 2_000_000_000, "cash": 500_000_000, "total_debt": 100_000_000},
+            normalize_valuation_route(
+                {"asset_type": "equity", "archetype": "mature_growth", "primary_model": "fcff_multistage", "confidence": 0.9}
+            ),
+            current_price=100,
+        )
+
+        self.assertFalse(result["valuation_usable"])
+        self.assertIsNone(result["fair_value"]["p50"])
+        self.assertIsNone(result["margin_of_safety"])
+        self.assertEqual(result["confidence"], 0.0)
+        self.assertIn("missing_valuation_inputs", result["validation_warnings"])
+
+    def test_stale_financials_never_emit_actionable_fair_value(self):
+        result = value_security(
+            {
+                "symbol": "OLD",
+                "status": "STALE",
+                "free_cash_flow": 2_000_000_000,
+                "cash": 500_000_000,
+                "total_debt": 100_000_000,
+                "shares_outstanding": 100_000_000,
+            },
+            normalize_valuation_route(
+                {"asset_type": "equity", "archetype": "mature_growth", "primary_model": "fcff_multistage", "confidence": 0.9}
+            ),
+            current_price=100,
+        )
+
+        self.assertFalse(result["valuation_usable"])
+        self.assertIsNone(result["fair_value"]["p50"])
+        self.assertIn("stale_financial_period", result["validation_warnings"])
+
     def test_route_preserves_filing_intelligence_for_user_review(self):
         route = normalize_valuation_route(
             {
@@ -19,6 +54,19 @@ class ValuationEngineTests(unittest.TestCase):
 
         self.assertIn("资本开支", route["filing_summary"])
         self.assertEqual(route["fundamental_signals"], ["云业务增长", "自由现金流承压"])
+
+    def test_router_does_not_split_string_fields_into_characters(self):
+        route = normalize_valuation_route(
+            {
+                "evidence": "10-Q财报",
+                "fundamental_signals": "自由现金流改善",
+                "risks": "需求可能放缓",
+            }
+        )
+
+        self.assertEqual(route["evidence"], ["10-Q财报"])
+        self.assertEqual(route["fundamental_signals"], ["自由现金流改善"])
+        self.assertEqual(route["risks"], ["需求可能放缓"])
 
     def test_llm_router_receives_extracted_filing_text_without_local_cache_path(self):
         captured = {}
@@ -152,6 +200,8 @@ class ValuationEngineTests(unittest.TestCase):
         )
 
         assumptions = route["assumptions"]
+        self.assertLessEqual(assumptions["growth_rate"]["bull"], 0.35)
+        self.assertGreaterEqual(assumptions["discount_rate"]["bull"], 0.07)
         self.assertLessEqual(assumptions["growth_rate"]["bear"], assumptions["growth_rate"]["base"])
         self.assertLessEqual(assumptions["growth_rate"]["base"], assumptions["growth_rate"]["bull"])
         self.assertGreaterEqual(assumptions["discount_rate"]["bear"], assumptions["discount_rate"]["base"])

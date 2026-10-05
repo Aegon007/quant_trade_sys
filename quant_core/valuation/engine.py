@@ -137,6 +137,19 @@ def _input_coverage(financials: Mapping, model: str) -> tuple[float, bool]:
         "etf_spot_carry": (("drawdown_52w",),),
     }
     groups = groups_by_model.get(model, (("shares_outstanding",),))
+    critical_group_indexes = {
+        "fcff_multistage": (0, 1),
+        "revenue_growth_dcf": (0, 1),
+        "residual_income": (0, 1, 2),
+        "normalized_earnings": (0, 1),
+        "revenue_multiple": (0, 1),
+        "reit_ffo_nav": (0, 1),
+        "sum_of_parts": (0, 1),
+        "distress_weighted": (0, 1, 2),
+        "etf_risk_premium": (0, 1),
+        "etf_yield_duration": (0,),
+        "etf_spot_carry": (0,),
+    }.get(model, (0,))
 
     def available(group) -> bool:
         for key in group:
@@ -152,7 +165,39 @@ def _input_coverage(financials: Mapping, model: str) -> tuple[float, bool]:
         return False
 
     states = [available(group) for group in groups]
-    return sum(states) / max(len(states), 1), bool(states and states[0])
+    essential_available = bool(states) and all(states[index] for index in critical_group_indexes if index < len(states))
+    return sum(states) / max(len(states), 1), essential_available
+
+
+def _unavailable_valuation(financials: Mapping, route: Mapping, current_price: float, warnings: list[str]) -> dict:
+    return {
+        "symbol": str(financials.get("symbol") or "").upper(),
+        "asset_type": route["asset_type"],
+        "archetype": route["archetype"],
+        "primary_model": route["primary_model"],
+        "secondary_models": route["secondary_models"],
+        "current_price": round(current_price, 4),
+        "scenario_values": {},
+        "model_values": {},
+        "model_count": 0,
+        "model_dispersion": None,
+        "fair_value": {"p10": None, "p50": None, "p90": None},
+        "margin_of_safety": None,
+        "dispersion": None,
+        "confidence": 0.0,
+        "confidence_components": {
+            "route_confidence": round(float(route.get("confidence") or 0.0), 3),
+            "input_coverage": 0.0,
+            "financial_status_factor": 0.0,
+            "model_agreement_factor": 0.0,
+        },
+        "valuation_usable": False,
+        "assumptions": route["assumptions"],
+        "route_source": route["route_source"],
+        "evidence": route["evidence"],
+        "risks": route["risks"],
+        "validation_warnings": list(dict.fromkeys(warnings)),
+    }
 
 
 def value_security(
@@ -166,6 +211,15 @@ def value_security(
     normalized_route = normalize_valuation_route(route)
     current_price = max(_finite(current_price), 0.01)
     primary_model = normalized_route["primary_model"]
+    coverage, essential_available = _input_coverage(financials, primary_model)
+    validation_warnings = list(normalized_route["validation_warnings"])
+    stale_financials = str(financials.get("status") or "").upper() == "STALE"
+    if stale_financials:
+        validation_warnings.append("stale_financial_period")
+    if normalized_route["asset_type"] != "etf" and (not essential_available or stale_financials):
+        if not essential_available:
+            validation_warnings.append("missing_valuation_inputs")
+        return _unavailable_valuation(financials, normalized_route, current_price, validation_warnings)
     model_values = {}
     for model in [primary_model, *normalized_route["secondary_models"]]:
         _coverage, essential_available = _input_coverage(financials, model)
@@ -187,14 +241,12 @@ def value_security(
     sigma = max((high - low) / 3.29, middle * 0.04, 0.01)
     samples = np.clip(rng.normal(middle, sigma, count), low * 0.72, high * 1.28)
     p10, p50, p90 = [round(float(value), 4) for value in np.quantile(samples, [0.1, 0.5, 0.9])]
-    coverage, essential_available = _input_coverage(financials, primary_model)
     status_factor = 0.85 if str(financials.get("status") or "READY") == "PARTIAL" else 1.0
     essential_factor = 1.0 if essential_available else 0.45
     model_medians = [sorted(values.values())[1] for values in model_values.values()]
     model_dispersion = (max(model_medians) - min(model_medians)) / max(float(np.median(model_medians)), 0.01) if len(model_medians) > 1 else 0.0
     agreement_factor = max(0.55, 1.0 - min(model_dispersion, 1.5) * 0.3)
     confidence = round(max(0.0, min(float(normalized_route["confidence"]) * (0.45 + coverage * 0.55) * status_factor * essential_factor * agreement_factor, 1.0)), 3)
-    validation_warnings = list(normalized_route["validation_warnings"])
     if coverage < 0.75 or not essential_available:
         validation_warnings.append("missing_valuation_inputs")
     margin = round(p50 / current_price - 1.0, 4)
@@ -217,6 +269,13 @@ def value_security(
         "margin_of_safety": margin,
         "dispersion": dispersion,
         "confidence": confidence,
+        "confidence_components": {
+            "route_confidence": round(float(normalized_route["confidence"]), 3),
+            "input_coverage": round(coverage, 3),
+            "financial_status_factor": round(status_factor, 3),
+            "model_agreement_factor": round(agreement_factor, 3),
+        },
+        "valuation_usable": True,
         "assumptions": normalized_route["assumptions"],
         "route_source": normalized_route["route_source"],
         "evidence": normalized_route["evidence"],

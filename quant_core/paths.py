@@ -28,6 +28,8 @@ WATCHLIST_EXAMPLE_FILE = str(CONFIG_DIR / "watchlist.example.json")
 OPPORTUNITY_SNAPSHOT_FILE = str(RESEARCH_STATE_DIR / "opportunity_snapshot.json")
 VALUATION_SNAPSHOT_FILE = str(RESEARCH_STATE_DIR / "valuation_snapshot.json")
 RECOMMENDATION_SNAPSHOT_FILE = str(RESEARCH_STATE_DIR / "recommendation_snapshot.json")
+TREND_SNAPSHOT_FILE = str(RESEARCH_STATE_DIR / "trend_snapshot.json")
+ETF_ALLOCATION_SNAPSHOT_FILE = str(RESEARCH_STATE_DIR / "etf_allocation_snapshot.json")
 MARKET_RISK_SNAPSHOT_FILE = str(RESEARCH_STATE_DIR / "market_risk_snapshot.json")
 DATA_HEALTH_SNAPSHOT_FILE = str(RESEARCH_STATE_DIR / "data_health_snapshot.json")
 CHANGE_FEED_FILE = str(RESEARCH_STATE_DIR / "change_feed_latest.json")
@@ -36,13 +38,14 @@ VALUATION_CALIBRATION_FILE = str(RESEARCH_STATE_DIR / "valuation_calibration_sna
 RESEARCH_MANIFEST_FILE = str(RESEARCH_STATE_DIR / "valuation_research_manifest.json")
 JOB_STATUS_FILE = str(RESEARCH_STATE_DIR / "job_status.json")
 RECOMMENDATION_JOURNAL_FILE = str(RESEARCH_JOURNALS_DIR / "recommendation_history.jsonl")
+LLM_ROUTE_CACHE_DIR = RESEARCH_CACHE_DIR / "llm_routes"
 
 VALUATION_REPORT_LATEST_JSON = str(REPORTS_DIR / "valuation_research_latest.json")
 VALUATION_REPORT_LATEST_MD = str(REPORTS_DIR / "valuation_research_latest.md")
 
 
 def ensure_storage_layout() -> None:
-    for directory in (STATE_DIR, CONFIG_DIR, JOURNALS_DIR, REPORTS_DIR, RESEARCH_STATE_DIR, RESEARCH_JOURNALS_DIR, RESEARCH_CACHE_DIR):
+    for directory in (STATE_DIR, CONFIG_DIR, JOURNALS_DIR, REPORTS_DIR, RESEARCH_STATE_DIR, RESEARCH_JOURNALS_DIR, RESEARCH_CACHE_DIR, LLM_ROUTE_CACHE_DIR):
         directory.mkdir(parents=True, exist_ok=True)
 
 

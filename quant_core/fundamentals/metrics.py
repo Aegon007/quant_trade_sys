@@ -23,6 +23,13 @@ DEBT_TAG_PAIRS = (
     ("LongTermDebtCurrent", "LongTermDebtNoncurrent"),
 )
 
+SHARE_TAG_ALIASES = (
+    "WeightedAverageNumberOfDilutedSharesOutstanding",
+    "WeightedAverageNumberOfSharesOutstandingBasic",
+)
+
+MAX_FINANCIAL_AGE_DAYS = 550
+
 
 def _finite(value, default=None):
     try:
@@ -113,6 +120,14 @@ def _instant_metric(payload: Mapping, tags, *, as_of: datetime, namespace="us-ga
     rows = _available_rows(payload, tags, as_of=as_of, namespace=namespace)
     rows.sort(key=lambda row: (_date(row.get("end")) or datetime.min, row.get("filed_dt") or datetime.min))
     return (rows[-1]["val"], rows[-1]) if rows else (None, None)
+
+
+def _latest_duration_metric(payload: Mapping, tags, *, as_of: datetime):
+    rows = _available_rows(payload, tags, as_of=as_of)
+    standalone = [row for row in rows if 60 <= (_duration_days(row) or 0) <= 120]
+    candidates = standalone or rows
+    candidates.sort(key=lambda row: (_date(row.get("end")) or datetime.min, row.get("filed_dt") or datetime.min))
+    return (candidates[-1]["val"], candidates[-1]) if candidates else (None, None)
 
 
 def _debt_metric(payload: Mapping, *, as_of: datetime):
@@ -208,6 +223,8 @@ def normalize_sec_company_facts(payload: Mapping, *, symbol: str, as_of: Optiona
         as_of=as_of,
         namespace="dei",
     )
+    if shares is None:
+        shares, share_row = _latest_duration_metric(payload, SHARE_TAG_ALIASES, as_of=as_of)
     metrics["shares_outstanding"] = shares
     if share_row:
         evidence.append({"metric": "shares_outstanding", "tag": share_row.get("tag"), "period_end": share_row.get("end"), "filed": share_row.get("filed"), "form": share_row.get("form")})
@@ -221,14 +238,23 @@ def normalize_sec_company_facts(payload: Mapping, *, symbol: str, as_of: Optiona
     metrics["operating_margin"] = _ratio(metrics.get("operating_income"), metrics.get("revenue"))
     metrics["free_cash_flow_margin"] = _ratio(metrics.get("free_cash_flow"), metrics.get("revenue"))
     quality, damage, distress, drivers = _scores(metrics)
+    fiscal_period = str((latest_row or {}).get("end") or "")
+    fiscal_date = _date(fiscal_period)
+    fiscal_age_days = (as_of - fiscal_date).days if fiscal_date else None
+    data_warnings = []
+    if fiscal_age_days is not None and fiscal_age_days > MAX_FINANCIAL_AGE_DAYS:
+        data_warnings.append("stale_financial_period")
+    status = "PARTIAL" if metrics.get("revenue") is None else "STALE" if data_warnings else "READY"
     return {
         "symbol": str(symbol or "").strip().upper(),
         "company_name": str(payload.get("entityName") or symbol),
         "asset_type": "equity",
-        "status": "READY" if metrics.get("revenue") is not None else "PARTIAL",
+        "status": status,
         "source": "sec_companyfacts",
         "retrieved_at": as_of.isoformat(),
-        "fiscal_period": str((latest_row or {}).get("end") or ""),
+        "fiscal_period": fiscal_period,
+        "fiscal_age_days": fiscal_age_days,
+        "data_warnings": data_warnings,
         **{key: value for key, value in metrics.items() if not key.endswith("_previous")},
         "quality_score": round(quality, 1),
         "damage_score": round(damage, 1),

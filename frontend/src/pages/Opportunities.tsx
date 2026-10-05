@@ -17,7 +17,7 @@ export default function Opportunities() {
       <label><input type="checkbox" checked={onlyActionable} onChange={(event) => setOnlyActionable(event.target.checked)} /> 只看达到研究门槛的机会</label>
       <span>共 {rows.length} 项</span>
     </div>
-    <Section title="超跌与错定价候选" note="先识别相对市场和行业的异常下跌，再检查基本面损伤、事件性质和确定性估值。">
+    <Section title="价值反转候选" note="只回答异常下跌后是否存在基本面支持的错定价，不负责捕捉正在上涨的趋势股；趋势机会请查看独立的趋势雷达。">
       {rows.length ? <div className="opportunity-list">{rows.map((row) => {
         const dislocation = asDict(row.dislocation);
         const fair = asDict(row.fair_value);
@@ -34,7 +34,7 @@ export default function Opportunities() {
             <dl>
               <div><dt>合理价值区间</dt><dd>{money(fair.p10)} 至 {money(fair.p90)}</dd></div>
               <div><dt>估值模型</dt><dd>{label(row.valuation_model)}</dd></div>
-              <div><dt>估值可信度</dt><dd>{percent(row.valuation_confidence)}</dd></div>
+              <div><dt>估值证据强度</dt><dd>{percent(row.valuation_confidence)}</dd></div>
               <div><dt>基本面质量 / 损伤</dt><dd>{text(row.quality_score)} / {text(row.damage_score)}</dd></div>
               <div><dt>下跌暂时性概率</dt><dd>{percent(event.transience_probability)}</dd></div>
               <div><dt>财报期间</dt><dd>{text(row.fiscal_period)}</dd></div>
@@ -42,6 +42,8 @@ export default function Opportunities() {
             </dl>
             <p><b>事件判断：</b>{text(event.summary, "暂无可验证事件摘要")}</p>
             {text(row.filing_summary, "") ? <p><b>财报判断：</b>{text(row.filing_summary)}</p> : null}
+            <p><b>结论说明：</b>{text(row.recommendation_detail, text(row.recommendation) === "INSUFFICIENT_DATA" ? "估值证据未通过质量门槛" : "当前结论已通过基础数据检查")}</p>
+            {asArray(row.blocking_reasons).length ? <p><b>阻断项：</b>{asArray(row.blocking_reasons).map(label).join("；")}</p> : null}
             <p><b>判定依据：</b>{asArray(row.reason_codes).map(label).join("；") || "证据不足"}</p>
           </div>
         </details>;
